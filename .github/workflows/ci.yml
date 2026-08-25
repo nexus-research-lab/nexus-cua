@@ -21,6 +21,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install minimum supported Rust
         run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt
+      - name: Install workspace packaging Cargo
+        run: rustup toolchain install 1.90.0 --profile minimal
       - name: Verify formatting
         run: cargo +1.88.0 fmt --all -- --check
       - name: Verify locked dependency graph
@@ -30,7 +32,7 @@ jobs:
       - name: Verify Markdown links
         run: make docs
       - name: Verify packaged crate graph
-        run: make package-verify CARGO='cargo +1.88.0'
+        run: make package-verify CARGO='cargo +1.90.0'
 
   native:
     name: Native ${{ matrix.name }}

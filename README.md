@@ -172,6 +172,10 @@ Useful targets:
 | `make docs` | Validate local Markdown paths and heading anchors |
 | `make release` | Optimized workspace build |
 
+The code MSRV remains Rust 1.88. `make package-verify` requires Cargo 1.90 or
+newer because it packages the unpublished, interdependent workspace crates as
+one graph.
+
 ## Status
 
 The codebase is in active `0.1.x` development. The protocol, authorization
