@@ -28,3 +28,6 @@ All notable changes to Nexus CUA will be documented in this file.
   bundle identifier.
 - Bounded non-password accessibility values on macOS and Windows, with secure
   text fields redacted before they cross the native actor boundary.
+- Structured request-wait and detached-execution latency events without command
+  payloads or typed text.
+- Bounded request identities, active sessions, and application-allowlist memory.

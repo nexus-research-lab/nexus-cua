@@ -5,6 +5,11 @@ Status: normative for the `0.1.x` development line.
 The protocol identifier is `nexus.cua.v1`. Messages use closed, tagged JSON
 objects. Unknown fields are rejected by decoders at every trust boundary.
 
+`request_id` is a non-empty, normalized ASCII identity of at most 128 bytes.
+It may contain letters, digits, `-`, `_`, `.`, and `:`. Caller wait time is not
+part of request identity: a timed-out caller retries the exact command under
+the same ID with an equal or longer bounded `timeout_ms` to reconcile.
+
 ## Lifecycle
 
 1. A host starts the daemon with a private local endpoint and authorization
@@ -28,6 +33,10 @@ It never permits input.
 `bounded` additionally requires an exact application allowlist, an explicit
 action allowlist, a foreground-input flag, and a finite session TTL. An empty
 application or action allowlist authorizes nothing.
+
+The runtime bounds live sessions, allowlist count, individual identifier size,
+and aggregate allowlist bytes. Capacity exhaustion is a retryable `busy`
+response and never evicts another live authority session.
 
 Version 1 exposes exact top-level windows only. Complete-desktop capture is not
 represented by a dormant manifest flag or inferred from foreground authority.

@@ -213,6 +213,18 @@ fn runtime() -> (Runtime, PathBuf) {
     (runtime, root)
 }
 
+#[test]
+fn runtime_rejects_zero_resource_bounds() {
+    let root = artifact_root();
+    let mut config = RuntimeConfig::new(&root);
+    config.max_observations_per_session = 0;
+    let error = Runtime::new(Arc::new(MockDriver::new()), config)
+        .err()
+        .expect("zero resource bound must fail");
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 async fn open_session(runtime: &Runtime, mode: PermissionMode) -> nexus_cua_protocol::SessionId {
     match runtime
         .execute(Command::OpenSession(OpenSessionInput {
@@ -235,6 +247,44 @@ async fn read_only_manifest_cannot_smuggle_mutation_authority() {
         .execute(Command::OpenSession(OpenSessionInput { manifest: invalid }))
         .await
         .expect_err("read-only action authority must fail");
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn active_session_capacity_is_bounded() {
+    let root = artifact_root();
+    let mut config = RuntimeConfig::new(&root);
+    config.max_active_sessions = 1;
+    let runtime = Runtime::new(Arc::new(MockDriver::new()), config).expect("create runtime");
+    let first = open_session(&runtime, PermissionMode::ReadOnly).await;
+
+    let error = runtime
+        .execute(Command::OpenSession(OpenSessionInput {
+            manifest: manifest(PermissionMode::ReadOnly),
+        }))
+        .await
+        .expect_err("second live session must exceed capacity");
+    assert_eq!(error.code, ErrorCode::Busy);
+
+    runtime
+        .execute(Command::CloseSession(SessionInput { session_id: first }))
+        .await
+        .expect("close first session");
+    open_session(&runtime, PermissionMode::ReadOnly).await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn application_allowlist_has_an_aggregate_memory_bound() {
+    let (runtime, root) = runtime();
+    let mut invalid = manifest(PermissionMode::ReadOnly);
+    invalid.allowed_application_ids = vec!["a".repeat(32 * 1024 + 1)];
+
+    let error = runtime
+        .execute(Command::OpenSession(OpenSessionInput { manifest: invalid }))
+        .await
+        .expect_err("oversized application identity must fail");
     assert_eq!(error.code, ErrorCode::InvalidRequest);
     let _ = std::fs::remove_dir_all(root);
 }

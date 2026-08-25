@@ -10,6 +10,8 @@ use nexus_cua_protocol::{
 use crate::error::public_error;
 
 const MAX_ALLOWED_APPLICATIONS: usize = 128;
+const MAX_APPLICATION_ID_BYTES: usize = 32 * 1024;
+const MAX_APPLICATION_ALLOWLIST_BYTES: usize = 256 * 1024;
 const MAX_ACTIONS: usize = 16;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_KEYS: usize = 8;
@@ -24,6 +26,19 @@ pub(crate) fn validate_manifest(
         return Err(invalid("session ttl is outside the supported range"));
     }
     if manifest.allowed_application_ids.len() > MAX_ALLOWED_APPLICATIONS {
+        return Err(invalid("application allowlist is too large"));
+    }
+    let allowlist_bytes = manifest
+        .allowed_application_ids
+        .iter()
+        .try_fold(0_usize, |total, value| total.checked_add(value.len()))
+        .ok_or_else(|| invalid("application allowlist is too large"))?;
+    if allowlist_bytes > MAX_APPLICATION_ALLOWLIST_BYTES
+        || manifest
+            .allowed_application_ids
+            .iter()
+            .any(|value| value.len() > MAX_APPLICATION_ID_BYTES)
+    {
         return Err(invalid("application allowlist is too large"));
     }
     if manifest.allowed_actions.len() > MAX_ACTIONS {

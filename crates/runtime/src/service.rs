@@ -34,6 +34,8 @@ pub struct RuntimeConfig {
     pub max_observation_age: StdDuration,
     /// Maximum retained observations per session.
     pub max_observations_per_session: usize,
+    /// Maximum simultaneously live capability sessions.
+    pub max_active_sessions: usize,
     /// Maximum normalized elements in one observation.
     pub max_elements_per_observation: usize,
     /// Maximum decoded screenshot pixels.
@@ -52,6 +54,7 @@ impl RuntimeConfig {
             max_session_ttl: StdDuration::from_secs(60 * 60),
             max_observation_age: StdDuration::from_secs(30),
             max_observations_per_session: 32,
+            max_active_sessions: 64,
             max_elements_per_observation: 2_000,
             max_image_pixels: 100_000_000,
             max_artifacts_per_session: 32,
@@ -77,10 +80,18 @@ impl Runtime {
     /// Returns an error when the private artifact root cannot be created or
     /// does not satisfy the runtime's filesystem safety requirements.
     pub fn new(driver: Arc<dyn DesktopDriver>, config: RuntimeConfig) -> Result<Self, CuaError> {
-        if config.max_artifacts_per_session == 0 || config.max_artifact_workers == 0 {
+        if config.max_session_ttl.is_zero()
+            || config.max_observation_age.is_zero()
+            || config.max_observations_per_session == 0
+            || config.max_active_sessions == 0
+            || config.max_elements_per_observation == 0
+            || config.max_image_pixels == 0
+            || config.max_artifacts_per_session == 0
+            || config.max_artifact_workers == 0
+        {
             return Err(public_error(
                 ErrorCode::InvalidRequest,
-                "artifact retention and worker bounds must be non-zero",
+                "runtime resource and lifetime bounds must be non-zero",
                 false,
                 None,
             ));
@@ -153,10 +164,17 @@ impl Runtime {
             expires_at: expires_at_monotonic,
             state: Mutex::new(SessionState::default()),
         });
-        self.sessions
-            .write()
-            .await
-            .insert(session_id.clone(), session);
+        let mut sessions = self.sessions.write().await;
+        if sessions.len() >= self.config.max_active_sessions {
+            return Err(public_error(
+                ErrorCode::Busy,
+                "active session capacity is exhausted",
+                true,
+                Some("close_unused_session"),
+            ));
+        }
+        sessions.insert(session_id.clone(), session);
+        drop(sessions);
         info!(session_id = %session_id, "computer-use session opened");
         Ok(CommandResult::SessionOpened(OpenSessionOutput {
             session_id,

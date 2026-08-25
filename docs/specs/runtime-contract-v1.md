@@ -157,6 +157,8 @@ Additional budgets:
 
 - idle CPU below 0.5% over five minutes with no active request;
 - no unbounded queue, tree, frame pool, artifact set, log field, or retry loop;
+- at most 64 live capability sessions by default, with an embedding host able
+  to select a smaller non-zero bound;
 - at most four warm Windows target capture pipelines by default;
 - at most two retained frames per pipeline;
 - a 4K capture pipeline target below 128 MiB of resident GPU/CPU buffers;

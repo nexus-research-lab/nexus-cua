@@ -11,11 +11,13 @@ use nexus_cua_runtime::Runtime;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
 use tokio::time::Instant;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 use crate::TransportError;
 use crate::auth::TokenVerifier;
+
+const MAX_REQUEST_ID_BYTES: usize = 128;
 
 /// Authenticates, deduplicates, and executes protocol requests.
 pub struct Dispatcher {
@@ -61,6 +63,27 @@ impl Dispatcher {
 
     /// Dispatches one decoded request without logging secret command content.
     pub async fn dispatch(&self, request: RequestEnvelope) -> ResponseEnvelope {
+        let started = Instant::now();
+        let operation = operation_name(&request.command);
+        let request_id_log = request_id_log_value(&request.request_id).to_owned();
+        let response = self.dispatch_inner(request, operation).await;
+        let (status, error_code) = response_status(&response);
+        info!(
+            request_id = request_id_log,
+            operation,
+            status,
+            error_code,
+            wait_elapsed_us = elapsed_micros(started),
+            "local request completed"
+        );
+        response
+    }
+
+    async fn dispatch_inner(
+        &self,
+        request: RequestEnvelope,
+        operation: &'static str,
+    ) -> ResponseEnvelope {
         let request_id = request.request_id.clone();
         if request.protocol_version != PROTOCOL_VERSION {
             return failure(
@@ -74,7 +97,10 @@ impl Dispatcher {
             );
         }
         if !self.token.accepts(&request.authorization) {
-            warn!(request_id = %request_id, "rejected unauthorized local request");
+            warn!(
+                request_id = request_id_log_value(&request_id),
+                "rejected unauthorized local request"
+            );
             return failure(
                 request_id,
                 public_error(
@@ -82,6 +108,17 @@ impl Dispatcher {
                     "invalid local transport authorization",
                     false,
                     None,
+                ),
+            );
+        }
+        if !valid_request_id(&request_id) {
+            return failure(
+                request_id,
+                public_error(
+                    ErrorCode::InvalidRequest,
+                    "request_id is empty, too long, or not normalized",
+                    false,
+                    Some("use_fresh_request_id"),
                 ),
             );
         }
@@ -97,7 +134,6 @@ impl Dispatcher {
             );
         }
 
-        let operation = operation_name(&request.command);
         let Some(digest) = command_digest(&request.command) else {
             return failure(
                 request_id,
@@ -114,7 +150,7 @@ impl Dispatcher {
         match self.begin_request(&request_id, digest).await {
             BeginRequest::Execute(receiver) => {
                 debug!(request_id = %request_id, operation, "dispatching local request");
-                self.spawn_execution(request_id.clone(), digest, request.command);
+                self.spawn_execution(request_id.clone(), digest, operation, request.command);
                 wait_for_response(receiver, deadline)
                     .await
                     .unwrap_or_else(|| deadline_exceeded(request_id))
@@ -162,10 +198,17 @@ impl Dispatcher {
         }
     }
 
-    fn spawn_execution(&self, request_id: RequestId, digest: [u8; 32], command: Command) {
+    fn spawn_execution(
+        &self,
+        request_id: RequestId,
+        digest: [u8; 32],
+        operation: &'static str,
+        command: Command,
+    ) {
         let runtime = Arc::clone(&self.runtime);
         let ledger = Arc::clone(&self.ledger);
         tokio::spawn(async move {
+            let started = Instant::now();
             let outcome = match runtime.execute(command).await {
                 Ok(result) => ResponseOutcome::Success { result },
                 Err(error) => ResponseOutcome::Error { error },
@@ -175,7 +218,16 @@ impl Dispatcher {
                 request_id: request_id.clone(),
                 outcome,
             };
-            complete_request(&ledger, request_id, digest, response).await;
+            let (status, error_code) = response_status(&response);
+            complete_request(&ledger, request_id.clone(), digest, response).await;
+            info!(
+                request_id = %request_id,
+                operation,
+                status,
+                error_code,
+                execution_elapsed_us = elapsed_micros(started),
+                "local request execution recorded"
+            );
         });
     }
 }
@@ -300,6 +352,54 @@ fn operation_name(command: &Command) -> &'static str {
         Command::PerformAction(_) => "perform_action",
         Command::VerifyState(_) => "verify_state",
     }
+}
+
+fn valid_request_id(request_id: &RequestId) -> bool {
+    let value = request_id.as_str();
+    !value.is_empty()
+        && value.len() <= MAX_REQUEST_ID_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn request_id_log_value(request_id: &RequestId) -> &str {
+    if valid_request_id(request_id) {
+        request_id.as_str()
+    } else {
+        "invalid"
+    }
+}
+
+fn response_status(response: &ResponseEnvelope) -> (&'static str, &'static str) {
+    match &response.outcome {
+        ResponseOutcome::Success { .. } => ("success", "none"),
+        ResponseOutcome::Error { error } => ("error", error_code_name(error.code)),
+    }
+}
+
+fn error_code_name(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::ProtocolMismatch => "protocol_mismatch",
+        ErrorCode::Unauthorized => "unauthorized",
+        ErrorCode::InvalidRequest => "invalid_request",
+        ErrorCode::Busy => "busy",
+        ErrorCode::DeadlineExceeded => "deadline_exceeded",
+        ErrorCode::SessionUnavailable => "session_unavailable",
+        ErrorCode::CapabilityDenied => "capability_denied",
+        ErrorCode::ReferenceNotFound => "reference_not_found",
+        ErrorCode::StaleObservation => "stale_observation",
+        ErrorCode::PermissionRequired => "permission_required",
+        ErrorCode::Unsupported => "unsupported",
+        ErrorCode::ForegroundRequired => "foreground_required",
+        ErrorCode::TargetUnavailable => "target_unavailable",
+        ErrorCode::DriverFailure => "driver_failure",
+        ErrorCode::Internal => "internal",
+    }
+}
+
+fn elapsed_micros(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 pub(crate) fn public_error(
@@ -470,6 +570,18 @@ mod tests {
         assert_error_code(&first, ErrorCode::DeadlineExceeded);
         assert_error_code(&conflict, ErrorCode::InvalidRequest);
         assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn request_identity_is_bounded_before_ledger_admission() {
+        let (dispatcher, driver, root) = dispatcher(Duration::ZERO);
+        let response = dispatcher
+            .dispatch(request("invalid\nrequest", 500, Command::GetCapabilities))
+            .await;
+
+        assert_error_code(&response, ErrorCode::InvalidRequest);
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 0);
         cleanup(root);
     }
 
