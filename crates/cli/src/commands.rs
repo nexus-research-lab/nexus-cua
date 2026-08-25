@@ -126,6 +126,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     let dispatcher = Arc::new(Dispatcher::new(
         runtime,
         &token,
+        server_config.max_inflight_requests,
         server_config.max_completed_requests,
         server_config.max_request_timeout_ms,
     )?);

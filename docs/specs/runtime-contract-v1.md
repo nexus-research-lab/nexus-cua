@@ -122,7 +122,9 @@ same geometry, memory, shutdown, and permission behavior.
 
 Raw GPU/IOSurface/D3D buffers stay inside the capture actor. RGBA normalization,
 PNG encoding, and SHA-256 hashing run on bounded compute workers. Artifacts use
-runtime-chosen private paths and expire with the session.
+runtime-chosen private paths and expire with the session. Each process owns a
+random artifact generation below the host root and removes that generation on
+graceful teardown; crash cleanup remains an explicit host-supervisor step.
 
 ## Deadlines, cancellation, and idempotency
 
@@ -157,6 +159,7 @@ Additional budgets:
 
 - idle CPU below 0.5% over five minutes with no active request;
 - no unbounded queue, tree, frame pool, artifact set, log field, or retry loop;
+- at most 64 local connections and 64 distinct in-flight requests by default;
 - at most 64 live capability sessions by default, with an embedding host able
   to select a smaller non-zero bound;
 - at most four warm Windows target capture pipelines by default;

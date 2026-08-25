@@ -489,8 +489,9 @@ async fn screenshot_retention_is_bounded_per_session() {
         _ => panic!("unexpected windows result"),
     };
 
+    let mut paths = Vec::new();
     for _ in 0..3 {
-        runtime
+        let observed = runtime
             .execute(Command::ObserveWindow(ObserveWindowInput {
                 session_id: session_id.clone(),
                 window_ref: window_ref.clone(),
@@ -499,13 +500,44 @@ async fn screenshot_retention_is_bounded_per_session() {
             }))
             .await
             .expect("observe window");
+        let CommandResult::WindowObserved(observation) = observed else {
+            panic!("unexpected observation result");
+        };
+        paths.push(observation.screenshot.expect("screenshot artifact").path);
     }
 
-    let artifact_count = std::fs::read_dir(root.join(session_id.as_str()))
-        .expect("read session artifacts")
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|value| value == "png"))
-        .count();
-    assert_eq!(artifact_count, 2);
+    assert!(!PathBuf::from(&paths[0]).exists());
+    assert!(paths[1..].iter().all(|path| PathBuf::from(path).is_file()));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn dropping_runtime_removes_only_its_artifact_generation() {
+    let root = artifact_root();
+    std::fs::create_dir_all(&root).expect("create host artifact root");
+    let sentinel = root.join("host-owned-sentinel");
+    std::fs::write(&sentinel, b"keep").expect("write host sentinel");
+
+    let runtime = Runtime::new(Arc::new(MockDriver::new()), RuntimeConfig::new(&root))
+        .expect("create runtime");
+    assert_eq!(
+        std::fs::read_dir(&root)
+            .expect("read artifact root")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("runtime_"))
+            .count(),
+        1
+    );
+    drop(runtime);
+
+    assert!(sentinel.is_file());
+    assert_eq!(
+        std::fs::read_dir(&root)
+            .expect("read artifact root")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("runtime_"))
+            .count(),
+        0
+    );
     let _ = std::fs::remove_dir_all(root);
 }

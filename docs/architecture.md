@@ -7,9 +7,9 @@ reasoning or user-facing consent.
 ## Dependency direction
 
 ```text
-cli -> transport -> runtime -> protocol
-                         \-> platform
-platform -----------------> protocol
+cli ------> transport ------> runtime ------> protocol
+ |                              ^                ^
+ +----------> platform ---------+----------------+
 ```
 
 - `protocol` contains the stable public wire types and no operating-system code.
@@ -41,6 +41,11 @@ plus an authorization token. Holding that token permits creating only
 `read_only` or explicitly bounded sessions. It never implies unrestricted
 desktop access.
 
+The Unix socket is mode `0600`; the Windows pipe uses a protected DACL granting
+access only to LocalSystem and the object owner, and rejects remote clients.
+Connection tasks and distinct in-flight requests have independent hard bounds.
+Capacity is rejected before a new side effect reaches the runtime.
+
 Platform identifiers stay behind the runtime. Public callers receive opaque
 application, window, element, observation, session, and artifact references.
 Every mutation is authorized against its session and requires a fresh
@@ -49,9 +54,11 @@ observation of the exact target window.
 ## Data lifetime
 
 Screenshots and accessibility text are untrusted, transient observations.
-Screenshot files are created by the runtime under a host-selected private root,
-use restrictive permissions, and are deleted when their session expires or
-closes. Neither screenshot bytes nor typed text may enter logs.
+Screenshot files are created in one random runtime generation below a
+host-selected private root, use restrictive permissions, and are deleted when
+their session expires or closes. Graceful runtime teardown deletes its entire
+generation without deleting the host root. Neither screenshot bytes nor typed
+text may enter logs.
 
 ## Observation pipeline
 

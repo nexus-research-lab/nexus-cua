@@ -47,6 +47,8 @@ pub struct ServerConfig {
     pub max_frame_bytes: usize,
     /// Maximum completed idempotency records retained in memory.
     pub max_completed_requests: usize,
+    /// Maximum distinct admitted requests that have not completed.
+    pub max_inflight_requests: usize,
     /// Maximum caller-supplied end-to-end deadline.
     pub max_request_timeout_ms: u32,
 }
@@ -58,6 +60,7 @@ impl ServerConfig {
             endpoint,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             max_completed_requests: 4_096,
+            max_inflight_requests: 64,
             max_request_timeout_ms: 120_000,
         }
     }
@@ -68,9 +71,9 @@ impl ServerConfig {
                 "max_frame_bytes must fit in a non-zero u32".to_owned(),
             ));
         }
-        if self.max_completed_requests == 0 {
+        if self.max_completed_requests == 0 || self.max_inflight_requests == 0 {
             return Err(TransportError::InvalidConfiguration(
-                "max_completed_requests must be non-zero".to_owned(),
+                "request ledger bounds must be non-zero".to_owned(),
             ));
         }
         if self.max_request_timeout_ms == 0 {

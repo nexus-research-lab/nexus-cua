@@ -44,7 +44,12 @@ impl ArtifactStore {
         }
         #[cfg(unix)]
         fs::set_permissions(requested, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
-        let root = requested.canonicalize().map_err(io_error)?;
+        let base = requested.canonicalize().map_err(io_error)?;
+        let generation = base.join(format!("runtime_{}", Uuid::new_v4().simple()));
+        fs::create_dir(&generation).map_err(io_error)?;
+        #[cfg(unix)]
+        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
+        let root = generation.canonicalize().map_err(io_error)?;
         Ok(Self {
             root,
             max_image_pixels,
@@ -154,6 +159,12 @@ impl ArtifactStore {
             fs::remove_file(path).map_err(io_error)?;
         }
         Ok(())
+    }
+}
+
+impl Drop for ArtifactStore {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

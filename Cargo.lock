@@ -557,6 +557,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "windows-sys",
  "zeroize",
 ]
 

@@ -12,10 +12,15 @@ permission UI, approval policy, and audit experience.
 
 - Embedded products use the versioned local protocol through a private Unix
   socket or Windows named pipe.
-- Shell-oriented agents use the `nexus-cua` CLI.
-- MCP is an optional compatibility surface for third-party agents; Nexus itself
-  uses its round-scoped `nexus computer` command and never exposes a driver MCP
-  directly to the model.
+- Maintainers use the `nexus-cua` CLI for service diagnostics, schema export,
+  and controlled protocol requests; products expose their own policy-bound
+  agent command.
+- MCP can be implemented as a product-owned compatibility adapter. The planned
+  Nexus integration uses a round-scoped `nexus computer` command and never
+  exposes the driver transport directly to the model.
+
+See [`docs/product-integration.md`](docs/product-integration.md) for sidecar,
+enablement, CLI/Skill, Browser independence, and third-party integration rules.
 
 ## Architecture boundary
 

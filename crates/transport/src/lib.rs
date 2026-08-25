@@ -10,6 +10,8 @@ mod endpoint;
 mod error;
 mod frame;
 mod server;
+#[cfg(windows)]
+mod windows_security;
 
 pub use client::request;
 pub use dispatcher::Dispatcher;

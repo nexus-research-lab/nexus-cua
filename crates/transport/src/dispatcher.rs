@@ -36,10 +36,12 @@ impl Dispatcher {
     pub fn new(
         runtime: Arc<Runtime>,
         token: &AuthorizationToken,
+        max_inflight_requests: usize,
         max_completed_requests: usize,
         max_request_timeout_ms: u32,
     ) -> Result<Self, TransportError> {
-        if max_completed_requests == 0 || max_request_timeout_ms == 0 {
+        if max_inflight_requests == 0 || max_completed_requests == 0 || max_request_timeout_ms == 0
+        {
             return Err(TransportError::InvalidConfiguration(
                 "request ledger and timeout bounds must be non-zero".to_owned(),
             ));
@@ -54,6 +56,8 @@ impl Dispatcher {
             token,
             ledger: Arc::new(Mutex::new(RequestLedger {
                 entries: HashMap::new(),
+                inflight_requests: 0,
+                max_inflight_requests,
                 max_completed_requests,
                 next_sequence: 0,
             })),
@@ -162,6 +166,15 @@ impl Dispatcher {
             BeginRequest::Wait(receiver) => wait_for_response(receiver, deadline)
                 .await
                 .unwrap_or_else(|| deadline_exceeded(request_id)),
+            BeginRequest::Busy => failure(
+                request_id,
+                public_error(
+                    ErrorCode::Busy,
+                    "in-flight request capacity is exhausted",
+                    true,
+                    Some("retry_after_capacity"),
+                ),
+            ),
             BeginRequest::Conflict => failure(
                 request_id,
                 public_error(
@@ -187,12 +200,14 @@ impl Dispatcher {
                 ..
             }) if *existing == digest => BeginRequest::Replay(response.clone()),
             Some(_) => BeginRequest::Conflict,
+            None if ledger.inflight_requests >= ledger.max_inflight_requests => BeginRequest::Busy,
             None => {
                 let (response, receiver) = watch::channel(None);
                 ledger.entries.insert(
                     request_id.clone(),
                     RequestEntry::Pending { digest, response },
                 );
+                ledger.inflight_requests += 1;
                 BeginRequest::Execute(receiver)
             }
         }
@@ -236,11 +251,14 @@ enum BeginRequest {
     Execute(watch::Receiver<Option<ResponseEnvelope>>),
     Replay(ResponseEnvelope),
     Wait(watch::Receiver<Option<ResponseEnvelope>>),
+    Busy,
     Conflict,
 }
 
 struct RequestLedger {
     entries: HashMap<RequestId, RequestEntry>,
+    inflight_requests: usize,
+    max_inflight_requests: usize,
     max_completed_requests: usize,
     next_sequence: u64,
 }
@@ -293,6 +311,7 @@ async fn complete_request(
         response: sender, ..
     }) = ledger.entries.remove(&request_id)
     {
+        ledger.inflight_requests = ledger.inflight_requests.saturating_sub(1);
         sender.send_replace(Some(response.clone()));
     }
     ledger.next_sequence = ledger.next_sequence.wrapping_add(1);
@@ -585,7 +604,48 @@ mod tests {
         cleanup(root);
     }
 
+    #[tokio::test]
+    async fn distinct_inflight_requests_are_bounded_before_execution() {
+        let (dispatcher, driver, root) =
+            dispatcher_with_inflight_limit(Duration::from_millis(30), 1);
+        let first_dispatcher = Arc::clone(&dispatcher);
+        let first = tokio::spawn(async move {
+            first_dispatcher
+                .dispatch(request("request-first", 500, Command::GetCapabilities))
+                .await
+        });
+        loop {
+            let admitted = dispatcher
+                .ledger
+                .lock()
+                .await
+                .entries
+                .values()
+                .any(|entry| matches!(entry, RequestEntry::Pending { .. }));
+            if admitted {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let rejected = dispatcher
+            .dispatch(request("request-second", 500, Command::GetCapabilities))
+            .await;
+        assert_error_code(&rejected, ErrorCode::Busy);
+        let completed = first.await.expect("join first request");
+        assert!(matches!(completed.outcome, ResponseOutcome::Success { .. }));
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
+        cleanup(root);
+    }
+
     fn dispatcher(delay: Duration) -> (Arc<Dispatcher>, Arc<CountingDriver>, PathBuf) {
+        dispatcher_with_inflight_limit(delay, 64)
+    }
+
+    fn dispatcher_with_inflight_limit(
+        delay: Duration,
+        max_inflight_requests: usize,
+    ) -> (Arc<Dispatcher>, Arc<CountingDriver>, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "nexus-cua-transport-{}-{}",
             std::process::id(),
@@ -599,8 +659,10 @@ mod tests {
             Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("create test runtime"),
         );
         let token = AuthorizationToken::new("0123456789abcdef0123456789abcdef");
-        let dispatcher =
-            Arc::new(Dispatcher::new(runtime, &token, 64, 1_000).expect("create test dispatcher"));
+        let dispatcher = Arc::new(
+            Dispatcher::new(runtime, &token, max_inflight_requests, 64, 1_000)
+                .expect("create test dispatcher"),
+        );
         (dispatcher, driver, root)
     }
 

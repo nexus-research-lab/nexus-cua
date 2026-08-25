@@ -5,11 +5,14 @@ use std::sync::Arc;
 
 use nexus_cua_protocol::{ErrorCode, RequestEnvelope, RequestId, ResponseEnvelope};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::dispatcher::{failure, public_error};
 use crate::frame::{read_frame, write_frame};
 use crate::{Dispatcher, ServerConfig, TransportError};
+
+const MAX_CONNECTIONS: usize = 64;
 
 #[cfg(unix)]
 struct UnixSocketGuard(std::path::PathBuf);
@@ -112,6 +115,7 @@ where
     let listener = tokio::net::UnixListener::bind(path)?;
     std::fs::set_permissions(path, Permissions::from_mode(0o600))?;
     let _guard = UnixSocketGuard(path.to_path_buf());
+    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     info!(endpoint = %config.endpoint, "local CUA service ready");
     tokio::pin!(shutdown);
     loop {
@@ -123,9 +127,14 @@ where
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
+                let Ok(permit) = Arc::clone(&connections).try_acquire_owned() else {
+                    warn!(max_connections = MAX_CONNECTIONS, "rejected excess local connection");
+                    continue;
+                };
                 let dispatcher = Arc::clone(&dispatcher);
                 let max_frame_bytes = config.max_frame_bytes;
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(error) = serve_connection(stream, dispatcher, max_frame_bytes).await {
                         debug!(reason = %error, "local CUA connection closed with error");
                     }
@@ -144,12 +153,12 @@ async fn serve_windows<F>(
 where
     F: Future<Output = ()> + Send,
 {
-    use tokio::net::windows::named_pipe::ServerOptions;
+    use crate::windows_security::PipeSecurity;
 
     let mut first = true;
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(first)
-        .create(config.endpoint.as_str())?;
+    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let mut security = PipeSecurity::owner_only()?;
+    let mut server = security.create_pipe(config.endpoint.as_str(), first, MAX_CONNECTIONS + 1)?;
     info!(endpoint = %config.endpoint, "local CUA service ready");
     tokio::pin!(shutdown);
     loop {
@@ -163,12 +172,28 @@ where
                 connected?;
                 let stream = server;
                 first = false;
-                server = ServerOptions::new()
-                    .first_pipe_instance(first)
-                    .create(config.endpoint.as_str())?;
+                let permit = match Arc::clone(&connections).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!(max_connections = MAX_CONNECTIONS, "rejected excess local connection");
+                        drop(stream);
+                        server = security.create_pipe(
+                            config.endpoint.as_str(),
+                            first,
+                            MAX_CONNECTIONS + 1,
+                        )?;
+                        continue;
+                    }
+                };
+                server = security.create_pipe(
+                    config.endpoint.as_str(),
+                    first,
+                    MAX_CONNECTIONS + 1,
+                )?;
                 let dispatcher = Arc::clone(&dispatcher);
                 let max_frame_bytes = config.max_frame_bytes;
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(error) = serve_connection(stream, dispatcher, max_frame_bytes).await {
                         debug!(reason = %error, "local CUA connection closed with error");
                     }

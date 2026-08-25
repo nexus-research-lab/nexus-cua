@@ -31,3 +31,9 @@ All notable changes to Nexus CUA will be documented in this file.
 - Structured request-wait and detached-execution latency events without command
   payloads or typed text.
 - Bounded request identities, active sessions, and application-allowlist memory.
+- Per-process artifact generations that are removed on graceful runtime
+  teardown without deleting their host-owned root.
+- Product integration contract for Nexus CLI/Skill consumption and independent
+  CUA/Browser enablement.
+- Bounded IPC connections and in-flight requests, plus an owner-and-SYSTEM-only
+  Windows named-pipe DACL.
