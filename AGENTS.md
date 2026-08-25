@@ -19,6 +19,11 @@ domain semantics out of this repository.
 - Platform drivers implement this repository's own contract. Do not copy an
   external Computer Use runtime or leak another project's schema into the
   public protocol.
+- Native objects remain on their owning platform actor. Do not replace the
+  required AX run loop, COM apartment, capture queue, or input serialization
+  with generic async worker scheduling.
+- Performance work is part of correctness. New unbounded queues, traversals,
+  frame retention, artifacts, retries, or provider calls are forbidden.
 
 ## Development
 

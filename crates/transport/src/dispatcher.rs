@@ -1,0 +1,522 @@
+//! Authenticated command dispatch with in-process idempotency.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use nexus_cua_protocol::{
+    AuthorizationToken, Command, CuaError, ErrorCode, PROTOCOL_VERSION, RequestEnvelope, RequestId,
+    ResponseEnvelope, ResponseOutcome,
+};
+use nexus_cua_runtime::Runtime;
+use sha2::{Digest, Sha256};
+use tokio::sync::{Mutex, watch};
+use tokio::time::Instant;
+use tracing::{debug, warn};
+use zeroize::Zeroizing;
+
+use crate::TransportError;
+use crate::auth::TokenVerifier;
+
+/// Authenticates, deduplicates, and executes protocol requests.
+pub struct Dispatcher {
+    runtime: Arc<Runtime>,
+    token: TokenVerifier,
+    ledger: Arc<Mutex<RequestLedger>>,
+    max_request_timeout_ms: u32,
+}
+
+impl Dispatcher {
+    /// Creates a dispatcher. Tokens shorter than 32 bytes are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an authority or resource bound is invalid.
+    pub fn new(
+        runtime: Arc<Runtime>,
+        token: &AuthorizationToken,
+        max_completed_requests: usize,
+        max_request_timeout_ms: u32,
+    ) -> Result<Self, TransportError> {
+        if max_completed_requests == 0 || max_request_timeout_ms == 0 {
+            return Err(TransportError::InvalidConfiguration(
+                "request ledger and timeout bounds must be non-zero".to_owned(),
+            ));
+        }
+        let token = TokenVerifier::new(token).ok_or_else(|| {
+            TransportError::InvalidConfiguration(
+                "authorization token must contain at least 32 bytes".to_owned(),
+            )
+        })?;
+        Ok(Self {
+            runtime,
+            token,
+            ledger: Arc::new(Mutex::new(RequestLedger {
+                entries: HashMap::new(),
+                max_completed_requests,
+                next_sequence: 0,
+            })),
+            max_request_timeout_ms,
+        })
+    }
+
+    /// Dispatches one decoded request without logging secret command content.
+    pub async fn dispatch(&self, request: RequestEnvelope) -> ResponseEnvelope {
+        let request_id = request.request_id.clone();
+        if request.protocol_version != PROTOCOL_VERSION {
+            return failure(
+                request_id,
+                public_error(
+                    ErrorCode::ProtocolMismatch,
+                    "unsupported protocol version",
+                    false,
+                    Some("negotiate_protocol_version"),
+                ),
+            );
+        }
+        if !self.token.accepts(&request.authorization) {
+            warn!(request_id = %request_id, "rejected unauthorized local request");
+            return failure(
+                request_id,
+                public_error(
+                    ErrorCode::Unauthorized,
+                    "invalid local transport authorization",
+                    false,
+                    None,
+                ),
+            );
+        }
+        if request.timeout_ms == 0 || request.timeout_ms > self.max_request_timeout_ms {
+            return failure(
+                request_id,
+                public_error(
+                    ErrorCode::InvalidRequest,
+                    "timeout_ms is outside the configured bound",
+                    false,
+                    Some("use_bounded_timeout"),
+                ),
+            );
+        }
+
+        let operation = operation_name(&request.command);
+        let Some(digest) = command_digest(&request.command) else {
+            return failure(
+                request_id,
+                public_error(
+                    ErrorCode::Internal,
+                    "failed to compute request identity",
+                    false,
+                    None,
+                ),
+            );
+        };
+        let deadline =
+            Instant::now() + std::time::Duration::from_millis(u64::from(request.timeout_ms));
+        match self.begin_request(&request_id, digest).await {
+            BeginRequest::Execute(receiver) => {
+                debug!(request_id = %request_id, operation, "dispatching local request");
+                self.spawn_execution(request_id.clone(), digest, request.command);
+                wait_for_response(receiver, deadline)
+                    .await
+                    .unwrap_or_else(|| deadline_exceeded(request_id))
+            }
+            BeginRequest::Replay(response) => {
+                debug!(request_id = %request_id, operation, "replayed idempotent response");
+                response
+            }
+            BeginRequest::Wait(receiver) => wait_for_response(receiver, deadline)
+                .await
+                .unwrap_or_else(|| deadline_exceeded(request_id)),
+            BeginRequest::Conflict => failure(
+                request_id,
+                public_error(
+                    ErrorCode::InvalidRequest,
+                    "request_id was already used for a different command",
+                    false,
+                    Some("use_fresh_request_id"),
+                ),
+            ),
+        }
+    }
+
+    async fn begin_request(&self, request_id: &RequestId, digest: [u8; 32]) -> BeginRequest {
+        let mut ledger = self.ledger.lock().await;
+        match ledger.entries.get(request_id) {
+            Some(RequestEntry::Pending {
+                digest: existing,
+                response,
+            }) if *existing == digest => BeginRequest::Wait(response.subscribe()),
+            Some(RequestEntry::Complete {
+                digest: existing,
+                response,
+                ..
+            }) if *existing == digest => BeginRequest::Replay(response.clone()),
+            Some(_) => BeginRequest::Conflict,
+            None => {
+                let (response, receiver) = watch::channel(None);
+                ledger.entries.insert(
+                    request_id.clone(),
+                    RequestEntry::Pending { digest, response },
+                );
+                BeginRequest::Execute(receiver)
+            }
+        }
+    }
+
+    fn spawn_execution(&self, request_id: RequestId, digest: [u8; 32], command: Command) {
+        let runtime = Arc::clone(&self.runtime);
+        let ledger = Arc::clone(&self.ledger);
+        tokio::spawn(async move {
+            let outcome = match runtime.execute(command).await {
+                Ok(result) => ResponseOutcome::Success { result },
+                Err(error) => ResponseOutcome::Error { error },
+            };
+            let response = ResponseEnvelope {
+                protocol_version: PROTOCOL_VERSION.to_owned(),
+                request_id: request_id.clone(),
+                outcome,
+            };
+            complete_request(&ledger, request_id, digest, response).await;
+        });
+    }
+}
+
+enum BeginRequest {
+    Execute(watch::Receiver<Option<ResponseEnvelope>>),
+    Replay(ResponseEnvelope),
+    Wait(watch::Receiver<Option<ResponseEnvelope>>),
+    Conflict,
+}
+
+struct RequestLedger {
+    entries: HashMap<RequestId, RequestEntry>,
+    max_completed_requests: usize,
+    next_sequence: u64,
+}
+
+impl RequestLedger {
+    fn evict_completed(&mut self) {
+        let completed = self
+            .entries
+            .values()
+            .filter(|entry| matches!(entry, RequestEntry::Complete { .. }))
+            .count();
+        if completed <= self.max_completed_requests {
+            return;
+        }
+        let oldest = self
+            .entries
+            .iter()
+            .filter_map(|(request_id, entry)| match entry {
+                RequestEntry::Complete { sequence, .. } => Some((request_id.clone(), *sequence)),
+                RequestEntry::Pending { .. } => None,
+            })
+            .min_by_key(|(_, sequence)| *sequence)
+            .map(|(request_id, _)| request_id);
+        if let Some(request_id) = oldest {
+            self.entries.remove(&request_id);
+        }
+    }
+}
+
+enum RequestEntry {
+    Pending {
+        digest: [u8; 32],
+        response: watch::Sender<Option<ResponseEnvelope>>,
+    },
+    Complete {
+        digest: [u8; 32],
+        response: ResponseEnvelope,
+        sequence: u64,
+    },
+}
+
+async fn complete_request(
+    ledger: &Mutex<RequestLedger>,
+    request_id: RequestId,
+    digest: [u8; 32],
+    response: ResponseEnvelope,
+) {
+    let mut ledger = ledger.lock().await;
+    if let Some(RequestEntry::Pending {
+        response: sender, ..
+    }) = ledger.entries.remove(&request_id)
+    {
+        sender.send_replace(Some(response.clone()));
+    }
+    ledger.next_sequence = ledger.next_sequence.wrapping_add(1);
+    let sequence = ledger.next_sequence;
+    ledger.entries.insert(
+        request_id,
+        RequestEntry::Complete {
+            digest,
+            response,
+            sequence,
+        },
+    );
+    ledger.evict_completed();
+}
+
+async fn wait_for_response(
+    mut receiver: watch::Receiver<Option<ResponseEnvelope>>,
+    deadline: Instant,
+) -> Option<ResponseEnvelope> {
+    if let Some(response) = receiver.borrow().clone() {
+        return Some(response);
+    }
+    match tokio::time::timeout_at(deadline, receiver.changed()).await {
+        Ok(Ok(())) => receiver.borrow().clone(),
+        Ok(Err(_)) | Err(_) => None,
+    }
+}
+
+fn deadline_exceeded(request_id: RequestId) -> ResponseEnvelope {
+    failure(
+        request_id,
+        public_error(
+            ErrorCode::DeadlineExceeded,
+            "request deadline elapsed; retry with the same request_id to reconcile",
+            true,
+            Some("retry_same_request_id"),
+        ),
+    )
+}
+
+fn command_digest(command: &Command) -> Option<[u8; 32]> {
+    let bytes = Zeroizing::new(serde_json::to_vec(command).ok()?);
+    let mut digest = Sha256::new();
+    digest.update(bytes.as_slice());
+    Some(digest.finalize().into())
+}
+
+fn operation_name(command: &Command) -> &'static str {
+    match command {
+        Command::GetCapabilities => "get_capabilities",
+        Command::GetPermissionStatus => "get_permission_status",
+        Command::OpenSession(_) => "open_session",
+        Command::CloseSession(_) => "close_session",
+        Command::ListApps(_) => "list_apps",
+        Command::ListWindows(_) => "list_windows",
+        Command::ObserveWindow(_) => "observe_window",
+        Command::PerformAction(_) => "perform_action",
+        Command::VerifyState(_) => "verify_state",
+    }
+}
+
+pub(crate) fn public_error(
+    code: ErrorCode,
+    message: &str,
+    retryable: bool,
+    recovery_action: Option<&str>,
+) -> CuaError {
+    CuaError {
+        code,
+        message: message.to_owned(),
+        retryable,
+        recovery_action: recovery_action.map(str::to_owned),
+    }
+}
+
+pub(crate) fn failure(request_id: RequestId, error: CuaError) -> ResponseEnvelope {
+    ResponseEnvelope {
+        protocol_version: PROTOCOL_VERSION.to_owned(),
+        request_id,
+        outcome: ResponseOutcome::Error { error },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use nexus_cua_protocol::{
+        AccessibilityMode, CaptureMode, DriverCapabilities, InputRoute, PermissionState,
+        PermissionStatus, Platform, StatePredicate,
+    };
+    use nexus_cua_runtime::{
+        DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
+        DriverErrorKind, DriverObservation, DriverVerification, DriverWindow, RuntimeConfig,
+    };
+
+    use super::*;
+
+    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
+
+    struct CountingDriver {
+        calls: AtomicUsize,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl DesktopDriver for CountingDriver {
+        async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            Ok(DriverCapabilities {
+                protocol_version: PROTOCOL_VERSION.to_owned(),
+                runtime_version: "test".to_owned(),
+                platform: Platform::Unsupported,
+                capture_modes: vec![CaptureMode::Window],
+                accessibility_tree: false,
+                input_routes: vec![InputRoute::Foreground],
+                actions: Vec::new(),
+            })
+        }
+
+        async fn permission_status(&self) -> Result<PermissionStatus, DriverError> {
+            Ok(PermissionStatus {
+                screen_capture: PermissionState::Unknown,
+                accessibility: PermissionState::Unknown,
+                input_control: PermissionState::Unknown,
+            })
+        }
+
+        async fn list_applications(&self) -> Result<Vec<DriverApplication>, DriverError> {
+            Ok(Vec::new())
+        }
+
+        async fn list_windows(
+            &self,
+            _application_key: Option<&str>,
+        ) -> Result<Vec<DriverWindow>, DriverError> {
+            Ok(Vec::new())
+        }
+
+        async fn observe_window(
+            &self,
+            _window: &DriverWindow,
+            _include_screenshot: bool,
+            _accessibility: AccessibilityMode,
+        ) -> Result<DriverObservation, DriverError> {
+            Err(unexpected_call())
+        }
+
+        async fn observation_is_current(
+            &self,
+            _window: &DriverWindow,
+            _fingerprint: &str,
+        ) -> Result<bool, DriverError> {
+            Err(unexpected_call())
+        }
+
+        async fn perform_action(
+            &self,
+            _window: &DriverWindow,
+            _action: DriverAction,
+            _allow_foreground: bool,
+        ) -> Result<DriverActionOutput, DriverError> {
+            Err(unexpected_call())
+        }
+
+        async fn verify_state(
+            &self,
+            _window: &DriverWindow,
+            _predicate: &StatePredicate,
+        ) -> Result<DriverVerification, DriverError> {
+            Err(unexpected_call())
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_identical_requests_execute_once() {
+        let (dispatcher, driver, root) = dispatcher(Duration::from_millis(30));
+        let request = request("request-concurrent", 500, Command::GetCapabilities);
+        let (first, second) = tokio::join!(
+            dispatcher.dispatch(request.clone()),
+            dispatcher.dispatch(request)
+        );
+
+        assert!(matches!(first.outcome, ResponseOutcome::Success { .. }));
+        assert!(matches!(second.outcome, ResponseOutcome::Success { .. }));
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn timed_out_request_can_reconcile_with_a_longer_wait() {
+        let (dispatcher, driver, root) = dispatcher(Duration::from_millis(40));
+        let first = dispatcher
+            .dispatch(request("request-timeout", 5, Command::GetCapabilities))
+            .await;
+        assert_error_code(&first, ErrorCode::DeadlineExceeded);
+
+        let reconciled = dispatcher
+            .dispatch(request("request-timeout", 500, Command::GetCapabilities))
+            .await;
+        assert!(matches!(
+            reconciled.outcome,
+            ResponseOutcome::Success { .. }
+        ));
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn reused_request_id_with_different_command_fails_closed() {
+        let (dispatcher, driver, root) = dispatcher(Duration::from_millis(40));
+        let first = dispatcher
+            .dispatch(request("request-conflict", 5, Command::GetCapabilities))
+            .await;
+        let conflict = dispatcher
+            .dispatch(request(
+                "request-conflict",
+                500,
+                Command::GetPermissionStatus,
+            ))
+            .await;
+
+        assert_error_code(&first, ErrorCode::DeadlineExceeded);
+        assert_error_code(&conflict, ErrorCode::InvalidRequest);
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
+        cleanup(root);
+    }
+
+    fn dispatcher(delay: Duration) -> (Arc<Dispatcher>, Arc<CountingDriver>, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "nexus-cua-transport-{}-{}",
+            std::process::id(),
+            NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let driver = Arc::new(CountingDriver {
+            calls: AtomicUsize::new(0),
+            delay,
+        });
+        let runtime = Arc::new(
+            Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("create test runtime"),
+        );
+        let token = AuthorizationToken::new("0123456789abcdef0123456789abcdef");
+        let dispatcher =
+            Arc::new(Dispatcher::new(runtime, &token, 64, 1_000).expect("create test dispatcher"));
+        (dispatcher, driver, root)
+    }
+
+    fn request(request_id: &str, timeout_ms: u32, command: Command) -> RequestEnvelope {
+        RequestEnvelope {
+            protocol_version: PROTOCOL_VERSION.to_owned(),
+            request_id: RequestId::new(request_id),
+            timeout_ms,
+            authorization: AuthorizationToken::new("0123456789abcdef0123456789abcdef"),
+            command,
+        }
+    }
+
+    fn assert_error_code(response: &ResponseEnvelope, expected: ErrorCode) {
+        let ResponseOutcome::Error { error } = &response.outcome else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, expected);
+    }
+
+    fn unexpected_call() -> DriverError {
+        DriverError::new(
+            DriverErrorKind::Platform,
+            "unexpected test driver operation",
+        )
+    }
+
+    fn cleanup(root: PathBuf) {
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

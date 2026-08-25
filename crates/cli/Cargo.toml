@@ -1,0 +1,24 @@
+[package]
+name = "nexus-cua"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Nexus CUA local service and diagnostics CLI"
+
+[dependencies]
+clap.workspace = true
+nexus-cua-platform = { path = "../platform" }
+nexus-cua-protocol = { path = "../protocol" }
+nexus-cua-runtime = { path = "../runtime" }
+nexus-cua-transport = { path = "../transport" }
+schemars.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

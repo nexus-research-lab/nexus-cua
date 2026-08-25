@@ -2,5 +2,6 @@
 /bin/
 /coverage.out
 /dist/
+/target/
 *.log
 .DS_Store

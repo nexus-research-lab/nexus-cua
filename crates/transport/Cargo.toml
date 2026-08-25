@@ -1,0 +1,25 @@
+[package]
+name = "nexus-cua-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated local IPC transport for Nexus CUA"
+
+[dependencies]
+nexus-cua-protocol = { path = "../protocol" }
+nexus-cua-runtime = { path = "../runtime" }
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+
+[lints]
+workspace = true

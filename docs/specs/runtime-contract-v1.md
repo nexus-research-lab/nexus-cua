@@ -1,0 +1,172 @@
+# Nexus CUA Runtime Contract v1
+
+Status: normative for the `0.1.x` development line.
+
+This document defines the product scope, native execution model, overload
+behavior, and performance targets for the first releasable runtime. Protocol
+wire shapes remain normative in `protocol-v1.md`.
+
+## Product scope
+
+Nexus CUA is a model-neutral native desktop execution engine. It provides:
+
+- running application and top-level window discovery;
+- exact-window screenshots suitable for an external vision model;
+- bounded accessibility snapshots with element roles, names, values, states,
+  actions, hierarchy, and geometry;
+- semantic invoke/value/focus/select/toggle/expand/scroll operations when the
+  platform exposes the matching public pattern;
+- foreground focus, pointer, keyboard, text, wheel, and drag operations;
+- fresh-observation guards and deterministic post-action verification;
+- private authenticated local IPC, an embeddable Rust API, and diagnostics CLI.
+
+It does not contain model inference, OCR, a planning loop, browser DOM/CDP,
+product approval UI, or unrestricted background input. Nexus supplies its own
+vision model and exposes CUA to agents through a round-scoped CLI/Skill.
+
+## Capability truth
+
+Capabilities describe the active driver, not an aspirational union. A driver
+must omit an action when it cannot implement its semantics using the selected
+public OS route. It must never silently turn a semantic background action into
+a foreground click or activate a window without foreground authority.
+
+Driver routes are explicit:
+
+| Platform | Primary capture | Semantic route | Foreground route |
+| --- | --- | --- | --- |
+| macOS | ScreenCaptureKit | AXUIElement actions/attributes | CGEvent |
+| Windows | Windows.Graphics.Capture | UI Automation patterns | SendInput |
+
+Compatibility capture drivers, if shipped, have distinct capability and
+diagnostic identities. Private APIs and executable third-party drivers are not
+permitted.
+
+## Native actor model
+
+Each process owns one bounded platform command bus and three long-lived roles:
+
+- Capture actor: owns native frame pools, capture sessions, GPU resources, and
+  a small target-keyed LRU.
+- Semantic actor: owns AX observers/run-loop state on macOS or UI Automation
+  COM MTA state on Windows. Native element objects never leave this actor.
+- Input actor: serializes side effects and is the final foreground-authority
+  enforcement point.
+
+The capture and semantic branches may run concurrently. Input actions for one
+session remain ordered. Queue admission is bounded; overload returns a stable,
+retryable busy error before executing a side effect.
+
+## Target identity and observation coherence
+
+A private target identity includes the process lifetime, native window
+identity, and a driver generation. It is not just a PID, HWND, or window title.
+
+Observation uses a two-phase coherence check:
+
+1. Read target generation and geometry.
+2. Capture requested pixels and semantic state in parallel.
+3. Read generation and geometry again.
+4. If they differ, discard both results and retry once within the request
+   deadline; otherwise return `stale_observation`.
+
+Animation or a blinking cursor alone does not invalidate authority. Window
+replacement, process restart, geometry/DPI change, semantic target-path change,
+explicit OS invalidation, TTL expiry, or any successful mutation does.
+
+## Coordinates
+
+There are exactly two public coordinate spaces:
+
+- `screen_points`: logical top-left screen coordinates used by window and
+  accessibility bounds. Values may be fractional and may be negative on a
+  multi-display desktop.
+- `screenshot_pixels`: unsigned integer coordinates in the exact image
+  artifact returned by the guarded observation.
+
+Every screenshot observation publishes its pixel size and a checked affine
+mapping from screenshot pixels to screen points. Pixel actions accept only
+`screenshot_pixels` from that exact observation. The runtime validates image
+bounds before the driver converts them to the OS input coordinate system.
+
+## Semantic snapshots
+
+The default view is `interactive`: actionable, focusable, editable, selected,
+or scrollable elements plus the minimum ancestor chain needed to preserve
+hierarchy. `full` is an explicit diagnostic option and remains bounded.
+
+Traversal must:
+
+- batch properties/patterns through `AXUIElementCopyMultipleAttributeValues`
+  or a UI Automation cache request;
+- be iterative rather than recursively consuming the process stack;
+- enforce node, depth, string-byte, provider-call, and wall-time limits;
+- report `complete=false` and a stable truncation reason when bounded;
+- produce observation-scoped element references, never public native handles.
+
+OS notifications invalidate cached snapshots. They are hints for freshness,
+not authorization by themselves.
+
+## Capture lifecycle
+
+The first isolated screenshot may use the platform one-shot route. Repeated
+observations acquire a short capture lease and reuse the native pipeline. The
+pool retains only the newest unconsumed frame, has an LRU target cap, and drops
+idle pipelines without polling.
+
+Raw GPU/IOSurface/D3D buffers stay inside the capture actor. RGBA normalization,
+PNG encoding, and SHA-256 hashing run on bounded compute workers. Artifacts use
+runtime-chosen private paths and expire with the session.
+
+## Deadlines, cancellation, and idempotency
+
+Every request has a bounded execution deadline. Cancellation is guaranteed only
+before the input actor begins a side effect. Once dispatch starts, the runtime
+records and returns its result rather than claiming cancellation.
+
+`request_id` is an in-process idempotency key. Concurrent identical retries
+join the first execution; completed retries replay the exact response. Reusing
+the identity for a different command fails closed. After process restart all
+old sessions are invalid, so a retried mutation cannot regain authority.
+
+## Performance budgets
+
+Budgets are measured on a release build after one warm-up, on a current
+supported OS and ordinary desktop hardware. They are engineering gates, not API
+promises for a hung third-party application.
+
+| Operation | Warm p95 target | Hard behavior |
+| --- | ---: | --- |
+| IPC dispatch overhead | <= 3 ms | frame rejected above configured bound |
+| Application/window discovery | <= 50 ms | cached generation plus OS invalidation |
+| 1920x1080 window capture | <= 100 ms | newest-frame policy, one in flight/target |
+| Interactive semantic snapshot (<=1000 nodes) | <= 120 ms | partial at 250 ms provider budget |
+| Combined pixel + semantic observation | <= 180 ms | parallel branches, one coherence retry |
+| Semantic action preflight + dispatch | <= 50 ms | serialized input actor |
+| Foreground action preflight + dispatch | <= 60 ms | serialized input actor |
+
+Additional budgets:
+
+- idle CPU below 0.5% over five minutes with no active request;
+- no unbounded queue, tree, frame pool, artifact set, log field, or retry loop;
+- at most four warm target capture pipelines by default;
+- at most two retained frames per pipeline;
+- a 4K capture pipeline target below 128 MiB of resident GPU/CPU buffers;
+- eight-hour release soak without monotonic handle, COM, IOSurface, GPU, file,
+  or resident-memory growth.
+
+CI records benchmark distributions and fails on material regression against a
+pinned baseline. Hardware-sensitive absolute p95 gates run on maintained macOS
+and Windows release workers, not shared public runners.
+
+## Nexus enablement boundary
+
+Nexus decides whether CUA is enabled. Disabled means no model-facing CUA
+capability and no host-issued session authority. Browser enablement is
+independent:
+
+- CUA on, Browser off: native desktop control works, including visible browser
+  chrome as an ordinary app, but DOM/CDP/browser history/network tools do not.
+- CUA off, Browser on: existing browser control remains unchanged.
+- both on: the Skill routes web semantics to Browser and native application
+  semantics to CUA; enabling one never silently grants the other.

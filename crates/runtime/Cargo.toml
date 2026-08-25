@@ -1,0 +1,24 @@
+[package]
+name = "nexus-cua-runtime"
+description = "Capability-bounded session runtime for Nexus CUA"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+hex.workspace = true
+nexus-cua-protocol = { path = "../protocol" }
+png.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

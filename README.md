@@ -38,8 +38,12 @@ state management, protocol design, and release artifacts are owned here.
 
 ## Status
 
-Early development. The public protocol is not stable until the first tagged
-`v0.1.0` release.
+The protocol/runtime/IPC foundation is under active `v0.1.0` development. The
+native release path is ScreenCaptureKit + AXUIElement + CGEvent on macOS and
+Windows.Graphics.Capture + UI Automation + SendInput on Windows. See
+[`docs/specs/runtime-contract-v1.md`](docs/specs/runtime-contract-v1.md) for the
+scope and measurable performance gates. The public protocol is not stable until
+the first tagged release.
 
 ## License
 
