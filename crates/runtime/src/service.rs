@@ -12,7 +12,7 @@ use nexus_cua_protocol::{
     VerificationOutput, VerifyStateInput, WindowObservation, WindowRef, WindowSummary,
 };
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -38,6 +38,10 @@ pub struct RuntimeConfig {
     pub max_elements_per_observation: usize,
     /// Maximum decoded screenshot pixels.
     pub max_image_pixels: u64,
+    /// Maximum screenshot files retained for one live session.
+    pub max_artifacts_per_session: usize,
+    /// Maximum concurrent PNG encoding and persistence workers.
+    pub max_artifact_workers: usize,
 }
 
 impl RuntimeConfig {
@@ -50,6 +54,8 @@ impl RuntimeConfig {
             max_observations_per_session: 32,
             max_elements_per_observation: 2_000,
             max_image_pixels: 100_000_000,
+            max_artifacts_per_session: 32,
+            max_artifact_workers: 2,
         }
     }
 }
@@ -57,7 +63,8 @@ impl RuntimeConfig {
 /// Capability-bounded runtime above one replaceable platform driver.
 pub struct Runtime {
     driver: Arc<dyn DesktopDriver>,
-    artifacts: ArtifactStore,
+    artifacts: Arc<ArtifactStore>,
+    artifact_workers: Arc<Semaphore>,
     config: RuntimeConfig,
     sessions: RwLock<HashMap<SessionId, Arc<Session>>>,
 }
@@ -70,10 +77,24 @@ impl Runtime {
     /// Returns an error when the private artifact root cannot be created or
     /// does not satisfy the runtime's filesystem safety requirements.
     pub fn new(driver: Arc<dyn DesktopDriver>, config: RuntimeConfig) -> Result<Self, CuaError> {
-        let artifacts = ArtifactStore::new(&config.artifact_root, config.max_image_pixels)?;
+        if config.max_artifacts_per_session == 0 || config.max_artifact_workers == 0 {
+            return Err(public_error(
+                ErrorCode::InvalidRequest,
+                "artifact retention and worker bounds must be non-zero",
+                false,
+                None,
+            ));
+        }
+        let artifacts = Arc::new(ArtifactStore::new(
+            &config.artifact_root,
+            config.max_image_pixels,
+            config.max_artifacts_per_session,
+        )?);
+        let artifact_workers = Arc::new(Semaphore::new(config.max_artifact_workers));
         Ok(Self {
             driver,
             artifacts,
+            artifact_workers,
             config,
             sessions: RwLock::new(HashMap::new()),
         })
@@ -249,11 +270,10 @@ impl Runtime {
             observation.screenshot.take(),
             observation.screenshot_screen_bounds,
         ) {
-            (Some(image), Some(screen_bounds)) => Some(self.artifacts.write_image(
-                &session.id,
-                &image,
-                screen_bounds,
-            )?),
+            (Some(image), Some(screen_bounds)) => Some(
+                self.write_screenshot(session.id.clone(), image, screen_bounds)
+                    .await?,
+            ),
             (None, None) => None,
             _ => {
                 return Err(public_error(
@@ -329,6 +349,39 @@ impl Runtime {
                 .map_err(Into::into);
         }
         first.map_err(Into::into)
+    }
+
+    async fn write_screenshot(
+        &self,
+        session_id: SessionId,
+        image: crate::RgbaImage,
+        screen_bounds: nexus_cua_protocol::ScreenRect,
+    ) -> Result<nexus_cua_protocol::ScreenshotArtifact, CuaError> {
+        let permit = Arc::clone(&self.artifact_workers)
+            .acquire_owned()
+            .await
+            .map_err(|_| {
+                public_error(
+                    ErrorCode::Internal,
+                    "artifact worker pool is unavailable",
+                    true,
+                    Some("restart_runtime"),
+                )
+            })?;
+        let artifacts = Arc::clone(&self.artifacts);
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            artifacts.write_image(&session_id, &image, screen_bounds)
+        })
+        .await
+        .map_err(|_| {
+            public_error(
+                ErrorCode::Internal,
+                "artifact worker stopped unexpectedly",
+                true,
+                Some("restart_runtime"),
+            )
+        })?
     }
 
     async fn perform_action(

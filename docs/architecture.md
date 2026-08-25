@@ -24,14 +24,15 @@ arbitrary async worker pool. Each driver owns long-lived operating-system
 actors with the thread and run-loop model required by that platform.
 
 ```text
-                         +-> capture actor ----> frame pool / capture session
+                         +-> capture actor ----> one-shot / warm capture session
 runtime -> platform bus -+-> semantic actor ---> AX / UI Automation cache
                          +-> input actor ------> serialized foreground input
 ```
 
-The platform bus is bounded. Deadlines, cancellation before side-effect
-dispatch, and backpressure are part of the contract rather than accidental
-properties of the Tokio scheduler.
+The platform bus is bounded. Backpressure and idempotent caller deadlines are
+part of the contract rather than accidental properties of the Tokio scheduler.
+Once admitted, a command runs to a recorded result even if its caller stops
+waiting; retries reconcile through the same request identity.
 
 ## Trust boundaries
 
@@ -74,18 +75,20 @@ scales themselves.
 
 ## Performance architecture
 
-- Capture pipelines are pooled per window with a short idle lease and an LRU
-  cap. Rapid observe/action loops reuse GPU/native capture resources.
-- macOS accessibility attributes are fetched in batches and invalidated by
-  AX notifications. Windows uses UI Automation cache requests rather than one
-  cross-process call per property.
+- Windows capture pipelines are pooled per window with a short idle lease and
+  an LRU cap. macOS currently uses the public one-shot screenshot route; a warm
+  stream pool must meet the same coherence and memory gates before replacing
+  it.
+- macOS accessibility attributes are fetched in batches and elements are
+  revalidated immediately before action. Windows uses UI Automation cache
+  requests rather than one cross-process call per property.
 - Semantic traversal is iterative and bounded by nodes, depth, bytes, and wall
   time. A timed-out provider yields an explicit partial tree, never an
   unbounded hung request.
 - Screenshot encoding and hashing happen off the native capture actor. Only
   the newest unconsumed frame is retained per target.
-- The service performs no idle polling. OS notifications invalidate caches;
-  observation requests pull fresh state.
+- The service performs no active idle polling. Deadline-driven lease cleanup is
+  allowed; observation requests still pull fresh state.
 
 Normative budgets and overload behavior are defined in
 `docs/specs/runtime-contract-v1.md`.

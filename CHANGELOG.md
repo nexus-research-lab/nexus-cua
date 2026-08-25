@@ -17,4 +17,8 @@ All notable changes to Nexus CUA will be documented in this file.
   visual stale-state guards, and private transient PNG artifacts.
 - Concurrent request joining and post-timeout reconciliation under stable
   idempotency keys.
+- A single automatic observation-coherence retry, bounded PNG worker pool, and
+  per-session screenshot retention limit.
 - Minimum-Rust macOS and Windows CI gates.
+- Attested universal macOS and Windows x64 GitHub release packages with SHA-256
+  checksums.

@@ -46,10 +46,10 @@ permitted.
 
 Each process owns one bounded platform command bus and three long-lived roles:
 
-- Capture actor: owns native frame pools, capture sessions, GPU resources, and
-  a small target-keyed LRU.
-- Semantic actor: owns AX observers/run-loop state on macOS or UI Automation
-  COM MTA state on Windows. Native element objects never leave this actor.
+- Capture actor: owns one-shot capture state on macOS and target-keyed frame
+  pools, capture sessions, and GPU resources on Windows.
+- Semantic actor: owns `AXUIElement` state on macOS or UI Automation COM MTA
+  state on Windows. Native element objects never leave this actor.
 - Input actor: serializes side effects and is the final foreground-authority
   enforcement point.
 
@@ -67,8 +67,8 @@ Observation uses a two-phase coherence check:
 1. Read target generation and geometry.
 2. Capture requested pixels and semantic state in parallel.
 3. Read generation and geometry again.
-4. If they differ, discard both results and retry once within the request
-   deadline; otherwise return `stale_observation`.
+4. If they differ, discard both results and retry exactly once; otherwise
+   return `stale_observation`.
 
 Animation or a blinking cursor alone does not invalidate authority. Window
 replacement, process restart, geometry/DPI change, semantic target-path change,
@@ -104,15 +104,18 @@ Traversal must:
 - report `complete=false` and a stable truncation reason when bounded;
 - produce observation-scoped element references, never public native handles.
 
-OS notifications invalidate cached snapshots. They are hints for freshness,
-not authorization by themselves.
+The current implementation pulls fresh semantic state and performs an exact
+element signature preflight before each action. Future notification caches may
+reduce provider work, but notifications can only be freshness hints and can
+never become authorization by themselves.
 
 ## Capture lifecycle
 
-The first isolated screenshot may use the platform one-shot route. Repeated
-observations acquire a short capture lease and reuse the native pipeline. The
-pool retains only the newest unconsumed frame, has an LRU target cap, and drops
-idle pipelines without polling.
+Windows observations acquire a short capture lease and reuse a native pipeline.
+The pool retains only the newest unconsumed frame, has an LRU target cap, and
+drops idle pipelines through deadline-driven cleanup. macOS `0.1.x` uses the
+public `SCScreenshotManager` one-shot route until a stream pool satisfies the
+same geometry, memory, shutdown, and permission behavior.
 
 Raw GPU/IOSurface/D3D buffers stay inside the capture actor. RGBA normalization,
 PNG encoding, and SHA-256 hashing run on bounded compute workers. Artifacts use
@@ -120,9 +123,11 @@ runtime-chosen private paths and expire with the session.
 
 ## Deadlines, cancellation, and idempotency
 
-Every request has a bounded execution deadline. Cancellation is guaranteed only
-before the input actor begins a side effect. Once dispatch starts, the runtime
-records and returns its result rather than claiming cancellation.
+Every request has a bounded caller wait deadline. Admission creates the
+idempotency record and detached execution: after that point the runtime records
+the result rather than claiming cancellation. A caller that times out retries
+the same `request_id`, optionally with a longer wait, to reconcile. Bounded
+native queues return `busy` before their actor executes the command.
 
 `request_id` is an in-process idempotency key. Concurrent identical retries
 join the first execution; completed retries replay the exact response. Reusing
@@ -138,7 +143,7 @@ promises for a hung third-party application.
 | Operation | Warm p95 target | Hard behavior |
 | --- | ---: | --- |
 | IPC dispatch overhead | <= 3 ms | frame rejected above configured bound |
-| Application/window discovery | <= 50 ms | cached generation plus OS invalidation |
+| Application/window discovery | <= 50 ms | fresh bounded OS enumeration |
 | 1920x1080 window capture | <= 100 ms | newest-frame policy, one in flight/target |
 | Interactive semantic snapshot (<=1000 nodes) | <= 120 ms | partial at 250 ms provider budget |
 | Combined pixel + semantic observation | <= 180 ms | parallel branches, one coherence retry |
@@ -149,15 +154,24 @@ Additional budgets:
 
 - idle CPU below 0.5% over five minutes with no active request;
 - no unbounded queue, tree, frame pool, artifact set, log field, or retry loop;
-- at most four warm target capture pipelines by default;
+- at most four warm Windows target capture pipelines by default;
 - at most two retained frames per pipeline;
 - a 4K capture pipeline target below 128 MiB of resident GPU/CPU buffers;
 - eight-hour release soak without monotonic handle, COM, IOSurface, GPU, file,
   or resident-memory growth.
 
-CI records benchmark distributions and fails on material regression against a
-pinned baseline. Hardware-sensitive absolute p95 gates run on maintained macOS
-and Windows release workers, not shared public runners.
+Shared CI enforces formatting, strict lint, protocol/runtime contracts, and
+native compilation on macOS and Windows. Before a release tag, maintained
+hardware workers must also record benchmark distributions, compare them with a
+pinned baseline, and pass the absolute p95 and soak gates above.
+
+## Development completeness
+
+The `0.1.x` line is not release-complete until hardware capture/action fixtures,
+the eight-hour resource soak, benchmark baselines, and signed package smoke
+tests pass on both operating systems. A warm macOS stream pool and AX
+notification cache are performance optimizations, not protocol blockers; the
+one-shot/fresh-read routes remain the correctness baseline.
 
 ## Nexus enablement boundary
 

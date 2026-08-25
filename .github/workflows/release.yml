@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: Package macOS universal
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install minimum supported Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup target add --toolchain 1.88.0 aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build both macOS architectures
+        run: |
+          cargo +1.88.0 build --locked --release --package nexus-cua --target aarch64-apple-darwin
+          cargo +1.88.0 build --locked --release --package nexus-cua --target x86_64-apple-darwin
+      - name: Assemble package
+        run: |
+          mkdir -p dist/package
+          lipo -create \
+            target/aarch64-apple-darwin/release/nexus-cua \
+            target/x86_64-apple-darwin/release/nexus-cua \
+            -output dist/package/nexus-cua
+          cp README.md LICENSE dist/package/
+          tar -czf "dist/nexus-cua-${GITHUB_REF_NAME}-macos-universal.tar.gz" -C dist/package .
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-package
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Package Windows x64
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install minimum supported Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build Windows package
+        run: cargo +1.88.0 build --locked --release --package nexus-cua
+      - name: Assemble package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/package | Out-Null
+          Copy-Item target/release/nexus-cua.exe, README.md, LICENSE dist/package/
+          Compress-Archive -Path dist/package/* -DestinationPath "dist/nexus-cua-$env:GITHUB_REF_NAME-windows-x86_64.zip"
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [macos, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Validate tag and checksums
+        run: |
+          VERSION="$(jq -r '.workspace_root as $root | .packages[] | select(.manifest_path == ($root + "/crates/cli/Cargo.toml")) | .version' <<<"$(cargo metadata --locked --no-deps --format-version 1)")"
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          cd dist
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+      - name: Publish immutable assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

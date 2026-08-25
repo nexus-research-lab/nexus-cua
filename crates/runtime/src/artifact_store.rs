@@ -1,8 +1,10 @@
 //! Runtime-owned transient screenshot storage.
 
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -19,10 +21,16 @@ use nexus_cua_protocol::{CuaError, ErrorCode};
 pub(crate) struct ArtifactStore {
     root: PathBuf,
     max_image_pixels: u64,
+    max_artifacts_per_session: usize,
+    artifacts: Mutex<HashMap<SessionId, VecDeque<PathBuf>>>,
 }
 
 impl ArtifactStore {
-    pub(crate) fn new(root: impl AsRef<Path>, max_image_pixels: u64) -> Result<Self, CuaError> {
+    pub(crate) fn new(
+        root: impl AsRef<Path>,
+        max_image_pixels: u64,
+        max_artifacts_per_session: usize,
+    ) -> Result<Self, CuaError> {
         let requested = root.as_ref();
         fs::create_dir_all(requested).map_err(io_error)?;
         let metadata = fs::symlink_metadata(requested).map_err(io_error)?;
@@ -40,6 +48,8 @@ impl ArtifactStore {
         Ok(Self {
             root,
             max_image_pixels,
+            max_artifacts_per_session,
+            artifacts: Mutex::new(HashMap::new()),
         })
     }
 
@@ -97,6 +107,7 @@ impl ArtifactStore {
         file.sync_all().map_err(io_error)?;
 
         let sha256 = hex::encode(Sha256::digest(&png_bytes));
+        self.register_artifact(session_id, path.clone())?;
         Ok(ScreenshotArtifact {
             artifact_ref,
             path: path.to_string_lossy().into_owned(),
@@ -114,10 +125,35 @@ impl ArtifactStore {
     }
 
     pub(crate) fn remove_session(&self, session_id: &SessionId) {
+        if let Ok(mut artifacts) = self.artifacts.lock() {
+            artifacts.remove(session_id);
+        }
         let path = self.root.join(session_id.as_str());
         if path.parent() == Some(self.root.as_path()) {
             let _ = fs::remove_dir_all(path);
         }
+    }
+
+    fn register_artifact(&self, session_id: &SessionId, path: PathBuf) -> Result<(), CuaError> {
+        let evicted = {
+            let mut artifacts = self.artifacts.lock().map_err(|_| {
+                public_error(
+                    ErrorCode::Internal,
+                    "artifact index is unavailable",
+                    true,
+                    Some("restart_runtime"),
+                )
+            })?;
+            let session = artifacts.entry(session_id.clone()).or_default();
+            session.push_back(path);
+            (session.len() > self.max_artifacts_per_session)
+                .then(|| session.pop_front())
+                .flatten()
+        };
+        if let Some(path) = evicted {
+            fs::remove_file(path).map_err(io_error)?;
+        }
+        Ok(())
     }
 }
 

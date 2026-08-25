@@ -420,3 +420,43 @@ async fn observation_retries_one_coherence_race() {
     assert_eq!(driver.observation_calls.load(Ordering::SeqCst), 2);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn screenshot_retention_is_bounded_per_session() {
+    let root = artifact_root();
+    let mut config = RuntimeConfig::new(&root);
+    config.max_artifacts_per_session = 2;
+    let runtime = Runtime::new(Arc::new(MockDriver::new()), config).expect("create runtime");
+    let session_id = open_session(&runtime, PermissionMode::ReadOnly).await;
+    let windows = runtime
+        .execute(Command::ListWindows(ListWindowsInput {
+            session_id: session_id.clone(),
+            app_ref: None,
+        }))
+        .await
+        .expect("list windows");
+    let window_ref = match windows {
+        CommandResult::Windows(windows) => windows[0].window_ref.clone(),
+        _ => panic!("unexpected windows result"),
+    };
+
+    for _ in 0..3 {
+        runtime
+            .execute(Command::ObserveWindow(ObserveWindowInput {
+                session_id: session_id.clone(),
+                window_ref: window_ref.clone(),
+                include_screenshot: true,
+                accessibility: AccessibilityMode::Disabled,
+            }))
+            .await
+            .expect("observe window");
+    }
+
+    let artifact_count = std::fs::read_dir(root.join(session_id.as_str()))
+        .expect("read session artifacts")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|value| value == "png"))
+        .count();
+    assert_eq!(artifact_count, 2);
+    let _ = std::fs::remove_dir_all(root);
+}
