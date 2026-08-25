@@ -27,6 +27,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 async-trait.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

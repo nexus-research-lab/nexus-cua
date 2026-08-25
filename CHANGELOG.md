@@ -37,3 +37,4 @@ All notable changes to Nexus CUA will be documented in this file.
   CUA/Browser enablement.
 - Bounded IPC connections and in-flight requests, plus an owner-and-SYSTEM-only
   Windows named-pipe DACL.
+- Native Unix-socket and Windows named-pipe end-to-end CI smoke coverage.

@@ -24,6 +24,10 @@ pub(crate) struct PipeSecurity {
     attributes: SECURITY_ATTRIBUTES,
 }
 
+// SAFETY: The descriptor is self-relative LocalAlloc memory, all access is
+// serialized through `&mut self`, and CreateNamedPipeW copies its contents.
+unsafe impl Send for PipeSecurity {}
+
 impl PipeSecurity {
     pub(crate) fn owner_only() -> Result<Self, TransportError> {
         let wide: Vec<u16> = PIPE_SDDL.encode_utf16().chain(std::iter::once(0)).collect();

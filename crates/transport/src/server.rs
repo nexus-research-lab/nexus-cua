@@ -172,18 +172,15 @@ where
                 connected?;
                 let stream = server;
                 first = false;
-                let permit = match Arc::clone(&connections).try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        warn!(max_connections = MAX_CONNECTIONS, "rejected excess local connection");
-                        drop(stream);
-                        server = security.create_pipe(
-                            config.endpoint.as_str(),
-                            first,
-                            MAX_CONNECTIONS + 1,
-                        )?;
-                        continue;
-                    }
+                let Ok(permit) = Arc::clone(&connections).try_acquire_owned() else {
+                    warn!(max_connections = MAX_CONNECTIONS, "rejected excess local connection");
+                    drop(stream);
+                    server = security.create_pipe(
+                        config.endpoint.as_str(),
+                        first,
+                        MAX_CONNECTIONS + 1,
+                    )?;
+                    continue;
                 };
                 server = security.create_pipe(
                     config.endpoint.as_str(),
