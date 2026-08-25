@@ -17,7 +17,7 @@ jobs:
     name: Package macOS universal
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install minimum supported Rust
         run: |
           rustup toolchain install 1.88.0 --profile minimal
@@ -35,10 +35,10 @@ jobs:
             -output dist/package/nexus-cua
           cp README.md LICENSE THIRD_PARTY_NOTICES.md Cargo.lock dist/package/
           tar -czf "dist/nexus-cua-${GITHUB_REF_NAME}-macos-universal.tar.gz" -C dist/package .
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-package
           path: dist/*.tar.gz
@@ -48,7 +48,7 @@ jobs:
     name: Package Windows x64
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install minimum supported Rust
         run: rustup toolchain install 1.88.0 --profile minimal
       - name: Build Windows package
@@ -59,10 +59,10 @@ jobs:
           New-Item -ItemType Directory -Force dist/package | Out-Null
           Copy-Item target/release/nexus-cua.exe, README.md, LICENSE, THIRD_PARTY_NOTICES.md, Cargo.lock dist/package/
           Compress-Archive -Path dist/package/* -DestinationPath "dist/nexus-cua-$env:GITHUB_REF_NAME-windows-x86_64.zip"
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-package
           path: dist/*.zip
@@ -73,8 +73,8 @@ jobs:
     needs: [macos, windows]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

@@ -18,7 +18,7 @@ jobs:
     name: Format and schema
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install minimum supported Rust
         run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt
       - name: Verify formatting
@@ -38,10 +38,10 @@ jobs:
             os: windows-2022
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install minimum supported Rust
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
