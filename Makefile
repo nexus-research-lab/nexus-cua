@@ -3,7 +3,7 @@
 CARGO ?= cargo
 DEV_ROOT ?= .cache/dev
 
-.PHONY: help install dev run doctor build release package check fmt format lint test schema clean
+.PHONY: help install dev run doctor build release package check fmt format lint test smoke schema clean
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -44,6 +44,9 @@ lint: ## Run Clippy across all targets with warnings denied
 
 test: ## Run workspace unit, contract, and integration tests
 	$(CARGO) test --workspace
+
+smoke: ## Exercise the native local IPC service end to end
+	$(CARGO) test --package nexus-cua-transport --test local_ipc
 
 schema: ## Print the versioned request and response JSON schemas
 	$(CARGO) run --quiet --package nexus-cua -- schema

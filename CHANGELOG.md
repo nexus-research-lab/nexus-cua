@@ -39,3 +39,4 @@ All notable changes to Nexus CUA will be documented in this file.
   Windows named-pipe DACL.
 - Native Unix-socket and Windows named-pipe end-to-end CI smoke coverage.
 - Bounded transport tokens with one shared CLI token-file decoder.
+- `make smoke` for the native local IPC end-to-end check.
