@@ -120,11 +120,12 @@ repository. Its lifecycle and security contract are specified in
 
 Rust products can embed `nexus-cua-runtime` and `nexus-cua-platform`. Other
 languages can supervise the `nexus-cua` sidecar and export the local wire schema
-today with `nexus-cua schema`. Published schemas, compatibility fixtures, and
-maintained reference clients are later distribution work. A third-party CLI,
-SDK, or MCP adapter may sit above the contract, but must issue bounded sessions
-and preserve opaque references, closed variants, sensitive-value handling, and
-retry identity.
+today with `nexus-cua schema`. Committed schemas and compatibility fixtures are
+available under `schemas/nexus.cua.v1/` and
+`fixtures/compatibility/nexus.cua.v1/`; maintained reference clients remain
+later distribution work. A third-party CLI, SDK, or MCP adapter may sit above
+the contract, but must issue bounded sessions and preserve opaque references,
+closed variants, sensitive-value handling, and retry identity.
 
 The diagnostic `nexus-cua request` command is intentionally not an agent API.
 Production hosts should expose a narrower operation schema derived from their
@@ -163,9 +164,12 @@ Useful targets:
 | Command | Purpose |
 | --- | --- |
 | `make check` | Formatting, strict Clippy, unit, contract, and IPC tests |
+| `make package-verify` | Build and compile the unpublished multi-crate package graph |
 | `make doctor` | Active driver capabilities and current OS permission state |
 | `make smoke` | Authenticated native local-IPC smoke test |
 | `make schema` | Closed request and response JSON schemas |
+| `make schema-check` | Fail when committed schemas drift from Rust wire types |
+| `make docs` | Validate local Markdown paths and heading anchors |
 | `make release` | Optimized workspace build |
 
 ## Status

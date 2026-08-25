@@ -1,0 +1,7 @@
+{
+  "protocol_version": "nexus.cua.v1",
+  "request_id": "fixture-unknown-command",
+  "timeout_ms": 30000,
+  "authorization": "fixture-transport-token",
+  "command": { "operation": "launch_application", "input": {} }
+}

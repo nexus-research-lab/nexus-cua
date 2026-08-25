@@ -1,0 +1,7 @@
+{
+  "protocol_version": "nexus.cua.v0",
+  "request_id": "fixture-protocol-mismatch",
+  "timeout_ms": 30000,
+  "authorization": "fixture-transport-token",
+  "command": { "operation": "get_capabilities" }
+}

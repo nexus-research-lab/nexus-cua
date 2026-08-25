@@ -1,0 +1,112 @@
+[
+  {
+    "result_type": "capabilities",
+    "data": {
+      "protocol_version": "nexus.cua.v1",
+      "runtime_version": "0.1.0",
+      "platform": "macos",
+      "capture_modes": ["window"],
+      "accessibility_tree": true,
+      "input_routes": ["semantic", "foreground"],
+      "actions": ["focus_window", "invoke_element", "click_point"]
+    }
+  },
+  {
+    "result_type": "permission_status",
+    "data": {
+      "screen_capture": "granted",
+      "accessibility": "granted",
+      "input_control": "granted"
+    }
+  },
+  {
+    "result_type": "applications_discovered",
+    "data": {
+      "applications": [
+        {
+          "discovery_ref": "discovery_fixture",
+          "name": "Fixture",
+          "application_id": "dev.nexus.fixture",
+          "foreground": true,
+          "provenance": {
+            "platform": "macos",
+            "bundle_id": "dev.nexus.fixture",
+            "executable_path": "/Applications/Fixture.app/Contents/MacOS/Fixture",
+            "signing_team_id": "NEXUSTEST",
+            "designated_requirement": null
+          },
+          "expires_at": "2026-08-25T12:00:30Z"
+        }
+      ],
+      "complete": true
+    }
+  },
+  {
+    "result_type": "session_opened",
+    "data": {
+      "session_id": "session_fixture",
+      "expires_at": "2026-08-25T12:05:00Z"
+    }
+  },
+  { "result_type": "acknowledged" },
+  {
+    "result_type": "apps",
+    "data": [
+      {
+        "app_ref": "app_fixture",
+        "name": "Fixture",
+        "application_id": "dev.nexus.fixture",
+        "foreground": true
+      }
+    ]
+  },
+  {
+    "result_type": "windows",
+    "data": [
+      {
+        "window_ref": "window_fixture",
+        "app_ref": "app_fixture",
+        "title": "Fixture Window",
+        "screen_bounds": { "x": 10.0, "y": 20.0, "width": 800.0, "height": 600.0 },
+        "minimized": false,
+        "visible": true,
+        "foreground": true
+      }
+    ]
+  },
+  {
+    "result_type": "window_observed",
+    "data": {
+      "observation_id": "observation_fixture",
+      "window_ref": "window_fixture",
+      "captured_at": "2026-08-25T12:00:01Z",
+      "window_screen_bounds": { "x": 10.0, "y": 20.0, "width": 800.0, "height": 600.0 },
+      "screenshot": {
+        "artifact_ref": "artifact_fixture",
+        "path": "/private/runtime/session_fixture/artifact_fixture.png",
+        "mime_type": "image/png",
+        "mapping": {
+          "screen_bounds": { "x": 10.0, "y": 20.0, "width": 800.0, "height": 600.0 },
+          "pixel_size": { "width": 1600, "height": 1200 }
+        },
+        "byte_length": 4096,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "elements": [],
+      "elements_complete": true,
+      "elements_truncation": null
+    }
+  },
+  {
+    "result_type": "action_performed",
+    "data": {
+      "delivery_mode": "foreground",
+      "dispatched": true,
+      "observation_invalidated": true
+    }
+  },
+  {
+    "result_type": "state_verified",
+    "data": { "matched": true, "evidence": "window title contains Fixture" }
+  }
+]

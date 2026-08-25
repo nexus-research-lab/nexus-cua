@@ -1,18 +1,21 @@
 //! Session runtime and public command execution.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration as StdDuration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::time::Duration as StdDuration;
 
 use nexus_cua_protocol::{
-    ActionOutput, ApplicationSummary, Command, CommandResult, CuaError, DeliveryMode, ErrorCode,
-    ListWindowsInput, ObservationId, OpenSessionInput, OpenSessionOutput, PermissionMode,
-    SessionId, SessionInput, VerificationOutput, VerifyStateInput, WindowObservation,
-    WindowSummary,
+    ActionOutput, ApplicationSummary, Command, CommandResult, CuaError, DeliveryMode,
+    DiscoverApplicationsOutput, DiscoveredApplication, DiscoveryRef, ErrorCode, ListWindowsInput,
+    ObservationId, OpenSessionInput, OpenSessionOutput, PermissionMode, SessionId, SessionInput,
+    VerificationOutput, VerifyStateInput, WindowObservation, WindowSummary,
 };
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore, watch};
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -32,12 +35,18 @@ pub struct RuntimeConfig {
     pub artifact_root: PathBuf,
     /// Hard maximum session lifetime.
     pub max_session_ttl: StdDuration,
+    /// Lifetime of one runtime-local discovery reference. Must not exceed 30 seconds.
+    pub discovery_ttl: StdDuration,
     /// Maximum age of an observation used for mutation.
     pub max_observation_age: StdDuration,
     /// Maximum retained observations per session.
     pub max_observations_per_session: usize,
     /// Maximum simultaneously live capability sessions.
     pub max_active_sessions: usize,
+    /// Maximum applications returned by one discovery snapshot.
+    pub max_discovered_applications: usize,
+    /// Maximum unexpired discovery references retained by the runtime.
+    pub max_discovery_records: usize,
     /// Maximum normalized elements in one observation.
     pub max_elements_per_observation: usize,
     /// Maximum decoded screenshot pixels.
@@ -54,9 +63,12 @@ impl RuntimeConfig {
         Self {
             artifact_root: artifact_root.into(),
             max_session_ttl: StdDuration::from_secs(60 * 60),
+            discovery_ttl: StdDuration::from_secs(30),
             max_observation_age: StdDuration::from_secs(30),
             max_observations_per_session: 32,
             max_active_sessions: 64,
+            max_discovered_applications: 256,
+            max_discovery_records: 2_048,
             max_elements_per_observation: 2_000,
             max_image_pixels: 100_000_000,
             max_artifacts_per_session: 32,
@@ -71,7 +83,30 @@ pub struct Runtime {
     artifacts: Arc<ArtifactStore>,
     artifact_workers: Arc<Semaphore>,
     config: RuntimeConfig,
-    sessions: RwLock<HashMap<SessionId, Arc<Session>>>,
+    epoch: String,
+    discovery: Arc<RwLock<HashMap<DiscoveryRef, DiscoveryRecord>>>,
+    sessions: Arc<RwLock<HashMap<SessionId, Arc<Session>>>>,
+    scheduler: StdMutex<Option<ExpirationScheduler>>,
+    lifecycle: RwLock<()>,
+    shutdown_guard: Mutex<()>,
+    closed: AtomicBool,
+}
+
+struct DiscoveryRecord {
+    runtime_epoch: String,
+    application: crate::DriverApplication,
+    expires_at: Instant,
+}
+
+struct ExpirationScheduler {
+    signal: watch::Sender<SchedulerSignal>,
+    task: JoinHandle<()>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SchedulerSignal {
+    Reschedule,
+    Shutdown,
 }
 
 impl Runtime {
@@ -83,9 +118,14 @@ impl Runtime {
     /// does not satisfy the runtime's filesystem safety requirements.
     pub fn new(driver: Arc<dyn DesktopDriver>, config: RuntimeConfig) -> Result<Self, CuaError> {
         if config.max_session_ttl.is_zero()
+            || config.discovery_ttl.is_zero()
+            || config.discovery_ttl > StdDuration::from_secs(30)
             || config.max_observation_age.is_zero()
             || config.max_observations_per_session == 0
             || config.max_active_sessions == 0
+            || config.max_discovered_applications == 0
+            || config.max_discovery_records == 0
+            || config.max_discovered_applications > config.max_discovery_records
             || config.max_elements_per_observation == 0
             || config.max_image_pixels == 0
             || config.max_artifacts_per_session == 0
@@ -109,7 +149,13 @@ impl Runtime {
             artifacts,
             artifact_workers,
             config,
-            sessions: RwLock::new(HashMap::new()),
+            epoch: format!("runtime_{}", Uuid::new_v4().simple()),
+            discovery: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            scheduler: StdMutex::new(None),
+            lifecycle: RwLock::new(()),
+            shutdown_guard: Mutex::new(()),
+            closed: AtomicBool::new(false),
         })
     }
 
@@ -120,7 +166,11 @@ impl Runtime {
     /// Returns a stable protocol error when validation, authorization, native
     /// driver execution, or artifact persistence fails.
     pub async fn execute(&self, command: Command) -> Result<CommandResult, CuaError> {
-        self.reap_expired().await;
+        let _lifecycle = self.lifecycle.read().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(runtime_unavailable());
+        }
+        self.ensure_scheduler()?;
         match command {
             Command::GetCapabilities => self
                 .driver
@@ -134,6 +184,7 @@ impl Runtime {
                 .await
                 .map(CommandResult::PermissionStatus)
                 .map_err(Into::into),
+            Command::DiscoverApplications => self.discover_applications().await,
             Command::OpenSession(input) => self.open_session(input).await,
             Command::CloseSession(input) => self.close_session(input).await,
             Command::ListApps(input) => self.list_apps(input).await,
@@ -144,9 +195,166 @@ impl Runtime {
         }
     }
 
+    /// Stops new command admission, waits for admitted commands, and removes
+    /// all session artifacts before returning.
+    pub async fn shutdown(&self) {
+        let _shutdown = self.shutdown_guard.lock().await;
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _lifecycle = self.lifecycle.write().await;
+        let scheduler = self
+            .scheduler
+            .lock()
+            .ok()
+            .and_then(|mut scheduler| scheduler.take());
+        if let Some(scheduler) = scheduler {
+            scheduler.signal.send_replace(SchedulerSignal::Shutdown);
+            let _ = scheduler.task.await;
+        }
+        self.discovery.write().await.clear();
+        let session_ids = {
+            let mut sessions = self.sessions.write().await;
+            sessions.drain().map(|(id, _)| id).collect::<Vec<_>>()
+        };
+        for session_id in session_ids {
+            self.artifacts.remove_session(&session_id);
+        }
+    }
+
+    async fn discover_applications(&self) -> Result<CommandResult, CuaError> {
+        let mut applications = self
+            .driver
+            .list_applications()
+            .await
+            .map_err(CuaError::from)?;
+        applications.sort_by(|left, right| {
+            (&left.application_id, &left.name, &left.key).cmp(&(
+                &right.application_id,
+                &right.name,
+                &right.key,
+            ))
+        });
+        applications.dedup_by(|left, right| left.key == right.key);
+        let complete = applications.len() <= self.config.max_discovered_applications;
+        applications.truncate(self.config.max_discovered_applications);
+
+        let expires_at = Instant::now() + self.config.discovery_ttl;
+        let expires_at_wall = OffsetDateTime::now_utc()
+            + Duration::try_from(self.config.discovery_ttl).map_err(|_| {
+                public_error(
+                    ErrorCode::Internal,
+                    "failed to calculate discovery expiry",
+                    false,
+                    None,
+                )
+            })?;
+        let expires_at_text = expires_at_wall.format(&Rfc3339).map_err(|_| {
+            public_error(
+                ErrorCode::Internal,
+                "failed to format discovery expiry",
+                false,
+                None,
+            )
+        })?;
+
+        let mut discovery = self.discovery.write().await;
+        discovery.retain(|_, record| record.expires_at > Instant::now());
+        if discovery.len().saturating_add(applications.len()) > self.config.max_discovery_records {
+            return Err(public_error(
+                ErrorCode::Busy,
+                "unexpired discovery reference capacity is exhausted",
+                true,
+                Some("retry_after_discovery_expiry"),
+            ));
+        }
+        let mut output = Vec::with_capacity(applications.len());
+        for application in applications {
+            let discovery_ref = DiscoveryRef::new(format!("discovery_{}", Uuid::new_v4().simple()));
+            output.push(DiscoveredApplication {
+                discovery_ref: discovery_ref.clone(),
+                name: application.name.clone(),
+                application_id: application.application_id.clone(),
+                foreground: application.foreground,
+                provenance: application.provenance.clone(),
+                expires_at: expires_at_text.clone(),
+            });
+            discovery.insert(
+                discovery_ref,
+                DiscoveryRecord {
+                    runtime_epoch: self.epoch.clone(),
+                    application,
+                    expires_at,
+                },
+            );
+        }
+        drop(discovery);
+        self.signal_reschedule()?;
+        Ok(CommandResult::ApplicationsDiscovered(
+            DiscoverApplicationsOutput {
+                applications: output,
+                complete,
+            },
+        ))
+    }
+
+    async fn resolve_discovery_refs(
+        &self,
+        requested: &[DiscoveryRef],
+    ) -> Result<Vec<crate::DriverApplication>, CuaError> {
+        let now = Instant::now();
+        let expected = {
+            let discovery = self.discovery.read().await;
+            requested
+                .iter()
+                .map(|discovery_ref| {
+                    discovery
+                        .get(discovery_ref)
+                        .filter(|record| {
+                            record.runtime_epoch == self.epoch && record.expires_at > now
+                        })
+                        .map(|record| record.application.clone())
+                        .ok_or_else(stale_discovery)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        let current = self
+            .driver
+            .list_applications()
+            .await
+            .map_err(CuaError::from)?;
+        let resolved = expected
+            .into_iter()
+            .map(|expected| {
+                current
+                    .iter()
+                    .find(|candidate| expected.matches_generation(candidate))
+                    .cloned()
+                    .ok_or_else(stale_discovery)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let unique = resolved
+            .iter()
+            .map(|application| &application.key)
+            .collect::<HashSet<_>>();
+        if unique.len() != resolved.len() {
+            return Err(public_error(
+                ErrorCode::InvalidRequest,
+                "application references resolve to duplicate process generations",
+                false,
+                Some("select_unique_applications"),
+            ));
+        }
+        Ok(resolved)
+    }
+
     async fn open_session(&self, input: OpenSessionInput) -> Result<CommandResult, CuaError> {
         let max_ttl = u32::try_from(self.config.max_session_ttl.as_secs()).unwrap_or(u32::MAX);
         validate_manifest(&input.manifest, max_ttl)?;
+        let allowed_applications = self
+            .resolve_discovery_refs(&input.manifest.application_refs)
+            .await?;
         let session_id = SessionId::new(format!("session_{}", Uuid::new_v4().simple()));
         let ttl = StdDuration::from_secs(u64::from(input.manifest.ttl_seconds));
         let expires_at_monotonic = Instant::now() + ttl;
@@ -163,6 +371,7 @@ impl Runtime {
         let session = Arc::new(Session {
             id: session_id.clone(),
             manifest: input.manifest,
+            allowed_applications,
             expires_at: expires_at_monotonic,
             state: Mutex::new(SessionState::default()),
         });
@@ -177,6 +386,7 @@ impl Runtime {
         }
         sessions.insert(session_id.clone(), session);
         drop(sessions);
+        self.signal_reschedule()?;
         info!(session_id = %session_id, "computer-use session opened");
         Ok(CommandResult::SessionOpened(OpenSessionOutput {
             session_id,
@@ -190,6 +400,7 @@ impl Runtime {
             return Err(session_unavailable());
         }
         self.artifacts.remove_session(&input.session_id);
+        self.signal_reschedule()?;
         info!(session_id = %input.session_id, "computer-use session closed");
         Ok(CommandResult::Acknowledged)
     }
@@ -205,7 +416,7 @@ impl Runtime {
         let mut output = Vec::new();
         for application in applications
             .into_iter()
-            .filter(|app| session.allows_application(&app.application_id))
+            .filter(|app| session.allows_application(app))
         {
             let app_ref = state.project_application(&application);
             output.push(ApplicationSummary {
@@ -242,7 +453,7 @@ impl Runtime {
         let mut output = Vec::new();
         for window in windows
             .into_iter()
-            .filter(|window| session.allows_application(&window.application.application_id))
+            .filter(|window| session.allows_application(&window.application))
         {
             let app_ref = state.project_application(&window.application);
             let window_ref = state.project_window(&window);
@@ -272,7 +483,7 @@ impl Runtime {
                 .cloned()
                 .ok_or_else(reference_not_found)?
         };
-        if !session.allows_application(&window.application.application_id) {
+        if !session.allows_application(&window.application) {
             return Err(capability_denied());
         }
         let mut observation = self
@@ -433,7 +644,7 @@ impl Runtime {
                 .get(&input.window_ref)
                 .cloned()
                 .ok_or_else(reference_not_found)?;
-            if !session.allows_application(&window.application.application_id) {
+            if !session.allows_application(&window.application) {
                 return Err(capability_denied());
             }
             let observation = state
@@ -511,7 +722,7 @@ impl Runtime {
                 .cloned()
                 .ok_or_else(reference_not_found)?
         };
-        if !session.allows_application(&window.application.application_id) {
+        if !session.allows_application(&window.application) {
             return Err(capability_denied());
         }
         let result = self
@@ -534,29 +745,32 @@ impl Runtime {
             sessions.remove(session_id);
             drop(sessions);
             self.artifacts.remove_session(session_id);
+            self.signal_reschedule()?;
             return Err(session_unavailable());
         }
         Ok(session)
     }
 
-    async fn reap_expired(&self) {
-        let now = Instant::now();
-        let expired = {
-            let mut sessions = self.sessions.write().await;
-            let expired: Vec<_> = sessions
-                .iter()
-                .filter(|(_, session)| session.expires_at <= now)
-                .map(|(id, _)| id.clone())
-                .collect();
-            for id in &expired {
-                sessions.remove(id);
-            }
-            expired
-        };
-        for id in expired {
-            self.artifacts.remove_session(&id);
-            debug!(session_id = %id, "expired computer-use session reaped");
+    fn ensure_scheduler(&self) -> Result<(), CuaError> {
+        let mut scheduler = self.scheduler.lock().map_err(|_| runtime_unavailable())?;
+        if scheduler.is_some() {
+            return Ok(());
         }
+        let (signal, receiver) = watch::channel(SchedulerSignal::Reschedule);
+        let sessions = Arc::downgrade(&self.sessions);
+        let discovery = Arc::downgrade(&self.discovery);
+        let artifacts = Arc::downgrade(&self.artifacts);
+        let task = tokio::spawn(expiration_loop(sessions, discovery, artifacts, receiver));
+        *scheduler = Some(ExpirationScheduler { signal, task });
+        Ok(())
+    }
+
+    fn signal_reschedule(&self) -> Result<(), CuaError> {
+        let scheduler = self.scheduler.lock().map_err(|_| runtime_unavailable())?;
+        if let Some(scheduler) = scheduler.as_ref() {
+            scheduler.signal.send_replace(SchedulerSignal::Reschedule);
+        }
+        Ok(())
     }
 
     async fn invalidate_observation(&self, session: &Session, observation_id: &ObservationId) {
@@ -572,12 +786,140 @@ impl Runtime {
     }
 }
 
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Release);
+        if let Ok(mut scheduler) = self.scheduler.lock()
+            && let Some(scheduler) = scheduler.take()
+        {
+            scheduler.signal.send_replace(SchedulerSignal::Shutdown);
+        }
+    }
+}
+
+async fn expiration_loop(
+    sessions: Weak<RwLock<HashMap<SessionId, Arc<Session>>>>,
+    discovery: Weak<RwLock<HashMap<DiscoveryRef, DiscoveryRecord>>>,
+    artifacts: Weak<ArtifactStore>,
+    mut receiver: watch::Receiver<SchedulerSignal>,
+) {
+    loop {
+        if matches!(*receiver.borrow(), SchedulerSignal::Shutdown) {
+            return;
+        }
+        let Some((sessions_live, discovery_live)) = sessions.upgrade().zip(discovery.upgrade())
+        else {
+            return;
+        };
+        let deadline = nearest_deadline(&sessions_live, &discovery_live).await;
+        drop(sessions_live);
+        drop(discovery_live);
+        match deadline {
+            Some(deadline) => {
+                tokio::select! {
+                    () = tokio::time::sleep_until(deadline) => {
+                        let Some((sessions_live, discovery_live, artifacts_live)) = sessions
+                            .upgrade()
+                            .zip(discovery.upgrade())
+                            .zip(artifacts.upgrade())
+                            .map(|((sessions, discovery), artifacts)| (sessions, discovery, artifacts))
+                        else {
+                            return;
+                        };
+                        reap_due(
+                            &sessions_live,
+                            &discovery_live,
+                            &artifacts_live,
+                            Instant::now(),
+                        ).await;
+                    }
+                    changed = receiver.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+            None => {
+                if receiver.changed().await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+async fn nearest_deadline(
+    sessions: &RwLock<HashMap<SessionId, Arc<Session>>>,
+    discovery: &RwLock<HashMap<DiscoveryRef, DiscoveryRecord>>,
+) -> Option<Instant> {
+    let session_deadline = sessions
+        .read()
+        .await
+        .values()
+        .map(|session| session.expires_at)
+        .min();
+    let discovery_deadline = discovery
+        .read()
+        .await
+        .values()
+        .map(|record| record.expires_at)
+        .min();
+    session_deadline.into_iter().chain(discovery_deadline).min()
+}
+
+async fn reap_due(
+    sessions: &RwLock<HashMap<SessionId, Arc<Session>>>,
+    discovery: &RwLock<HashMap<DiscoveryRef, DiscoveryRecord>>,
+    artifacts: &ArtifactStore,
+    now: Instant,
+) {
+    let expired = {
+        let mut sessions = sessions.write().await;
+        let expired = sessions
+            .iter()
+            .filter(|(_, session)| session.expires_at <= now)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for session_id in &expired {
+            sessions.remove(session_id);
+        }
+        expired
+    };
+    discovery
+        .write()
+        .await
+        .retain(|_, record| record.expires_at > now);
+    for session_id in expired {
+        artifacts.remove_session(&session_id);
+        debug!(session_id = %session_id, "expired computer-use session reaped");
+    }
+}
+
 fn session_unavailable() -> CuaError {
     public_error(
         ErrorCode::SessionUnavailable,
         "session is missing, expired, or closed",
         false,
         Some("open_new_session"),
+    )
+}
+
+fn stale_discovery() -> CuaError {
+    public_error(
+        ErrorCode::StaleDiscovery,
+        "discovery reference expired or no longer identifies the same process generation",
+        true,
+        Some("discover_applications"),
+    )
+}
+
+fn runtime_unavailable() -> CuaError {
+    public_error(
+        ErrorCode::SessionUnavailable,
+        "runtime is shutting down or unavailable",
+        true,
+        Some("restart_runtime"),
     )
 }
 

@@ -1,0 +1,8 @@
+{
+  "protocol_version": "nexus.cua.v1",
+  "request_id": "fixture-unknown-field",
+  "timeout_ms": 30000,
+  "authorization": "fixture-transport-token",
+  "command": { "operation": "get_capabilities" },
+  "owner_id": "must-not-cross-runtime-boundary"
+}

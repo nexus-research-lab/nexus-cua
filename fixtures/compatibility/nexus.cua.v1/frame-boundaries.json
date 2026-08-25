@@ -1,0 +1,6 @@
+{
+  "length_prefix": "u32_be",
+  "empty_payload": "invalid_frame",
+  "configured_max_bytes": 1048576,
+  "configured_max_plus_one": "invalid_frame"
+}

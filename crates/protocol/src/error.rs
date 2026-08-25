@@ -19,6 +19,8 @@ pub enum ErrorCode {
     DeadlineExceeded,
     /// Session does not exist, expired, or is already closed.
     SessionUnavailable,
+    /// Discovery reference expired or no longer identifies the same process.
+    StaleDiscovery,
     /// Capability manifest does not authorize the operation.
     CapabilityDenied,
     /// An opaque reference is unknown in the selected session.

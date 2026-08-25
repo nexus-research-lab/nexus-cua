@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ActionKind, SessionId};
+use crate::{ActionKind, DiscoveryRef, SessionId};
 
 /// Capability mode fixed for the lifetime of a session.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
@@ -21,8 +21,8 @@ pub enum PermissionMode {
 pub struct CapabilityManifest {
     /// Session mode. There is deliberately no unrestricted value.
     pub mode: PermissionMode,
-    /// Exact application identifiers allowed for observation or mutation.
-    pub allowed_application_ids: Vec<String>,
+    /// Exact running process generations selected from trusted-host discovery.
+    pub application_refs: Vec<DiscoveryRef>,
     /// Exact mutation categories allowed in bounded mode.
     pub allowed_actions: Vec<ActionKind>,
     /// Whether any foreground input route is allowed.

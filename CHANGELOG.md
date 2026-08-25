@@ -7,6 +7,14 @@ file.
 
 ### Changed
 
+- Session manifests now select short-lived trusted-host discovery references;
+  session creation revalidates runtime epoch, process generation, and native
+  executable identity before granting authority.
+- Session and discovery expiry now use a nearest-deadline scheduler, including
+  idle artifact deletion and an explicit graceful runtime shutdown path.
+- Request reconciliation now retains completed results for a configurable
+  10-minute default horizon and rejects capacity instead of evicting an
+  unexpired result.
 - Adopted Nexus Computer Use Runtime as the canonical project name while
   retaining `nexus-cua`, crate names, environment variables, and
   `nexus.cua.v1` as the technical domain namespace.
@@ -17,6 +25,11 @@ file.
 
 ### Added
 
+- Committed `nexus.cua.v1` request/response schemas, exhaustive compatibility
+  fixtures, schema-drift CI, Markdown link checks, and a compatibility policy.
+- Transport-authenticated application discovery with runtime-local opaque refs,
+  public macOS code-signing/Windows Authenticode provenance summaries, and
+  stable `stale_discovery` recovery.
 - Initial model-neutral Computer Use protocol and runtime architecture.
 - Authenticated bounded local IPC, request idempotency, CLI diagnostics, and
   development Makefile workflows.

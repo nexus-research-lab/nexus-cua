@@ -1,6 +1,7 @@
 //! Cross-platform private endpoint configuration.
 
 use std::fmt;
+use std::time::Duration;
 
 use crate::TransportError;
 
@@ -45,8 +46,10 @@ pub struct ServerConfig {
     pub endpoint: LocalEndpoint,
     /// Maximum request or response payload length.
     pub max_frame_bytes: usize,
-    /// Maximum completed idempotency records retained in memory.
+    /// Maximum request identities retained for reconciliation.
     pub max_completed_requests: usize,
+    /// Completed-response reconciliation horizon.
+    pub completed_request_ttl: Duration,
     /// Maximum distinct admitted requests that have not completed.
     pub max_inflight_requests: usize,
     /// Maximum caller-supplied end-to-end deadline.
@@ -60,6 +63,7 @@ impl ServerConfig {
             endpoint,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             max_completed_requests: 4_096,
+            completed_request_ttl: Duration::from_secs(10 * 60),
             max_inflight_requests: 64,
             max_request_timeout_ms: 120_000,
         }
@@ -71,7 +75,10 @@ impl ServerConfig {
                 "max_frame_bytes must fit in a non-zero u32".to_owned(),
             ));
         }
-        if self.max_completed_requests == 0 || self.max_inflight_requests == 0 {
+        if self.max_completed_requests == 0
+            || self.max_inflight_requests == 0
+            || self.completed_request_ttl.is_zero()
+        {
             return Err(TransportError::InvalidConfiguration(
                 "request ledger bounds must be non-zero".to_owned(),
             ));

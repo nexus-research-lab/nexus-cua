@@ -66,4 +66,30 @@ mod tests {
         let error = read_frame(&mut input, 32).await.expect_err("reject frame");
         assert!(matches!(error, TransportError::InvalidFrame(_)));
     }
+
+    #[tokio::test]
+    async fn accepts_exact_limit_and_rejects_limit_plus_one() {
+        const FIXTURE: &str =
+            include_str!("../../../fixtures/compatibility/nexus.cua.v1/frame-boundaries.json");
+        let fixture: serde_json::Value = serde_json::from_str(FIXTURE).expect("decode fixture");
+        let limit = usize::try_from(fixture["configured_max_bytes"].as_u64().expect("max bytes"))
+            .expect("fixture limit fits usize");
+
+        let mut exact = Vec::with_capacity(limit + 4);
+        exact.extend_from_slice(&u32::try_from(limit).expect("limit fits u32").to_be_bytes());
+        exact.resize(limit + 4, b'x');
+        let payload = read_frame(&mut exact.as_slice(), limit)
+            .await
+            .expect("read exact-limit frame")
+            .expect("payload");
+        assert_eq!(payload.len(), limit);
+
+        let oversized = u32::try_from(limit + 1)
+            .expect("oversized fixture fits u32")
+            .to_be_bytes();
+        let error = read_frame(&mut oversized.as_slice(), limit)
+            .await
+            .expect_err("reject limit plus one before payload allocation");
+        assert!(matches!(error, TransportError::InvalidFrame(_)));
+    }
 }

@@ -16,7 +16,7 @@ pub struct ApplicationSummary {
     pub app_ref: AppRef,
     /// Human-readable application name.
     pub name: String,
-    /// Stable bundle identifier or executable identity used by manifests.
+    /// Stable bundle identifier or executable identity for host policy display.
     pub application_id: String,
     /// Whether the application currently owns the foreground.
     pub foreground: bool,

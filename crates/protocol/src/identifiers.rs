@@ -44,6 +44,10 @@ opaque_id!(
     "Runtime-issued identity for an authorized session."
 );
 opaque_id!(AppRef, "Session-scoped opaque application reference.");
+opaque_id!(
+    DiscoveryRef,
+    "Short-lived runtime-local reference for one discovered process generation."
+);
 opaque_id!(WindowRef, "Session-scoped opaque window reference.");
 opaque_id!(
     ObservationId,

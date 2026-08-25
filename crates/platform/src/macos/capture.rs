@@ -34,6 +34,8 @@ pub(super) struct NativeWindow {
     pub(super) pid: i32,
     pub(super) application_key: String,
     pub(super) application_id: String,
+    pub(super) bundle_id: Option<String>,
+    pub(super) executable_path: Option<String>,
     pub(super) application_name: String,
     pub(super) title: String,
     pub(super) screen_bounds: ScreenRect,
@@ -234,12 +236,24 @@ fn extract_windows(content: &SCShareableContent) -> Vec<NativeWindow> {
             let pid = application.processID();
             let application_key = application_generation(pid);
             let bundle_identifier = application.bundleIdentifier().to_string();
+            let executable_path =
+                NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                    .and_then(|application| application.executableURL())
+                    .and_then(|url| url.path())
+                    .map(|path| path.to_string())
+                    .filter(|path| !path.is_empty());
             applications.insert(
                 pid,
                 (
-                    stable_application_id(pid, &bundle_identifier, &application_key),
+                    stable_application_id(
+                        &bundle_identifier,
+                        executable_path.as_deref(),
+                        &application_key,
+                    ),
                     application.applicationName().to_string(),
                     application_key,
+                    (!bundle_identifier.is_empty()).then_some(bundle_identifier),
+                    executable_path,
                 ),
             );
         }
@@ -252,7 +266,13 @@ fn extract_windows(content: &SCShareableContent) -> Vec<NativeWindow> {
                 continue;
             };
             let pid = application.processID();
-            let Some((application_id, application_name, application_key)) = applications.get(&pid)
+            let Some((
+                application_id,
+                application_name,
+                application_key,
+                bundle_id,
+                executable_path,
+            )) = applications.get(&pid)
             else {
                 continue;
             };
@@ -267,6 +287,8 @@ fn extract_windows(content: &SCShareableContent) -> Vec<NativeWindow> {
                 pid,
                 application_key: application_key.clone(),
                 application_id: application_id.clone(),
+                bundle_id: bundle_id.clone(),
+                executable_path: executable_path.clone(),
                 application_name: application_name.clone(),
                 title: window
                     .title()
@@ -370,16 +392,15 @@ fn application_generation(pid: i32) -> String {
     format!("pid:{pid}:launch:{launch:016x}")
 }
 
-fn stable_application_id(pid: i32, bundle_identifier: &str, generation: &str) -> String {
+fn stable_application_id(
+    bundle_identifier: &str,
+    executable_path: Option<&str>,
+    generation: &str,
+) -> String {
     if !bundle_identifier.is_empty() {
         return bundle_identifier.to_owned();
     }
-    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
-        .and_then(|application| application.executableURL())
-        .and_then(|url| url.path())
-        .map(|path| path.to_string())
-        .filter(|path| !path.is_empty())
-        .unwrap_or_else(|| format!("process:{generation}"))
+    executable_path.map_or_else(|| format!("process:{generation}"), str::to_owned)
 }
 
 fn native_failure(message: &str) -> DriverError {

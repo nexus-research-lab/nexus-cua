@@ -6,6 +6,7 @@
 mod action;
 mod capability;
 mod command;
+mod discovery;
 mod error;
 mod geometry;
 mod identifiers;
@@ -15,6 +16,7 @@ mod session;
 pub use action::*;
 pub use capability::*;
 pub use command::*;
+pub use discovery::*;
 pub use error::*;
 pub use geometry::*;
 pub use identifiers::*;

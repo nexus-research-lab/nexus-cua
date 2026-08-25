@@ -2,8 +2,9 @@
 
 use async_trait::async_trait;
 use nexus_cua_protocol::{
-    AccessibilityMode, DeliveryMode, DriverCapabilities, ObservationTruncation, PermissionStatus,
-    PointerButton, ScreenPoint, ScreenRect, SensitiveText, StatePredicate,
+    AccessibilityMode, ApplicationProvenance, DeliveryMode, DriverCapabilities,
+    ObservationTruncation, PermissionStatus, PointerButton, ScreenPoint, ScreenRect, SensitiveText,
+    StatePredicate,
 };
 
 use crate::DriverError;
@@ -13,12 +14,28 @@ use crate::DriverError;
 pub struct DriverApplication {
     /// Stable key within the lifetime of one driver process.
     pub key: String,
+    /// Platform process generation, such as launch time plus process identity.
+    pub process_generation: String,
+    /// Normalized executable or bundle identity used for TOCTOU revalidation.
+    pub identity: String,
     /// Human-readable display name.
     pub name: String,
     /// Bundle identifier or executable identity matched by manifests.
     pub application_id: String,
     /// Whether the application currently owns foreground input.
     pub foreground: bool,
+    /// Public best-effort provenance summary without native authority handles.
+    pub provenance: ApplicationProvenance,
+}
+
+impl DriverApplication {
+    /// Returns true only for the same running process generation and identity.
+    pub fn matches_generation(&self, current: &Self) -> bool {
+        self.key == current.key
+            && self.process_generation == current.process_generation
+            && self.identity == current.identity
+            && self.application_id == current.application_id
+    }
 }
 
 /// Internal top-level window identity owned by a platform driver.

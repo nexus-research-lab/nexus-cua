@@ -1,0 +1,115 @@
+[
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-capabilities",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": { "operation": "get_capabilities" }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-permissions",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": { "operation": "get_permission_status" }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-discovery",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": { "operation": "discover_applications" }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-open-session",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "open_session",
+      "input": {
+        "manifest": {
+          "mode": "bounded",
+          "application_refs": ["discovery_fixture"],
+          "allowed_actions": ["focus_window", "invoke_element", "click_point"],
+          "allow_foreground_input": true,
+          "ttl_seconds": 300
+        }
+      }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-close-session",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "close_session",
+      "input": { "session_id": "session_fixture" }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-list-apps",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "list_apps",
+      "input": { "session_id": "session_fixture" }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-list-windows",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "list_windows",
+      "input": { "session_id": "session_fixture", "app_ref": "app_fixture" }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-observe",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "observe_window",
+      "input": {
+        "session_id": "session_fixture",
+        "window_ref": "window_fixture",
+        "include_screenshot": true,
+        "accessibility": "interactive"
+      }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-action",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "perform_action",
+      "input": {
+        "session_id": "session_fixture",
+        "window_ref": "window_fixture",
+        "observation_id": "observation_fixture",
+        "action": { "kind": "focus_window" }
+      }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-verify",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "verify_state",
+      "input": {
+        "session_id": "session_fixture",
+        "window_ref": "window_fixture",
+        "predicate": { "kind": "window_title_contains", "text": "Fixture" }
+      }
+    }
+  }
+]

@@ -1,0 +1,1265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResponseEnvelope",
+  "description": "Response paired with one request identity.",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "description": "Success or public error outcome.",
+      "$ref": "#/$defs/ResponseOutcome"
+    },
+    "protocol_version": {
+      "description": "Stable protocol identifier.",
+      "type": "string"
+    },
+    "request_id": {
+      "description": "Echo of the request identity.",
+      "$ref": "#/$defs/RequestId"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "outcome"
+  ],
+  "$defs": {
+    "AccessibilityElement": {
+      "description": "Normalized accessibility element from one immutable observation.",
+      "type": "object",
+      "properties": {
+        "actions": {
+          "description": "Normalized semantic actions supported by the element.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "element_ref": {
+          "description": "Reference valid only for the containing observation.",
+          "$ref": "#/$defs/ElementRef"
+        },
+        "enabled": {
+          "description": "Whether the element can receive actions.",
+          "type": "boolean"
+        },
+        "focused": {
+          "description": "Whether the element currently owns keyboard focus.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Accessible name or label.",
+          "type": "string"
+        },
+        "parent_ref": {
+          "description": "Optional parent element reference.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ElementRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "description": "Normalized semantic role.",
+          "type": "string"
+        },
+        "screen_bounds": {
+          "description": "Element bounds in logical top-left screen coordinates.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScreenRect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "description": "Non-sensitive display value when safely available.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "element_ref",
+        "role",
+        "name",
+        "enabled",
+        "focused",
+        "actions"
+      ]
+    },
+    "ActionKind": {
+      "description": "Stable action category used by bounded capability manifests.",
+      "oneOf": [
+        {
+          "description": "Focus or activate a target window.",
+          "type": "string",
+          "const": "focus_window"
+        },
+        {
+          "description": "Move semantic keyboard focus to an accessibility element.",
+          "type": "string",
+          "const": "focus_element"
+        },
+        {
+          "description": "Invoke an accessibility element's primary action.",
+          "type": "string",
+          "const": "invoke_element"
+        },
+        {
+          "description": "Click at a physical pixel coordinate.",
+          "type": "string",
+          "const": "click_point"
+        },
+        {
+          "description": "Replace an accessibility value.",
+          "type": "string",
+          "const": "set_value"
+        },
+        {
+          "description": "Toggle a semantic element.",
+          "type": "string",
+          "const": "toggle_element"
+        },
+        {
+          "description": "Select a semantic element.",
+          "type": "string",
+          "const": "select_element"
+        },
+        {
+          "description": "Expand or collapse a semantic element.",
+          "type": "string",
+          "const": "set_expanded"
+        },
+        {
+          "description": "Move the pointer without clicking.",
+          "type": "string",
+          "const": "move_pointer"
+        },
+        {
+          "description": "Type text through the foreground input path.",
+          "type": "string",
+          "const": "type_text"
+        },
+        {
+          "description": "Press one keyboard chord.",
+          "type": "string",
+          "const": "press_keys"
+        },
+        {
+          "description": "Scroll a semantic element or pixel surface.",
+          "type": "string",
+          "const": "scroll"
+        },
+        {
+          "description": "Drag between two physical pixel coordinates.",
+          "type": "string",
+          "const": "drag"
+        }
+      ]
+    },
+    "ActionOutput": {
+      "description": "Successful mutation result.",
+      "type": "object",
+      "properties": {
+        "delivery_mode": {
+          "description": "Platform delivery route actually used.",
+          "$ref": "#/$defs/DeliveryMode"
+        },
+        "dispatched": {
+          "description": "Whether the platform reported successful dispatch.",
+          "type": "boolean"
+        },
+        "observation_invalidated": {
+          "description": "Whether callers must observe again before another mutation.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "delivery_mode",
+        "dispatched",
+        "observation_invalidated"
+      ]
+    },
+    "AppRef": {
+      "description": "Session-scoped opaque application reference.",
+      "type": "string"
+    },
+    "ApplicationProvenance": {
+      "description": "Public, non-authoritative provenance summary for one running application.",
+      "oneOf": [
+        {
+          "description": "macOS bundle and code-signing identity when available.",
+          "type": "object",
+          "properties": {
+            "bundle_id": {
+              "description": "Bundle identifier reported by the running application.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "designated_requirement": {
+              "description": "Designated code-signing requirement when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "executable_path": {
+              "description": "Canonical executable path when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "platform": {
+              "type": "string",
+              "const": "macos"
+            },
+            "signing_team_id": {
+              "description": "Signing team identifier when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "platform"
+          ]
+        },
+        {
+          "description": "Windows image path and Authenticode identity when available.",
+          "type": "object",
+          "properties": {
+            "executable_path": {
+              "description": "Normalized executable image path.",
+              "type": "string"
+            },
+            "platform": {
+              "type": "string",
+              "const": "windows"
+            },
+            "publisher": {
+              "description": "Authenticode publisher subject when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "signature_status": {
+              "description": "Best-effort Authenticode state.",
+              "$ref": "#/$defs/SignatureStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "platform",
+            "executable_path",
+            "signature_status"
+          ]
+        },
+        {
+          "description": "Explicit fallback for a driver without a supported provenance format.",
+          "type": "object",
+          "properties": {
+            "executable_path": {
+              "description": "Executable path when the driver can report one safely.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "platform": {
+              "type": "string",
+              "const": "unsupported"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "platform"
+          ]
+        }
+      ]
+    },
+    "ApplicationSummary": {
+      "description": "One running application visible to the selected session.",
+      "type": "object",
+      "properties": {
+        "app_ref": {
+          "description": "Session-scoped opaque reference.",
+          "$ref": "#/$defs/AppRef"
+        },
+        "application_id": {
+          "description": "Stable bundle identifier or executable identity for host policy display.",
+          "type": "string"
+        },
+        "foreground": {
+          "description": "Whether the application currently owns the foreground.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Human-readable application name.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "app_ref",
+        "name",
+        "application_id",
+        "foreground"
+      ]
+    },
+    "ArtifactRef": {
+      "description": "Session-scoped opaque transient artifact reference.",
+      "type": "string"
+    },
+    "CaptureMode": {
+      "description": "Capture surface implemented by the selected driver.",
+      "oneOf": [
+        {
+          "description": "One exact top-level application window.",
+          "type": "string",
+          "const": "window"
+        }
+      ]
+    },
+    "CommandResult": {
+      "description": "Successful result for one command.",
+      "oneOf": [
+        {
+          "description": "Driver capability response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/DriverCapabilities"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "capabilities"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Operating-system permission response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/PermissionStatus"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "permission_status"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Short-lived running-application discovery response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/DiscoverApplicationsOutput"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "applications_discovered"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Session creation response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/OpenSessionOutput"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "session_opened"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Empty successful result.",
+          "type": "object",
+          "properties": {
+            "result_type": {
+              "type": "string",
+              "const": "acknowledged"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type"
+          ]
+        },
+        {
+          "description": "Application enumeration response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ApplicationSummary"
+              }
+            },
+            "result_type": {
+              "type": "string",
+              "const": "apps"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Window enumeration response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WindowSummary"
+              }
+            },
+            "result_type": {
+              "type": "string",
+              "const": "windows"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Immutable observation response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/WindowObservation"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "window_observed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Mutation response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/ActionOutput"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "action_performed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Verification response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/VerificationOutput"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "state_verified"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        }
+      ]
+    },
+    "CuaError": {
+      "description": "Public error envelope without platform handles or sensitive payloads.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Stable failure category.",
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "description": "Concise user-safe explanation.",
+          "type": "string"
+        },
+        "recovery_action": {
+          "description": "Stable recovery hint for agent or product routing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retryable": {
+          "description": "Whether retrying after a fresh observation or state change may succeed.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "DeliveryMode": {
+      "description": "How the platform delivered an input action.",
+      "oneOf": [
+        {
+          "description": "Accessibility or application-specific semantic action.",
+          "type": "string",
+          "const": "semantic"
+        },
+        {
+          "description": "System-wide foreground pointer or keyboard input.",
+          "type": "string",
+          "const": "foreground"
+        }
+      ]
+    },
+    "DiscoverApplicationsOutput": {
+      "description": "Bounded result of trusted-host application discovery.",
+      "type": "object",
+      "properties": {
+        "applications": {
+          "description": "Runtime-issued descriptors ordered by stable application identity.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiscoveredApplication"
+          }
+        },
+        "complete": {
+          "description": "False when the configured discovery result bound truncated the snapshot.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "applications",
+        "complete"
+      ]
+    },
+    "DiscoveredApplication": {
+      "description": "One running application visible to an authenticated policy host.",
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "description": "Stable bundle or executable identity for policy display and matching.",
+          "type": "string"
+        },
+        "discovery_ref": {
+          "description": "Short-lived, runtime-local reference used to request session authority.",
+          "$ref": "#/$defs/DiscoveryRef"
+        },
+        "expires_at": {
+          "description": "RFC 3339 deadline after which the reference must be rediscovered.",
+          "type": "string"
+        },
+        "foreground": {
+          "description": "Whether this process generation currently owns foreground input.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Human-readable application name.",
+          "type": "string"
+        },
+        "provenance": {
+          "description": "Non-authoritative platform provenance summary.",
+          "$ref": "#/$defs/ApplicationProvenance"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "discovery_ref",
+        "name",
+        "application_id",
+        "foreground",
+        "provenance",
+        "expires_at"
+      ]
+    },
+    "DiscoveryRef": {
+      "description": "Short-lived runtime-local reference for one discovered process generation.",
+      "type": "string"
+    },
+    "DriverCapabilities": {
+      "description": "Capabilities advertised by the selected platform driver.",
+      "type": "object",
+      "properties": {
+        "accessibility_tree": {
+          "description": "Whether accessibility elements can be observed.",
+          "type": "boolean"
+        },
+        "actions": {
+          "description": "Exact action kinds implemented by the driver.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionKind"
+          }
+        },
+        "capture_modes": {
+          "description": "Exact capture surfaces implemented by the driver.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaptureMode"
+          }
+        },
+        "input_routes": {
+          "description": "Exact native delivery routes implemented by the driver.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InputRoute"
+          }
+        },
+        "platform": {
+          "description": "Host operating system.",
+          "$ref": "#/$defs/Platform"
+        },
+        "protocol_version": {
+          "description": "Stable protocol identifier.",
+          "type": "string"
+        },
+        "runtime_version": {
+          "description": "Nexus Computer Use Runtime implementation version.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "runtime_version",
+        "platform",
+        "capture_modes",
+        "accessibility_tree",
+        "input_routes",
+        "actions"
+      ]
+    },
+    "ElementRef": {
+      "description": "Observation-scoped opaque accessibility element reference.",
+      "type": "string"
+    },
+    "ErrorCode": {
+      "description": "Stable machine-readable failure category.",
+      "oneOf": [
+        {
+          "description": "The request used a different protocol version.",
+          "type": "string",
+          "const": "protocol_mismatch"
+        },
+        {
+          "description": "Transport token is missing or invalid.",
+          "type": "string",
+          "const": "unauthorized"
+        },
+        {
+          "description": "Request body or operation input is invalid.",
+          "type": "string",
+          "const": "invalid_request"
+        },
+        {
+          "description": "A bounded native actor queue could not admit the request.",
+          "type": "string",
+          "const": "busy"
+        },
+        {
+          "description": "The caller deadline elapsed; an admitted side effect may still finish.",
+          "type": "string",
+          "const": "deadline_exceeded"
+        },
+        {
+          "description": "Session does not exist, expired, or is already closed.",
+          "type": "string",
+          "const": "session_unavailable"
+        },
+        {
+          "description": "Discovery reference expired or no longer identifies the same process.",
+          "type": "string",
+          "const": "stale_discovery"
+        },
+        {
+          "description": "Capability manifest does not authorize the operation.",
+          "type": "string",
+          "const": "capability_denied"
+        },
+        {
+          "description": "An opaque reference is unknown in the selected session.",
+          "type": "string",
+          "const": "reference_not_found"
+        },
+        {
+          "description": "Observation expired, was invalidated, or no longer matches platform state.",
+          "type": "string",
+          "const": "stale_observation"
+        },
+        {
+          "description": "Required operating-system permission is missing.",
+          "type": "string",
+          "const": "permission_required"
+        },
+        {
+          "description": "Driver cannot perform the operation on this platform or target.",
+          "type": "string",
+          "const": "unsupported"
+        },
+        {
+          "description": "Target requires foreground input not authorized by the manifest.",
+          "type": "string",
+          "const": "foreground_required"
+        },
+        {
+          "description": "Target application or window disappeared.",
+          "type": "string",
+          "const": "target_unavailable"
+        },
+        {
+          "description": "Platform driver failed without exposing sensitive implementation details.",
+          "type": "string",
+          "const": "driver_failure"
+        },
+        {
+          "description": "Internal invariant failed.",
+          "type": "string",
+          "const": "internal"
+        }
+      ]
+    },
+    "InputRoute": {
+      "description": "Input delivery route implemented by the selected driver.",
+      "oneOf": [
+        {
+          "description": "Accessibility or UI Automation pattern delivery.",
+          "type": "string",
+          "const": "semantic"
+        },
+        {
+          "description": "User-visible system foreground input.",
+          "type": "string",
+          "const": "foreground"
+        }
+      ]
+    },
+    "ObservationId": {
+      "description": "Identity for one immutable window observation.",
+      "type": "string"
+    },
+    "ObservationTruncation": {
+      "description": "Metadata explaining why a semantic snapshot is partial.",
+      "type": "object",
+      "properties": {
+        "emitted_elements": {
+          "description": "Number of elements successfully included.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reason": {
+          "description": "Stable bounded-resource or provider reason.",
+          "$ref": "#/$defs/TruncationReason"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "emitted_elements"
+      ]
+    },
+    "OpenSessionOutput": {
+      "description": "Result of opening one isolated runtime session.",
+      "type": "object",
+      "properties": {
+        "expires_at": {
+          "description": "RFC 3339 expiration timestamp.",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Runtime-issued session identity.",
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "expires_at"
+      ]
+    },
+    "PermissionState": {
+      "description": "One system permission's current state.",
+      "oneOf": [
+        {
+          "description": "The responsible signed application has permission.",
+          "type": "string",
+          "const": "granted"
+        },
+        {
+          "description": "The user or system denied permission.",
+          "type": "string",
+          "const": "denied"
+        },
+        {
+          "description": "The user has not made a decision yet.",
+          "type": "string",
+          "const": "not_determined"
+        },
+        {
+          "description": "The platform does not expose this permission separately.",
+          "type": "string",
+          "const": "not_applicable"
+        },
+        {
+          "description": "The driver cannot determine the state safely.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "PermissionStatus": {
+      "description": "Current permission snapshot for the responsible desktop host.",
+      "type": "object",
+      "properties": {
+        "accessibility": {
+          "description": "Permission to inspect and semantically operate accessibility elements.",
+          "$ref": "#/$defs/PermissionState"
+        },
+        "input_control": {
+          "description": "Permission to synthesize foreground keyboard or pointer input.",
+          "$ref": "#/$defs/PermissionState"
+        },
+        "screen_capture": {
+          "description": "Permission to capture windows or displays.",
+          "$ref": "#/$defs/PermissionState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "screen_capture",
+        "accessibility",
+        "input_control"
+      ]
+    },
+    "PixelSize": {
+      "description": "Exact physical dimensions of a screenshot artifact.",
+      "type": "object",
+      "properties": {
+        "height": {
+          "description": "Pixel rows.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width": {
+          "description": "Pixel columns.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height"
+      ]
+    },
+    "Platform": {
+      "description": "Operating system hosting the driver.",
+      "oneOf": [
+        {
+          "description": "Apple macOS.",
+          "type": "string",
+          "const": "macos"
+        },
+        {
+          "description": "Microsoft Windows.",
+          "type": "string",
+          "const": "windows"
+        },
+        {
+          "description": "A build without a supported desktop backend.",
+          "type": "string",
+          "const": "unsupported"
+        }
+      ]
+    },
+    "RequestId": {
+      "description": "Client-generated idempotency identity for one request.",
+      "type": "string"
+    },
+    "ResponseOutcome": {
+      "description": "Closed success/error outcome.",
+      "oneOf": [
+        {
+          "description": "Successful command result.",
+          "type": "object",
+          "properties": {
+            "result": {
+              "description": "Command-specific response data.",
+              "$ref": "#/$defs/CommandResult"
+            },
+            "status": {
+              "type": "string",
+              "const": "success"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "result"
+          ]
+        },
+        {
+          "description": "Stable public failure.",
+          "type": "object",
+          "properties": {
+            "error": {
+              "description": "Stable public error without sensitive driver details.",
+              "$ref": "#/$defs/CuaError"
+            },
+            "status": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "error"
+          ]
+        }
+      ]
+    },
+    "ScreenRect": {
+      "description": "A rectangle in logical, top-left-origin screen coordinates.",
+      "type": "object",
+      "properties": {
+        "height": {
+          "description": "Non-negative logical height.",
+          "type": "number",
+          "format": "double"
+        },
+        "width": {
+          "description": "Non-negative logical width.",
+          "type": "number",
+          "format": "double"
+        },
+        "x": {
+          "description": "Logical left edge.",
+          "type": "number",
+          "format": "double"
+        },
+        "y": {
+          "description": "Logical top edge.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "ScreenshotArtifact": {
+      "description": "Runtime-owned transient screenshot metadata.",
+      "type": "object",
+      "properties": {
+        "artifact_ref": {
+          "description": "Opaque artifact identity.",
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "byte_length": {
+          "description": "Encoded byte length.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mapping": {
+          "description": "Exact relationship between image pixels and logical screen points.",
+          "$ref": "#/$defs/ScreenshotMapping"
+        },
+        "mime_type": {
+          "description": "Always `image/png` in v0.1.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Runtime-chosen absolute local file path.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase SHA-256 digest.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artifact_ref",
+        "path",
+        "mime_type",
+        "mapping",
+        "byte_length",
+        "sha256"
+      ]
+    },
+    "ScreenshotMapping": {
+      "description": "Checked affine mapping between one screenshot and logical screen space.",
+      "type": "object",
+      "properties": {
+        "pixel_size": {
+          "description": "Exact image dimensions.",
+          "$ref": "#/$defs/PixelSize"
+        },
+        "screen_bounds": {
+          "description": "Logical screen rectangle represented by the image.",
+          "$ref": "#/$defs/ScreenRect"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "screen_bounds",
+        "pixel_size"
+      ]
+    },
+    "SessionId": {
+      "description": "Runtime-issued identity for an authorized session.",
+      "type": "string"
+    },
+    "SignatureStatus": {
+      "description": "Best-effort executable signature state reported by a native driver.",
+      "oneOf": [
+        {
+          "description": "The operating system verified the executable signature.",
+          "type": "string",
+          "const": "verified"
+        },
+        {
+          "description": "A signature exists but did not validate.",
+          "type": "string",
+          "const": "invalid"
+        },
+        {
+          "description": "The executable has no platform signature.",
+          "type": "string",
+          "const": "unsigned"
+        },
+        {
+          "description": "The driver could not determine signature state safely.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "TruncationReason": {
+      "description": "Stable reason a semantic snapshot is intentionally partial.",
+      "oneOf": [
+        {
+          "description": "Configured node budget was reached.",
+          "type": "string",
+          "const": "node_limit"
+        },
+        {
+          "description": "Configured hierarchy depth was reached.",
+          "type": "string",
+          "const": "depth_limit"
+        },
+        {
+          "description": "Configured aggregate string-byte budget was reached.",
+          "type": "string",
+          "const": "byte_limit"
+        },
+        {
+          "description": "Provider wall-time budget elapsed.",
+          "type": "string",
+          "const": "deadline"
+        },
+        {
+          "description": "An application accessibility provider stopped responding.",
+          "type": "string",
+          "const": "provider_failure"
+        }
+      ]
+    },
+    "VerificationOutput": {
+      "description": "Deterministic verification result.",
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "description": "Concise non-sensitive evidence.",
+          "type": "string"
+        },
+        "matched": {
+          "description": "Whether the predicate matched.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "matched",
+        "evidence"
+      ]
+    },
+    "WindowObservation": {
+      "description": "Immutable result of observing one exact window.",
+      "type": "object",
+      "properties": {
+        "captured_at": {
+          "description": "RFC 3339 capture timestamp.",
+          "type": "string"
+        },
+        "elements": {
+          "description": "Normalized actionable accessibility elements.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccessibilityElement"
+          }
+        },
+        "elements_complete": {
+          "description": "False when the platform tree was truncated or partially unavailable.",
+          "type": "boolean"
+        },
+        "elements_truncation": {
+          "description": "Present exactly when the semantic tree is partial.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationTruncation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation_id": {
+          "description": "Runtime identity for stale-action protection.",
+          "$ref": "#/$defs/ObservationId"
+        },
+        "screenshot": {
+          "description": "Optional transient screenshot.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScreenshotArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "window_ref": {
+          "description": "Exact target window.",
+          "$ref": "#/$defs/WindowRef"
+        },
+        "window_screen_bounds": {
+          "description": "Logical window bounds at capture time.",
+          "$ref": "#/$defs/ScreenRect"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "window_ref",
+        "captured_at",
+        "window_screen_bounds",
+        "elements",
+        "elements_complete"
+      ]
+    },
+    "WindowRef": {
+      "description": "Session-scoped opaque window reference.",
+      "type": "string"
+    },
+    "WindowSummary": {
+      "description": "One top-level application window.",
+      "type": "object",
+      "properties": {
+        "app_ref": {
+          "description": "Owning application reference.",
+          "$ref": "#/$defs/AppRef"
+        },
+        "foreground": {
+          "description": "Whether the window owns foreground input.",
+          "type": "boolean"
+        },
+        "minimized": {
+          "description": "Whether the window is minimized.",
+          "type": "boolean"
+        },
+        "screen_bounds": {
+          "description": "Logical top-left screen bounds.",
+          "$ref": "#/$defs/ScreenRect"
+        },
+        "title": {
+          "description": "Current window title.",
+          "type": "string"
+        },
+        "visible": {
+          "description": "Whether the window is currently visible on a display.",
+          "type": "boolean"
+        },
+        "window_ref": {
+          "description": "Session-scoped opaque window reference.",
+          "$ref": "#/$defs/WindowRef"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "window_ref",
+        "app_ref",
+        "title",
+        "screen_bounds",
+        "minimized",
+        "visible",
+        "foreground"
+      ]
+    }
+  }
+}

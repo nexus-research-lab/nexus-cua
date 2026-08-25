@@ -111,6 +111,7 @@ async fn serves_one_authenticated_request_over_native_local_ipc() {
             &token,
             config.max_inflight_requests,
             config.max_completed_requests,
+            config.completed_request_ttl,
             config.max_request_timeout_ms,
         )
         .expect("create dispatcher"),

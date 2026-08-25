@@ -77,6 +77,13 @@ it creates a fresh transport token, starts one sidecar with a private Unix
 socket or local-only Windows named pipe, and checks `get_capabilities` plus
 `get_permission_status` before advertising the feature.
 
+To grant an operation, the trusted host calls `discover_applications`, presents
+the returned display/provenance facts through its policy or approval surface,
+and opens the session with the selected short-lived refs. It never constructs
+an allowlist from a model-authored bundle ID, image path, PID, or window handle.
+`stale_discovery` means rediscover and obtain a fresh policy decision when the
+identity facts changed.
+
 The service applies mode `0600` to its Unix socket and an owner-and-SYSTEM-only
 protected DACL to its Windows pipe. The token file and artifact base are still
 host responsibilities and must inherit an owner-private directory ACL. Local
@@ -125,7 +132,10 @@ owner switch, or sidecar health loss.
 
 Transport retries preserve the exact `request_id` and command. A caller that
 times out may increase only `timeout_ms` while reconciling. It must never create
-a new request identity merely because a mutating call timed out.
+a new request identity merely because a mutating call timed out. The default
+reconciliation horizon is 10 minutes; after it ends, an unresolved mutation is
+indeterminate and must not be replayed. A full ledger returns `busy` instead of
+discarding an unexpired result.
 
 ## Nexus adapter target
 
@@ -181,13 +191,15 @@ binary beside the active version, run `doctor` and a signed-package smoke test,
 then switch only after the previous sidecar exits. It must not mix one binary's
 endpoint, token, sessions, or artifact generation with another version.
 
-Non-Rust consumers can export the schema from their pinned local binary with
-`nexus-cua schema` and generate typed bindings. Published schema bundles,
-compatibility fixtures, and maintained reference clients are separate future
-distribution work. Frames are four-byte big-endian lengths followed by closed
+Non-Rust consumers use the committed schemas in `schemas/nexus.cua.v1/` or
+export the same contract from their pinned local binary with `nexus-cua
+schema`. Compatibility fixtures in `fixtures/compatibility/nexus.cua.v1/`
+provide the cross-language conformance corpus; maintained reference clients are
+a later milestone. Frames are four-byte big-endian lengths followed by closed
 JSON and are bounded before payload allocation. Implementations must preserve
-unknown-variant failure, opaque references, redacted sensitive values, and
-stable error codes rather than translating the protocol into a looser map.
+unknown-variant failure, opaque references, redacted sensitive values, stable
+error codes, and same-request retry identity rather than translating the
+protocol into a looser map.
 
 ## Observability
 

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nexus_cua_protocol::{
     AuthorizationToken, Command, CuaError, ErrorCode, PROTOCOL_VERSION, RequestEnvelope, RequestId,
@@ -38,9 +39,13 @@ impl Dispatcher {
         token: &AuthorizationToken,
         max_inflight_requests: usize,
         max_completed_requests: usize,
+        completed_request_ttl: Duration,
         max_request_timeout_ms: u32,
     ) -> Result<Self, TransportError> {
-        if max_inflight_requests == 0 || max_completed_requests == 0 || max_request_timeout_ms == 0
+        if max_inflight_requests == 0
+            || max_completed_requests == 0
+            || completed_request_ttl.is_zero()
+            || max_request_timeout_ms == 0
         {
             return Err(TransportError::InvalidConfiguration(
                 "request ledger and timeout bounds must be non-zero".to_owned(),
@@ -59,7 +64,7 @@ impl Dispatcher {
                 inflight_requests: 0,
                 max_inflight_requests,
                 max_completed_requests,
-                next_sequence: 0,
+                completed_request_ttl,
             })),
             max_request_timeout_ms,
         })
@@ -189,6 +194,7 @@ impl Dispatcher {
 
     async fn begin_request(&self, request_id: &RequestId, digest: [u8; 32]) -> BeginRequest {
         let mut ledger = self.ledger.lock().await;
+        ledger.purge_expired(Instant::now());
         match ledger.entries.get(request_id) {
             Some(RequestEntry::Pending {
                 digest: existing,
@@ -201,6 +207,7 @@ impl Dispatcher {
             }) if *existing == digest => BeginRequest::Replay(response.clone()),
             Some(_) => BeginRequest::Conflict,
             None if ledger.inflight_requests >= ledger.max_inflight_requests => BeginRequest::Busy,
+            None if ledger.entries.len() >= ledger.max_completed_requests => BeginRequest::Busy,
             None => {
                 let (response, receiver) = watch::channel(None);
                 ledger.entries.insert(
@@ -260,31 +267,14 @@ struct RequestLedger {
     inflight_requests: usize,
     max_inflight_requests: usize,
     max_completed_requests: usize,
-    next_sequence: u64,
+    completed_request_ttl: Duration,
 }
 
 impl RequestLedger {
-    fn evict_completed(&mut self) {
-        let completed = self
-            .entries
-            .values()
-            .filter(|entry| matches!(entry, RequestEntry::Complete { .. }))
-            .count();
-        if completed <= self.max_completed_requests {
-            return;
-        }
-        let oldest = self
-            .entries
-            .iter()
-            .filter_map(|(request_id, entry)| match entry {
-                RequestEntry::Complete { sequence, .. } => Some((request_id.clone(), *sequence)),
-                RequestEntry::Pending { .. } => None,
-            })
-            .min_by_key(|(_, sequence)| *sequence)
-            .map(|(request_id, _)| request_id);
-        if let Some(request_id) = oldest {
-            self.entries.remove(&request_id);
-        }
+    fn purge_expired(&mut self, now: Instant) {
+        self.entries.retain(|_, entry| {
+            !matches!(entry, RequestEntry::Complete { expires_at, .. } if *expires_at <= now)
+        });
     }
 }
 
@@ -296,7 +286,7 @@ enum RequestEntry {
     Complete {
         digest: [u8; 32],
         response: ResponseEnvelope,
-        sequence: u64,
+        expires_at: Instant,
     },
 }
 
@@ -314,17 +304,15 @@ async fn complete_request(
         ledger.inflight_requests = ledger.inflight_requests.saturating_sub(1);
         sender.send_replace(Some(response.clone()));
     }
-    ledger.next_sequence = ledger.next_sequence.wrapping_add(1);
-    let sequence = ledger.next_sequence;
+    let expires_at = Instant::now() + ledger.completed_request_ttl;
     ledger.entries.insert(
         request_id,
         RequestEntry::Complete {
             digest,
             response,
-            sequence,
+            expires_at,
         },
     );
-    ledger.evict_completed();
 }
 
 async fn wait_for_response(
@@ -363,6 +351,7 @@ fn operation_name(command: &Command) -> &'static str {
     match command {
         Command::GetCapabilities => "get_capabilities",
         Command::GetPermissionStatus => "get_permission_status",
+        Command::DiscoverApplications => "discover_applications",
         Command::OpenSession(_) => "open_session",
         Command::CloseSession(_) => "close_session",
         Command::ListApps(_) => "list_apps",
@@ -405,6 +394,7 @@ fn error_code_name(code: ErrorCode) -> &'static str {
         ErrorCode::Busy => "busy",
         ErrorCode::DeadlineExceeded => "deadline_exceeded",
         ErrorCode::SessionUnavailable => "session_unavailable",
+        ErrorCode::StaleDiscovery => "stale_discovery",
         ErrorCode::CapabilityDenied => "capability_denied",
         ErrorCode::ReferenceNotFound => "reference_not_found",
         ErrorCode::StaleObservation => "stale_observation",
@@ -605,6 +595,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protocol_mismatch_returns_readable_current_envelope() {
+        let (dispatcher, driver, root) = dispatcher(Duration::ZERO);
+        let mut mismatched = request("request-protocol-mismatch", 500, Command::GetCapabilities);
+        mismatched.protocol_version = "nexus.cua.v0".to_owned();
+
+        let response = dispatcher.dispatch(mismatched).await;
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_error_code(&response, ErrorCode::ProtocolMismatch);
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 0);
+        cleanup(root);
+    }
+
+    #[tokio::test]
     async fn distinct_inflight_requests_are_bounded_before_execution() {
         let (dispatcher, driver, root) =
             dispatcher_with_inflight_limit(Duration::from_millis(30), 1);
@@ -638,6 +642,39 @@ mod tests {
         cleanup(root);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn unexpired_reconciliation_result_is_not_evicted_for_new_mutation() {
+        let horizon = Duration::from_secs(10 * 60);
+        let (dispatcher, driver, root) = dispatcher_with_limits(Duration::ZERO, 1, 1, horizon);
+        let completed = dispatcher
+            .dispatch(request("request-completed", 500, Command::GetCapabilities))
+            .await;
+        assert!(matches!(completed.outcome, ResponseOutcome::Success { .. }));
+
+        let rejected = dispatcher
+            .dispatch(request(
+                "request-mutation",
+                500,
+                Command::CloseSession(nexus_cua_protocol::SessionInput {
+                    session_id: nexus_cua_protocol::SessionId::new("session-old"),
+                }),
+            ))
+            .await;
+        assert_error_code(&rejected, ErrorCode::Busy);
+
+        tokio::time::advance(horizon + Duration::from_secs(1)).await;
+        let admitted = dispatcher
+            .dispatch(request(
+                "request-after-horizon",
+                500,
+                Command::GetCapabilities,
+            ))
+            .await;
+        assert!(matches!(admitted.outcome, ResponseOutcome::Success { .. }));
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 2);
+        cleanup(root);
+    }
+
     fn dispatcher(delay: Duration) -> (Arc<Dispatcher>, Arc<CountingDriver>, PathBuf) {
         dispatcher_with_inflight_limit(delay, 64)
     }
@@ -645,6 +682,20 @@ mod tests {
     fn dispatcher_with_inflight_limit(
         delay: Duration,
         max_inflight_requests: usize,
+    ) -> (Arc<Dispatcher>, Arc<CountingDriver>, PathBuf) {
+        dispatcher_with_limits(
+            delay,
+            max_inflight_requests,
+            64,
+            Duration::from_secs(10 * 60),
+        )
+    }
+
+    fn dispatcher_with_limits(
+        delay: Duration,
+        max_inflight_requests: usize,
+        max_completed_requests: usize,
+        completed_request_ttl: Duration,
     ) -> (Arc<Dispatcher>, Arc<CountingDriver>, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "nexus-cua-transport-{}-{}",
@@ -660,8 +711,15 @@ mod tests {
         );
         let token = AuthorizationToken::new("0123456789abcdef0123456789abcdef");
         let dispatcher = Arc::new(
-            Dispatcher::new(runtime, &token, max_inflight_requests, 64, 1_000)
-                .expect("create test dispatcher"),
+            Dispatcher::new(
+                runtime,
+                &token,
+                max_inflight_requests,
+                max_completed_requests,
+                completed_request_ttl,
+                1_000,
+            )
+            .expect("create test dispatcher"),
         );
         (dispatcher, driver, root)
     }

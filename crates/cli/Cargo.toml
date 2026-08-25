@@ -14,6 +14,7 @@ nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
 nexus-cua-runtime = { version = "0.1.0", path = "../runtime" }
 nexus-cua-transport = { version = "0.1.0", path = "../transport" }
 schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

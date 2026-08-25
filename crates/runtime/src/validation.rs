@@ -10,8 +10,8 @@ use nexus_cua_protocol::{
 use crate::error::public_error;
 
 const MAX_ALLOWED_APPLICATIONS: usize = 128;
-const MAX_APPLICATION_ID_BYTES: usize = 32 * 1024;
-const MAX_APPLICATION_ALLOWLIST_BYTES: usize = 256 * 1024;
+const MAX_DISCOVERY_REF_BYTES: usize = 256;
+const MAX_APPLICATION_ALLOWLIST_BYTES: usize = 32 * 1024;
 const MAX_ACTIONS: usize = 16;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_KEYS: usize = 8;
@@ -25,19 +25,25 @@ pub(crate) fn validate_manifest(
     if manifest.ttl_seconds == 0 || manifest.ttl_seconds > max_ttl_seconds {
         return Err(invalid("session ttl is outside the supported range"));
     }
-    if manifest.allowed_application_ids.len() > MAX_ALLOWED_APPLICATIONS {
-        return Err(invalid("application allowlist is too large"));
+    if manifest.application_refs.is_empty()
+        || manifest.application_refs.len() > MAX_ALLOWED_APPLICATIONS
+    {
+        return Err(invalid(
+            "application reference allowlist is empty or too large",
+        ));
     }
     let allowlist_bytes = manifest
-        .allowed_application_ids
+        .application_refs
         .iter()
-        .try_fold(0_usize, |total, value| total.checked_add(value.len()))
+        .try_fold(0_usize, |total, value| {
+            total.checked_add(value.as_str().len())
+        })
         .ok_or_else(|| invalid("application allowlist is too large"))?;
     if allowlist_bytes > MAX_APPLICATION_ALLOWLIST_BYTES
         || manifest
-            .allowed_application_ids
+            .application_refs
             .iter()
-            .any(|value| value.len() > MAX_APPLICATION_ID_BYTES)
+            .any(|value| value.as_str().len() > MAX_DISCOVERY_REF_BYTES)
     {
         return Err(invalid("application allowlist is too large"));
     }
@@ -45,16 +51,16 @@ pub(crate) fn validate_manifest(
         return Err(invalid("action allowlist is too large"));
     }
     if manifest
-        .allowed_application_ids
+        .application_refs
         .iter()
-        .any(|value| value.trim().is_empty() || value != value.trim())
+        .any(|value| value.as_str().trim().is_empty() || value.as_str() != value.as_str().trim())
     {
         return Err(invalid(
-            "application identifiers must be non-empty and normalized",
+            "discovery references must be non-empty and normalized",
         ));
     }
-    let unique_apps: HashSet<_> = manifest.allowed_application_ids.iter().collect();
-    if unique_apps.len() != manifest.allowed_application_ids.len() {
+    let unique_apps: HashSet<_> = manifest.application_refs.iter().collect();
+    if unique_apps.len() != manifest.application_refs.len() {
         return Err(invalid("application allowlist contains duplicates"));
     }
     let unique_actions: HashSet<_> = manifest.allowed_actions.iter().collect();

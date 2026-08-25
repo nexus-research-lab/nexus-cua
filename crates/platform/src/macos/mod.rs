@@ -2,15 +2,18 @@
 
 mod capture;
 mod input;
+mod provenance;
 mod semantic;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use core_graphics::access::ScreenCaptureAccess;
 use nexus_cua_protocol::{
-    AccessibilityMode, ActionKind, CaptureMode, DeliveryMode, DriverCapabilities, InputRoute,
-    PROTOCOL_VERSION, PermissionState, PermissionStatus, Platform, StatePredicate,
+    AccessibilityMode, ActionKind, ApplicationProvenance, CaptureMode, DeliveryMode,
+    DriverCapabilities, InputRoute, PROTOCOL_VERSION, PermissionState, PermissionStatus, Platform,
+    StatePredicate,
 };
 use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
@@ -20,6 +23,7 @@ use nexus_cua_runtime::{
 use capture::{CaptureActor, NativeWindow};
 use input::{InputAction, InputActor};
 use semantic::{SemanticAction, SemanticActor};
+use tokio::sync::Semaphore;
 
 use crate::observation::{contains_rect, fingerprint, fingerprints_match};
 
@@ -28,7 +32,10 @@ pub struct MacosDriver {
     capture: CaptureActor,
     semantic: SemanticActor,
     input: InputActor,
+    provenance_workers: Arc<Semaphore>,
 }
+
+const PROVENANCE_WORKERS: usize = 2;
 
 impl MacosDriver {
     /// Creates a driver without prompting for operating-system permissions.
@@ -37,6 +44,7 @@ impl MacosDriver {
             capture: CaptureActor::spawn(),
             semantic: SemanticActor::spawn(),
             input: InputActor::spawn()?,
+            provenance_workers: Arc::new(Semaphore::new(PROVENANCE_WORKERS)),
         })
     }
 
@@ -95,13 +103,33 @@ impl DesktopDriver for MacosDriver {
     }
 
     async fn list_applications(&self) -> Result<Vec<DriverApplication>, DriverError> {
-        let mut applications = HashMap::new();
-        for window in self.windows().await? {
-            applications
-                .entry(window.application_key.clone())
-                .or_insert_with(|| driver_application(&window));
-        }
-        Ok(applications.into_values().collect())
+        let windows = self.windows().await?;
+        let permit = Arc::clone(&self.provenance_workers)
+            .try_acquire_owned()
+            .map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::Busy,
+                    "macOS provenance worker capacity is exhausted",
+                )
+                .retryable("retry_with_backoff")
+            })?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut applications = HashMap::new();
+            for window in windows {
+                applications
+                    .entry(window.application_key.clone())
+                    .or_insert_with(|| discovered_application(&window));
+            }
+            applications.into_values().collect()
+        })
+        .await
+        .map_err(|_| {
+            DriverError::new(
+                DriverErrorKind::Platform,
+                "macOS provenance worker stopped unexpectedly",
+            )
+        })
     }
 
     async fn list_windows(
@@ -395,10 +423,38 @@ impl MacosDriver {
 fn driver_application(window: &NativeWindow) -> DriverApplication {
     DriverApplication {
         key: window.application_key.clone(),
+        process_generation: window.application_key.clone(),
+        identity: format!(
+            "bundle:{}:executable:{}",
+            window.bundle_id.as_deref().unwrap_or(""),
+            window.executable_path.as_deref().unwrap_or("")
+        ),
         name: window.application_name.clone(),
         application_id: window.application_id.clone(),
         foreground: window.foreground,
+        provenance: ApplicationProvenance::Macos {
+            bundle_id: window.bundle_id.clone(),
+            executable_path: window.executable_path.clone(),
+            signing_team_id: None,
+            designated_requirement: None,
+        },
     }
+}
+
+fn discovered_application(window: &NativeWindow) -> DriverApplication {
+    let mut application = driver_application(window);
+    let signing = window
+        .executable_path
+        .as_deref()
+        .map(provenance::inspect)
+        .unwrap_or_default();
+    application.provenance = ApplicationProvenance::Macos {
+        bundle_id: window.bundle_id.clone(),
+        executable_path: window.executable_path.clone(),
+        signing_team_id: signing.team_id,
+        designated_requirement: signing.designated_requirement,
+    };
+    application
 }
 
 fn driver_window(window: NativeWindow) -> DriverWindow {

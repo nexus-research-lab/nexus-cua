@@ -48,7 +48,7 @@ enum CliCommand {
     /// Inspect native capabilities and OS permission state.
     Doctor(DoctorArgs),
     /// Print the closed protocol JSON schemas.
-    Schema,
+    Schema(SchemaArgs),
     /// Send one command to a running local service.
     Request(RequestArgs),
 }
@@ -80,6 +80,13 @@ struct DoctorArgs {
 }
 
 #[derive(Debug, Args)]
+struct SchemaArgs {
+    /// Write deterministic request/response schema files below this directory.
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 struct RequestArgs {
     /// Unix socket path or Windows named-pipe path.
     #[arg(long)]
@@ -105,7 +112,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         CliCommand::Serve(args) => serve(args).await,
         CliCommand::Doctor(args) => doctor(args).await,
-        CliCommand::Schema => print_schema(),
+        CliCommand::Schema(args) => write_or_print_schema(args),
         CliCommand::Request(args) => send_request(args).await,
     }
 }
@@ -122,10 +129,11 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     let mut server_config = ServerConfig::new(paths.endpoint.clone());
     server_config.max_frame_bytes = max_frame_bytes;
     let dispatcher = Arc::new(Dispatcher::new(
-        runtime,
+        Arc::clone(&runtime),
         &token,
         server_config.max_inflight_requests,
         server_config.max_completed_requests,
+        server_config.completed_request_ttl,
         server_config.max_request_timeout_ms,
     )?);
     eprintln!("Nexus Computer Use endpoint: {}", paths.endpoint);
@@ -133,10 +141,12 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         "Nexus Computer Use token file: {}",
         paths.token_file.display()
     );
-    nexus_cua_transport::serve_until(dispatcher, server_config, async {
+    let serve_result = nexus_cua_transport::serve_until(dispatcher, server_config, async {
         let _ = tokio::signal::ctrl_c().await;
     })
-    .await?;
+    .await;
+    runtime.shutdown().await;
+    serve_result?;
     Ok(())
 }
 
@@ -175,13 +185,28 @@ async fn doctor(args: DoctorArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn print_schema() -> Result<(), CliError> {
-    let value = json!({
-        "protocol_version": PROTOCOL_VERSION,
-        "request": schema_for!(RequestEnvelope),
-        "response": schema_for!(nexus_cua_protocol::ResponseEnvelope),
-    });
-    println!("{}", serde_json::to_string_pretty(&value)?);
+fn write_or_print_schema(args: SchemaArgs) -> Result<(), CliError> {
+    let request = schema_for!(RequestEnvelope);
+    let response = schema_for!(nexus_cua_protocol::ResponseEnvelope);
+    if let Some(output_dir) = args.output_dir {
+        std::fs::create_dir_all(&output_dir)?;
+        write_json(&output_dir.join("request.schema.json"), &request)?;
+        write_json(&output_dir.join("response.schema.json"), &response)?;
+    } else {
+        let value = json!({
+            "protocol_version": PROTOCOL_VERSION,
+            "request": request,
+            "response": response,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    }
+    Ok(())
+}
+
+fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(), CliError> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    std::fs::write(path, bytes)?;
     Ok(())
 }
 

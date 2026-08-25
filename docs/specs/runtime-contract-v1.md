@@ -66,6 +66,16 @@ retryable busy error before executing a side effect.
 A private target identity includes the process lifetime, native window
 identity, and a driver generation. It is not just a PID, HWND, or window title.
 
+Before session creation, the trusted policy host receives a discovery
+descriptor and an opaque reference valid for at most 30 seconds. The runtime
+binds that reference to its process epoch, the native process generation, and
+the normalized executable or bundle identity. `open_session` performs a fresh
+enumeration and fails with `stale_discovery` unless all three still match.
+macOS provenance reports bundle identifier, executable path, and code-signing
+identity when available; Windows reports normalized image path and available
+publisher/signature state. Missing signature metadata is descriptive and does
+not itself deny authority; the embedding host owns that policy decision.
+
 Observation uses a two-phase coherence check:
 
 1. Read target generation and geometry.
@@ -144,8 +154,21 @@ native queues return `busy` before their actor executes the command.
 
 `request_id` is an in-process idempotency key. Concurrent identical retries
 join the first execution; completed retries replay the exact response. Reusing
-the identity for a different command fails closed. After process restart all
-old sessions are invalid, so a retried mutation cannot regain authority.
+the identity for a different canonical command fails closed. Completed
+responses are retained for a configurable horizon of 10 minutes by default.
+An unexpired completion is never evicted to admit new work; ledger capacity
+returns `busy`. After the horizon, clients treat a missing result as
+indeterminate and never retry a mutation under a new ID. After process restart
+the ledger, runtime epoch, discovery references, and sessions are all invalid,
+so a retried mutation cannot regain authority.
+
+Session and discovery expiry are driven by one nearest-deadline scheduler, not
+by incoming requests or active polling. Opening, closing, discovering, and
+expiring work reschedules that deadline. Expired sessions reject immediately
+and their artifacts are removed while the service is otherwise idle. Embedded
+hosts call `Runtime::shutdown`; the sidecar stops admission, waits for admitted
+runtime commands, shuts down the scheduler, and removes live session artifacts
+before returning.
 
 ## Performance budgets
 
@@ -170,6 +193,10 @@ Additional budgets:
 - at most 64 local connections and 64 distinct in-flight requests by default;
 - at most 64 live capability sessions by default, with an embedding host able
   to select a smaller non-zero bound;
+- discovery references live for at most 30 seconds, with at most 256
+  applications per snapshot and 2,048 unexpired references by default;
+- completed request results remain replayable for 10 minutes by default, and
+  admission fails rather than evicting an unexpired ledger entry;
 - at most four warm Windows target capture pipelines by default;
 - at most two retained frames per pipeline;
 - a 4K capture pipeline target below 128 MiB of resident GPU/CPU buffers;

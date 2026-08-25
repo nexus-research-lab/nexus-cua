@@ -8,6 +8,7 @@ use nexus_cua_protocol::{
     ObservationId, ScreenPoint, ScreenshotMapping, ScreenshotPoint, SessionId, WindowRef,
 };
 use tokio::sync::Mutex;
+use tokio::time::Instant as TokioInstant;
 use uuid::Uuid;
 
 use crate::driver::{
@@ -18,16 +19,16 @@ use crate::error::public_error;
 pub(crate) struct Session {
     pub(crate) id: SessionId,
     pub(crate) manifest: CapabilityManifest,
-    pub(crate) expires_at: Instant,
+    pub(crate) allowed_applications: Vec<DriverApplication>,
+    pub(crate) expires_at: TokioInstant,
     pub(crate) state: Mutex<SessionState>,
 }
 
 impl Session {
-    pub(crate) fn allows_application(&self, application_id: &str) -> bool {
-        self.manifest
-            .allowed_application_ids
+    pub(crate) fn allows_application(&self, application: &DriverApplication) -> bool {
+        self.allowed_applications
             .iter()
-            .any(|allowed| allowed == application_id)
+            .any(|allowed| allowed.matches_generation(application))
     }
 }
 

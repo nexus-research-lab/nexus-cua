@@ -60,7 +60,10 @@ Connection tasks and distinct in-flight requests have independent hard bounds.
 Capacity is rejected before a new side effect reaches the runtime.
 
 Platform identifiers stay behind the runtime. Public callers receive opaque
-application, window, element, observation, session, and artifact references.
+discovery, application, window, element, observation, session, and artifact
+references. Discovery is available only to an authenticated policy host and
+does not create authority. Session creation revalidates its short-lived refs
+against the same runtime epoch, process generation, and executable identity.
 Every mutation is authorized against its session and requires a fresh
 observation of the exact target window.
 
@@ -72,6 +75,12 @@ host-selected private root, use restrictive permissions, and are deleted when
 their session expires or closes. Graceful runtime teardown deletes its entire
 generation without deleting the host root. Neither screenshot bytes nor typed
 text may enter logs.
+
+One nearest-deadline task expires discovery refs and sessions without polling.
+It owns no native object, stores no frame, and wakes only when a deadline or
+lifecycle revision changes. Explicit shutdown first closes admission, waits for
+admitted runtime calls, stops this task, and removes remaining session
+artifacts.
 
 ## Observation pipeline
 

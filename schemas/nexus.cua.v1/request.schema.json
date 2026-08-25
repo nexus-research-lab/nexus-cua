@@ -1,0 +1,993 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RequestEnvelope",
+  "description": "Authenticated request sent over a private local transport.",
+  "type": "object",
+  "properties": {
+    "authorization": {
+      "description": "Host-issued transport token.",
+      "$ref": "#/$defs/AuthorizationToken"
+    },
+    "command": {
+      "description": "Exact requested operation.",
+      "$ref": "#/$defs/Command"
+    },
+    "protocol_version": {
+      "description": "Must equal [`crate::PROTOCOL_VERSION`].",
+      "type": "string"
+    },
+    "request_id": {
+      "description": "Client-generated request identity.",
+      "$ref": "#/$defs/RequestId"
+    },
+    "timeout_ms": {
+      "description": "End-to-end caller deadline in milliseconds, bounded by the service.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "timeout_ms",
+    "authorization",
+    "command"
+  ],
+  "$defs": {
+    "AccessibilityMode": {
+      "description": "Requested semantic-tree detail for an observation.",
+      "oneOf": [
+        {
+          "description": "Do not query the platform accessibility provider.",
+          "type": "string",
+          "const": "disabled"
+        },
+        {
+          "description": "Actionable elements plus their minimum ancestor hierarchy.",
+          "type": "string",
+          "const": "interactive"
+        },
+        {
+          "description": "A bounded diagnostic control-view tree.",
+          "type": "string",
+          "const": "full"
+        }
+      ]
+    },
+    "Action": {
+      "description": "One authorized desktop mutation.",
+      "oneOf": [
+        {
+          "description": "Brings the exact target window to the foreground.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "focus_window"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Moves semantic keyboard focus to an observed element.",
+          "type": "object",
+          "properties": {
+            "element_ref": {
+              "description": "Element scoped to the bound observation.",
+              "$ref": "#/$defs/ElementRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "focus_element"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "element_ref"
+          ]
+        },
+        {
+          "description": "Invokes an element from the bound observation.",
+          "type": "object",
+          "properties": {
+            "element_ref": {
+              "description": "Element scoped to the bound observation.",
+              "$ref": "#/$defs/ElementRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "invoke_element"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "element_ref"
+          ]
+        },
+        {
+          "description": "Clicks a point inside the observed window.",
+          "type": "object",
+          "properties": {
+            "button": {
+              "description": "Pointer button.",
+              "$ref": "#/$defs/PointerButton"
+            },
+            "count": {
+              "description": "Number of clicks, limited by the runtime.",
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "click_point"
+            },
+            "point": {
+              "description": "Integer coordinate in the guarded screenshot artifact.",
+              "$ref": "#/$defs/ScreenshotPoint"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "point",
+            "button",
+            "count"
+          ]
+        },
+        {
+          "description": "Replaces an accessibility element value.",
+          "type": "object",
+          "properties": {
+            "element_ref": {
+              "description": "Element scoped to the bound observation.",
+              "$ref": "#/$defs/ElementRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "set_value"
+            },
+            "value": {
+              "description": "Sensitive value that must not enter logs.",
+              "$ref": "#/$defs/SensitiveText"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "element_ref",
+            "value"
+          ]
+        },
+        {
+          "description": "Toggles an accessibility element through its semantic pattern.",
+          "type": "object",
+          "properties": {
+            "element_ref": {
+              "description": "Element scoped to the bound observation.",
+              "$ref": "#/$defs/ElementRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "toggle_element"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "element_ref"
+          ]
+        },
+        {
+          "description": "Selects an accessibility element through its semantic pattern.",
+          "type": "object",
+          "properties": {
+            "element_ref": {
+              "description": "Element scoped to the bound observation.",
+              "$ref": "#/$defs/ElementRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "select_element"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "element_ref"
+          ]
+        },
+        {
+          "description": "Expands or collapses an accessibility element.",
+          "type": "object",
+          "properties": {
+            "element_ref": {
+              "description": "Element scoped to the bound observation.",
+              "$ref": "#/$defs/ElementRef"
+            },
+            "expanded": {
+              "description": "Desired expanded state.",
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "set_expanded"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "element_ref",
+            "expanded"
+          ]
+        },
+        {
+          "description": "Moves the system pointer to a screenshot pixel without clicking.",
+          "type": "object",
+          "properties": {
+            "duration_ms": {
+              "description": "Bounded movement duration in milliseconds.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "move_pointer"
+            },
+            "point": {
+              "description": "Integer coordinate in the guarded screenshot artifact.",
+              "$ref": "#/$defs/ScreenshotPoint"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "point",
+            "duration_ms"
+          ]
+        },
+        {
+          "description": "Types text into the current target through foreground input.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "type_text"
+            },
+            "text": {
+              "description": "Sensitive text that must not enter logs.",
+              "$ref": "#/$defs/SensitiveText"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "Presses a normalized keyboard chord such as `meta+a`.",
+          "type": "object",
+          "properties": {
+            "keys": {
+              "description": "Normalized non-empty key chord.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "press_keys"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "keys"
+          ]
+        },
+        {
+          "description": "Scrolls by physical pixel deltas.",
+          "type": "object",
+          "properties": {
+            "delta_x": {
+              "description": "Horizontal delta.",
+              "type": "number",
+              "format": "double"
+            },
+            "delta_y": {
+              "description": "Vertical delta.",
+              "type": "number",
+              "format": "double"
+            },
+            "element_ref": {
+              "description": "Optional semantic target.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ElementRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "scroll"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "delta_x",
+            "delta_y"
+          ]
+        },
+        {
+          "description": "Drags between two points inside the observed window.",
+          "type": "object",
+          "properties": {
+            "duration_ms": {
+              "description": "Bounded duration in milliseconds.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "from": {
+              "description": "Starting point.",
+              "$ref": "#/$defs/ScreenshotPoint"
+            },
+            "kind": {
+              "type": "string",
+              "const": "drag"
+            },
+            "to": {
+              "description": "Ending point.",
+              "$ref": "#/$defs/ScreenshotPoint"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "duration_ms"
+          ]
+        }
+      ]
+    },
+    "ActionKind": {
+      "description": "Stable action category used by bounded capability manifests.",
+      "oneOf": [
+        {
+          "description": "Focus or activate a target window.",
+          "type": "string",
+          "const": "focus_window"
+        },
+        {
+          "description": "Move semantic keyboard focus to an accessibility element.",
+          "type": "string",
+          "const": "focus_element"
+        },
+        {
+          "description": "Invoke an accessibility element's primary action.",
+          "type": "string",
+          "const": "invoke_element"
+        },
+        {
+          "description": "Click at a physical pixel coordinate.",
+          "type": "string",
+          "const": "click_point"
+        },
+        {
+          "description": "Replace an accessibility value.",
+          "type": "string",
+          "const": "set_value"
+        },
+        {
+          "description": "Toggle a semantic element.",
+          "type": "string",
+          "const": "toggle_element"
+        },
+        {
+          "description": "Select a semantic element.",
+          "type": "string",
+          "const": "select_element"
+        },
+        {
+          "description": "Expand or collapse a semantic element.",
+          "type": "string",
+          "const": "set_expanded"
+        },
+        {
+          "description": "Move the pointer without clicking.",
+          "type": "string",
+          "const": "move_pointer"
+        },
+        {
+          "description": "Type text through the foreground input path.",
+          "type": "string",
+          "const": "type_text"
+        },
+        {
+          "description": "Press one keyboard chord.",
+          "type": "string",
+          "const": "press_keys"
+        },
+        {
+          "description": "Scroll a semantic element or pixel surface.",
+          "type": "string",
+          "const": "scroll"
+        },
+        {
+          "description": "Drag between two physical pixel coordinates.",
+          "type": "string",
+          "const": "drag"
+        }
+      ]
+    },
+    "AppRef": {
+      "description": "Session-scoped opaque application reference.",
+      "type": "string"
+    },
+    "AuthorizationToken": {
+      "description": "Transport authorization token whose debug output is always redacted.",
+      "type": "string"
+    },
+    "CapabilityManifest": {
+      "description": "Exact, host-reviewed session authority.",
+      "type": "object",
+      "properties": {
+        "allow_foreground_input": {
+          "description": "Whether any foreground input route is allowed.",
+          "type": "boolean"
+        },
+        "allowed_actions": {
+          "description": "Exact mutation categories allowed in bounded mode.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionKind"
+          }
+        },
+        "application_refs": {
+          "description": "Exact running process generations selected from trusted-host discovery.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiscoveryRef"
+          }
+        },
+        "mode": {
+          "description": "Session mode. There is deliberately no unrestricted value.",
+          "$ref": "#/$defs/PermissionMode"
+        },
+        "ttl_seconds": {
+          "description": "Finite lifetime in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "application_refs",
+        "allowed_actions",
+        "allow_foreground_input",
+        "ttl_seconds"
+      ]
+    },
+    "Command": {
+      "description": "Exact public operation. Unknown variants or fields are rejected.",
+      "oneOf": [
+        {
+          "description": "Read driver and protocol capabilities.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "get_capabilities"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation"
+          ]
+        },
+        {
+          "description": "Read current system permission state.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "get_permission_status"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation"
+          ]
+        },
+        {
+          "description": "Discover running applications for an authenticated policy host.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "discover_applications"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation"
+          ]
+        },
+        {
+          "description": "Open one isolated authorized session.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/OpenSessionInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "open_session"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "Close a session and delete its transient artifacts.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/SessionInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "close_session"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "List allowed running applications.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/SessionInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "list_apps"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "List allowed top-level windows.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ListWindowsInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "list_windows"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "Capture one exact window.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ObserveWindowInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "observe_window"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "Execute one mutation bound to a fresh observation.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/PerformActionInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "perform_action"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "Evaluate a deterministic predicate against fresh state.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/VerifyStateInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "verify_state"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        }
+      ]
+    },
+    "DiscoveryRef": {
+      "description": "Short-lived runtime-local reference for one discovered process generation.",
+      "type": "string"
+    },
+    "ElementRef": {
+      "description": "Observation-scoped opaque accessibility element reference.",
+      "type": "string"
+    },
+    "ListWindowsInput": {
+      "description": "Input for listing windows in a session.",
+      "type": "object",
+      "properties": {
+        "app_ref": {
+          "description": "Optional application filter.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "description": "Runtime-issued session identity.",
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id"
+      ]
+    },
+    "ObservationId": {
+      "description": "Identity for one immutable window observation.",
+      "type": "string"
+    },
+    "ObserveWindowInput": {
+      "description": "Input for capturing one exact window.",
+      "type": "object",
+      "properties": {
+        "accessibility": {
+          "description": "Requested bounded semantic-tree view.",
+          "$ref": "#/$defs/AccessibilityMode"
+        },
+        "include_screenshot": {
+          "description": "Whether to produce a transient PNG artifact.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "description": "Runtime-issued session identity.",
+          "$ref": "#/$defs/SessionId"
+        },
+        "window_ref": {
+          "description": "Session-scoped target window.",
+          "$ref": "#/$defs/WindowRef"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "window_ref",
+        "include_screenshot",
+        "accessibility"
+      ]
+    },
+    "OpenSessionInput": {
+      "description": "Input for opening one isolated runtime session.",
+      "type": "object",
+      "properties": {
+        "manifest": {
+          "description": "Host-reviewed capability manifest.",
+          "$ref": "#/$defs/CapabilityManifest"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "manifest"
+      ]
+    },
+    "PerformActionInput": {
+      "description": "Mutation input bound to exact session, window, and observation identities.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Authorized action.",
+          "$ref": "#/$defs/Action"
+        },
+        "observation_id": {
+          "description": "Fresh observation guarding the action.",
+          "$ref": "#/$defs/ObservationId"
+        },
+        "session_id": {
+          "description": "Runtime-issued session identity.",
+          "$ref": "#/$defs/SessionId"
+        },
+        "window_ref": {
+          "description": "Session-scoped target window.",
+          "$ref": "#/$defs/WindowRef"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "window_ref",
+        "observation_id",
+        "action"
+      ]
+    },
+    "PermissionMode": {
+      "description": "Capability mode fixed for the lifetime of a session.",
+      "oneOf": [
+        {
+          "description": "Observation and deterministic verification only.",
+          "type": "string",
+          "const": "read_only"
+        },
+        {
+          "description": "Only exact applications and action categories declared in the manifest.",
+          "type": "string",
+          "const": "bounded"
+        }
+      ]
+    },
+    "PointerButton": {
+      "description": "Pointer button used by pixel actions.",
+      "oneOf": [
+        {
+          "description": "Primary button.",
+          "type": "string",
+          "const": "left"
+        },
+        {
+          "description": "Auxiliary button.",
+          "type": "string",
+          "const": "middle"
+        },
+        {
+          "description": "Secondary button.",
+          "type": "string",
+          "const": "right"
+        }
+      ]
+    },
+    "RequestId": {
+      "description": "Client-generated idempotency identity for one request.",
+      "type": "string"
+    },
+    "ScreenRect": {
+      "description": "A rectangle in logical, top-left-origin screen coordinates.",
+      "type": "object",
+      "properties": {
+        "height": {
+          "description": "Non-negative logical height.",
+          "type": "number",
+          "format": "double"
+        },
+        "width": {
+          "description": "Non-negative logical width.",
+          "type": "number",
+          "format": "double"
+        },
+        "x": {
+          "description": "Logical left edge.",
+          "type": "number",
+          "format": "double"
+        },
+        "y": {
+          "description": "Logical top edge.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "ScreenshotPoint": {
+      "description": "An integer pixel coordinate in the exact screenshot artifact.",
+      "type": "object",
+      "properties": {
+        "x": {
+          "description": "Zero-based horizontal pixel coordinate.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "description": "Zero-based vertical pixel coordinate.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ]
+    },
+    "SensitiveText": {
+      "description": "User input whose debug output is always redacted.",
+      "type": "string"
+    },
+    "SessionId": {
+      "description": "Runtime-issued identity for an authorized session.",
+      "type": "string"
+    },
+    "SessionInput": {
+      "description": "Input selecting one existing session.",
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "description": "Runtime-issued session identity.",
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id"
+      ]
+    },
+    "StatePredicate": {
+      "description": "A deterministic predicate evaluated against fresh platform state.",
+      "oneOf": [
+        {
+          "description": "Window title contains text using a case-sensitive comparison.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "window_title_contains"
+            },
+            "text": {
+              "description": "Required title fragment.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "At least one element matches the supplied semantic fields.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "element_exists"
+            },
+            "name": {
+              "description": "Optional accessible-name constraint.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "description": "Optional role constraint.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "One observed rectangle remains within another.",
+          "type": "object",
+          "properties": {
+            "inner": {
+              "description": "Inner bounds.",
+              "$ref": "#/$defs/ScreenRect"
+            },
+            "kind": {
+              "type": "string",
+              "const": "bounds_contained"
+            },
+            "outer": {
+              "description": "Outer bounds.",
+              "$ref": "#/$defs/ScreenRect"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "inner",
+            "outer"
+          ]
+        }
+      ]
+    },
+    "VerifyStateInput": {
+      "description": "Deterministic verification input.",
+      "type": "object",
+      "properties": {
+        "predicate": {
+          "description": "Predicate evaluated against fresh state.",
+          "$ref": "#/$defs/StatePredicate"
+        },
+        "session_id": {
+          "description": "Runtime-issued session identity.",
+          "$ref": "#/$defs/SessionId"
+        },
+        "window_ref": {
+          "description": "Session-scoped target window.",
+          "$ref": "#/$defs/WindowRef"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "window_ref",
+        "predicate"
+      ]
+    },
+    "WindowRef": {
+      "description": "Session-scoped opaque window reference.",
+      "type": "string"
+    }
+  }
+}

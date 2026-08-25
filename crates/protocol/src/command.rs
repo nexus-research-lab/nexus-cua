@@ -4,10 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Action, ApplicationSummary, AuthorizationToken, CuaError, DeliveryMode, DriverCapabilities,
-    ListWindowsInput, ObservationId, OpenSessionInput, OpenSessionOutput, PermissionStatus,
-    RequestId, SessionId, SessionInput, StatePredicate, WindowObservation, WindowRef,
-    WindowSummary,
+    Action, ApplicationSummary, AuthorizationToken, CuaError, DeliveryMode,
+    DiscoverApplicationsOutput, DriverCapabilities, ListWindowsInput, ObservationId,
+    OpenSessionInput, OpenSessionOutput, PermissionStatus, RequestId, SessionId, SessionInput,
+    StatePredicate, WindowObservation, WindowRef, WindowSummary,
 };
 
 /// Authenticated request sent over a private local transport.
@@ -28,12 +28,19 @@ pub struct RequestEnvelope {
 
 /// Exact public operation. Unknown variants or fields are rejected.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(tag = "operation", content = "input", rename_all = "snake_case")]
+#[serde(
+    tag = "operation",
+    content = "input",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum Command {
     /// Read driver and protocol capabilities.
     GetCapabilities,
     /// Read current system permission state.
     GetPermissionStatus,
+    /// Discover running applications for an authenticated policy host.
+    DiscoverApplications,
     /// Open one isolated authorized session.
     OpenSession(OpenSessionInput),
     /// Close a session and delete its transient artifacts.
@@ -100,12 +107,19 @@ pub struct VerificationOutput {
 
 /// Successful result for one command.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(tag = "result_type", content = "data", rename_all = "snake_case")]
+#[serde(
+    tag = "result_type",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum CommandResult {
     /// Driver capability response.
     Capabilities(DriverCapabilities),
     /// Operating-system permission response.
     PermissionStatus(PermissionStatus),
+    /// Short-lived running-application discovery response.
+    ApplicationsDiscovered(DiscoverApplicationsOutput),
     /// Session creation response.
     SessionOpened(OpenSessionOutput),
     /// Empty successful result.
@@ -136,7 +150,7 @@ pub struct ResponseEnvelope {
 
 /// Closed success/error outcome.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseOutcome {
     /// Successful command result.
     Success {

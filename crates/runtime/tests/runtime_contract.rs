@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use nexus_cua_protocol::{
-    AccessibilityMode, Action, ActionKind, CapabilityManifest, CaptureMode, Command, CommandResult,
-    DeliveryMode, DriverCapabilities, ErrorCode, InputRoute, ListWindowsInput, ObserveWindowInput,
-    OpenSessionInput, PermissionMode, PermissionState, PermissionStatus, Platform, ScreenRect,
-    ScreenshotPoint, SessionInput,
+    AccessibilityMode, Action, ActionKind, ApplicationProvenance, CapabilityManifest, CaptureMode,
+    Command, CommandResult, DeliveryMode, DiscoveryRef, DriverCapabilities, ErrorCode, InputRoute,
+    ListWindowsInput, ObserveWindowInput, OpenSessionInput, PermissionMode, PermissionState,
+    PermissionStatus, Platform, ScreenRect, ScreenshotPoint, SessionInput,
 };
 use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverElement, DriverError,
@@ -23,6 +23,7 @@ struct MockDriver {
     revision: Mutex<u64>,
     stale_observations_remaining: Mutex<u8>,
     observation_calls: AtomicUsize,
+    application_generation: AtomicUsize,
 }
 
 impl MockDriver {
@@ -31,6 +32,7 @@ impl MockDriver {
             revision: Mutex::new(1),
             stale_observations_remaining: Mutex::new(0),
             observation_calls: AtomicUsize::new(0),
+            application_generation: AtomicUsize::new(1),
         }
     }
 
@@ -39,22 +41,33 @@ impl MockDriver {
             revision: Mutex::new(1),
             stale_observations_remaining: Mutex::new(1),
             observation_calls: AtomicUsize::new(0),
+            application_generation: AtomicUsize::new(1),
         }
     }
 
-    fn application() -> DriverApplication {
+    fn application_for_generation(generation: usize) -> DriverApplication {
         DriverApplication {
-            key: "app-key".to_owned(),
+            key: format!("app-key-{generation}"),
+            process_generation: format!("launch-{generation}"),
+            identity: "bundle:dev.nexus.fixture".to_owned(),
             name: "Fixture".to_owned(),
             application_id: "dev.nexus.fixture".to_owned(),
             foreground: true,
+            provenance: ApplicationProvenance::Macos {
+                bundle_id: Some("dev.nexus.fixture".to_owned()),
+                executable_path: Some(
+                    "/Applications/Fixture.app/Contents/MacOS/Fixture".to_owned(),
+                ),
+                signing_team_id: Some("NEXUSTEST".to_owned()),
+                designated_requirement: None,
+            },
         }
     }
 
-    fn window() -> DriverWindow {
+    fn window_for_generation(generation: usize) -> DriverWindow {
         DriverWindow {
-            key: "window-key".to_owned(),
-            application: Self::application(),
+            key: format!("window-key-{generation}"),
+            application: Self::application_for_generation(generation),
             title: "Fixture Window".to_owned(),
             screen_bounds: ScreenRect {
                 x: 10.0,
@@ -66,6 +79,10 @@ impl MockDriver {
             visible: true,
             foreground: true,
         }
+    }
+
+    fn restart_application(&self) {
+        self.application_generation.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -92,19 +109,21 @@ impl DesktopDriver for MockDriver {
     }
 
     async fn list_applications(&self) -> Result<Vec<DriverApplication>, DriverError> {
-        Ok(vec![Self::application()])
+        let generation = self.application_generation.load(Ordering::SeqCst);
+        Ok(vec![Self::application_for_generation(generation)])
     }
 
     async fn list_windows(
         &self,
         _application_key: Option<&str>,
     ) -> Result<Vec<DriverWindow>, DriverError> {
-        Ok(vec![Self::window()])
+        let generation = self.application_generation.load(Ordering::SeqCst);
+        Ok(vec![Self::window_for_generation(generation)])
     }
 
     async fn observe_window(
         &self,
-        _window: &DriverWindow,
+        window: &DriverWindow,
         include_screenshot: bool,
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
@@ -120,14 +139,14 @@ impl DesktopDriver for MockDriver {
         drop(stale_remaining);
         let revision = *self.revision.lock().await;
         Ok(DriverObservation {
-            window_key: "window-key".to_owned(),
-            window_screen_bounds: Self::window().screen_bounds,
+            window_key: window.key.clone(),
+            window_screen_bounds: window.screen_bounds,
             screenshot: include_screenshot.then(|| RgbaImage {
                 width: 2,
                 height: 2,
                 pixels: vec![255; 16],
             }),
-            screenshot_screen_bounds: include_screenshot.then(|| Self::window().screen_bounds),
+            screenshot_screen_bounds: include_screenshot.then_some(window.screen_bounds),
             elements: (accessibility != AccessibilityMode::Disabled)
                 .then(|| DriverElement {
                     key: "button-key".to_owned(),
@@ -135,7 +154,7 @@ impl DesktopDriver for MockDriver {
                     role: "button".to_owned(),
                     name: "Continue".to_owned(),
                     value: None,
-                    screen_bounds: Some(Self::window().screen_bounds),
+                    screen_bounds: Some(window.screen_bounds),
                     enabled: true,
                     focused: false,
                     actions: vec!["press".to_owned()],
@@ -192,10 +211,10 @@ fn artifact_root() -> PathBuf {
     std::env::temp_dir().join(format!("nexus-cua-test-{}", Uuid::new_v4()))
 }
 
-fn manifest(mode: PermissionMode) -> CapabilityManifest {
+fn manifest(mode: PermissionMode, discovery_ref: DiscoveryRef) -> CapabilityManifest {
     CapabilityManifest {
         mode,
-        allowed_application_ids: vec!["dev.nexus.fixture".to_owned()],
+        application_refs: vec![discovery_ref],
         allowed_actions: if mode == PermissionMode::Bounded {
             vec![ActionKind::InvokeElement, ActionKind::ClickPoint]
         } else {
@@ -226,9 +245,20 @@ fn runtime_rejects_zero_resource_bounds() {
 }
 
 async fn open_session(runtime: &Runtime, mode: PermissionMode) -> nexus_cua_protocol::SessionId {
+    open_session_with_ttl(runtime, mode, 300).await
+}
+
+async fn open_session_with_ttl(
+    runtime: &Runtime,
+    mode: PermissionMode,
+    ttl_seconds: u32,
+) -> nexus_cua_protocol::SessionId {
+    let discovery_ref = discover_application(runtime).await;
+    let mut capability_manifest = manifest(mode, discovery_ref);
+    capability_manifest.ttl_seconds = ttl_seconds;
     match runtime
         .execute(Command::OpenSession(OpenSessionInput {
-            manifest: manifest(mode),
+            manifest: capability_manifest,
         }))
         .await
         .expect("open session")
@@ -238,10 +268,22 @@ async fn open_session(runtime: &Runtime, mode: PermissionMode) -> nexus_cua_prot
     }
 }
 
+async fn discover_application(runtime: &Runtime) -> DiscoveryRef {
+    let result = runtime
+        .execute(Command::DiscoverApplications)
+        .await
+        .expect("discover applications");
+    let CommandResult::ApplicationsDiscovered(output) = result else {
+        panic!("unexpected discovery result");
+    };
+    output.applications[0].discovery_ref.clone()
+}
+
 #[tokio::test]
 async fn read_only_manifest_cannot_smuggle_mutation_authority() {
     let (runtime, root) = runtime();
-    let mut invalid = manifest(PermissionMode::ReadOnly);
+    let discovery_ref = discover_application(&runtime).await;
+    let mut invalid = manifest(PermissionMode::ReadOnly, discovery_ref);
     invalid.allowed_actions.push(ActionKind::InvokeElement);
     let error = runtime
         .execute(Command::OpenSession(OpenSessionInput { manifest: invalid }))
@@ -258,10 +300,11 @@ async fn active_session_capacity_is_bounded() {
     config.max_active_sessions = 1;
     let runtime = Runtime::new(Arc::new(MockDriver::new()), config).expect("create runtime");
     let first = open_session(&runtime, PermissionMode::ReadOnly).await;
+    let discovery_ref = discover_application(&runtime).await;
 
     let error = runtime
         .execute(Command::OpenSession(OpenSessionInput {
-            manifest: manifest(PermissionMode::ReadOnly),
+            manifest: manifest(PermissionMode::ReadOnly, discovery_ref),
         }))
         .await
         .expect_err("second live session must exceed capacity");
@@ -278,14 +321,146 @@ async fn active_session_capacity_is_bounded() {
 #[tokio::test]
 async fn application_allowlist_has_an_aggregate_memory_bound() {
     let (runtime, root) = runtime();
-    let mut invalid = manifest(PermissionMode::ReadOnly);
-    invalid.allowed_application_ids = vec!["a".repeat(32 * 1024 + 1)];
+    let mut invalid = manifest(
+        PermissionMode::ReadOnly,
+        DiscoveryRef::new("a".repeat(32 * 1024 + 1)),
+    );
+    invalid
+        .application_refs
+        .push(DiscoveryRef::new("discovery-2"));
 
     let error = runtime
         .execute(Command::OpenSession(OpenSessionInput { manifest: invalid }))
         .await
         .expect_err("oversized application identity must fail");
     assert_eq!(error.code, ErrorCode::InvalidRequest);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn open_session_rejects_restarted_discovery_process() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("create runtime");
+    let discovery_ref = discover_application(&runtime).await;
+    driver.restart_application();
+
+    let error = runtime
+        .execute(Command::OpenSession(OpenSessionInput {
+            manifest: manifest(PermissionMode::ReadOnly, discovery_ref),
+        }))
+        .await
+        .expect_err("restarted process must make discovery stale");
+
+    assert_eq!(error.code, ErrorCode::StaleDiscovery);
+    assert_eq!(
+        error.recovery_action.as_deref(),
+        Some("discover_applications")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test(start_paused = true)]
+async fn discovery_reference_expires_on_monotonic_deadline() {
+    let root = artifact_root();
+    let mut config = RuntimeConfig::new(&root);
+    config.discovery_ttl = std::time::Duration::from_secs(5);
+    let runtime = Runtime::new(Arc::new(MockDriver::new()), config).expect("create runtime");
+    let discovery_ref = discover_application(&runtime).await;
+
+    tokio::time::advance(std::time::Duration::from_secs(6)).await;
+    tokio::task::yield_now().await;
+    let error = runtime
+        .execute(Command::OpenSession(OpenSessionInput {
+            manifest: manifest(PermissionMode::ReadOnly, discovery_ref),
+        }))
+        .await
+        .expect_err("expired discovery must fail");
+
+    assert_eq!(error.code, ErrorCode::StaleDiscovery);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn discovery_reference_is_runtime_local() {
+    let first_root = artifact_root();
+    let second_root = artifact_root();
+    let first = Runtime::new(Arc::new(MockDriver::new()), RuntimeConfig::new(&first_root))
+        .expect("create first runtime");
+    let second = Runtime::new(
+        Arc::new(MockDriver::new()),
+        RuntimeConfig::new(&second_root),
+    )
+    .expect("create second runtime");
+    let discovery_ref = discover_application(&first).await;
+
+    let error = second
+        .execute(Command::OpenSession(OpenSessionInput {
+            manifest: manifest(PermissionMode::ReadOnly, discovery_ref),
+        }))
+        .await
+        .expect_err("foreign discovery reference must fail");
+
+    assert_eq!(error.code, ErrorCode::StaleDiscovery);
+    let _ = std::fs::remove_dir_all(first_root);
+    let _ = std::fs::remove_dir_all(second_root);
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_deadline_reaps_session_and_artifact_without_another_request() {
+    let (runtime, root) = runtime();
+    let session_id = open_session_with_ttl(&runtime, PermissionMode::ReadOnly, 1).await;
+    let windows = runtime
+        .execute(Command::ListWindows(ListWindowsInput {
+            session_id: session_id.clone(),
+            app_ref: None,
+        }))
+        .await
+        .expect("list windows");
+    let CommandResult::Windows(windows) = windows else {
+        panic!("unexpected windows result");
+    };
+    let observed = runtime
+        .execute(Command::ObserveWindow(ObserveWindowInput {
+            session_id: session_id.clone(),
+            window_ref: windows[0].window_ref.clone(),
+            include_screenshot: true,
+            accessibility: AccessibilityMode::Disabled,
+        }))
+        .await
+        .expect("observe window");
+    let CommandResult::WindowObserved(observation) = observed else {
+        panic!("unexpected observation result");
+    };
+    let artifact_path = observation.screenshot.expect("screenshot").path;
+    assert!(PathBuf::from(&artifact_path).is_file());
+
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!PathBuf::from(&artifact_path).exists());
+
+    let error = runtime
+        .execute(Command::ListApps(SessionInput { session_id }))
+        .await
+        .expect_err("expired session must reject access");
+    assert_eq!(error.code, ErrorCode::SessionUnavailable);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn graceful_shutdown_removes_sessions_and_rejects_new_commands() {
+    let (runtime, root) = runtime();
+    let session_id = open_session(&runtime, PermissionMode::ReadOnly).await;
+
+    runtime.shutdown().await;
+
+    let error = runtime
+        .execute(Command::ListApps(SessionInput { session_id }))
+        .await
+        .expect_err("shutdown runtime must reject commands");
+    assert_eq!(error.code, ErrorCode::SessionUnavailable);
     let _ = std::fs::remove_dir_all(root);
 }
 

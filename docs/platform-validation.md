@@ -21,8 +21,8 @@ benchmarks, soak tests, clean-machine package tests, or signed artifacts.
 
 | Host | Environment | Evidence |
 | --- | --- | --- |
-| macOS | macOS 26.6.2, Apple M4 Max ARM64 | `make check` passed; `doctor` selected macOS and reported screen capture, accessibility, and input permissions granted |
-| Windows | Windows 11 `10.0.26100.3476` ARM64 in Parallels Desktop; Rust 1.88.0; MSVC 14.44.35207; Windows SDK 26100 | formatting, strict Clippy for all workspace targets, all 27 workspace tests, `doctor`, and the native read-only smoke below passed |
+| macOS | macOS 26.6.2, Apple M4 Max ARM64 | `make check` passed, including all 40 workspace tests, schema drift, and Markdown links; `doctor` selected macOS and reported screen capture, accessibility, and input permissions granted |
+| Windows | Windows 11 `10.0.26100.3476` ARM64 in Parallels Desktop; Rust 1.88.0; MSVC 14.44.35207; Windows SDK 26100 | formatting, strict Clippy for all workspace targets, all 39 workspace tests, `doctor`, trusted-host discovery/session smoke, and the native read-only observation smoke below passed |
 
 The Windows run used the current working tree on the VM's local disk and Cargo's
 offline locked mode after seeding the registry cache. That isolates compilation
@@ -34,6 +34,12 @@ The service ran as the interactive console user over its protected Windows
 named pipe. The smoke verified:
 
 - a read-only, application-allowlisted session with a finite TTL;
+- trusted-host discovery of Windows Terminal and Explorer with random
+  30-second refs, normalized executable paths, verified Authenticode state,
+  and publisher names (`Microsoft Corporation` and `Microsoft Windows`);
+- successful read-only session creation from the freshly discovered Windows
+  Terminal process generation, plus stable `stale_discovery` recovery after a
+  ref expired;
 - real Windows Terminal and Explorer discovery with opaque application refs;
 - exact top-level window discovery with opaque window refs and logical screen
   bounds;

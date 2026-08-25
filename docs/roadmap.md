@@ -54,7 +54,8 @@ These items block the first supported Nexus integration:
 After the Nexus path proves the core contract, improve independent adoption
 without weakening it:
 
-1. Publish generated protocol schemas and versioned client fixtures.
+1. Keep the generated protocol schemas and versioned compatibility fixtures
+   frozen and verified as the protocol evolves.
 2. Provide small reference clients for Go, TypeScript, and Python that preserve
    closed variants, opaque references, sensitive values, and retry identity.
 3. Publish sidecar lifecycle and packaging examples for non-Nexus hosts.

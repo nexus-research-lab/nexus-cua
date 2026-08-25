@@ -3,14 +3,17 @@
 mod capture;
 mod discovery;
 mod input;
+mod provenance;
 mod semantic;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nexus_cua_protocol::{
-    AccessibilityMode, ActionKind, CaptureMode, DeliveryMode, DriverCapabilities, InputRoute,
-    PROTOCOL_VERSION, PermissionState, PermissionStatus, Platform, StatePredicate,
+    AccessibilityMode, ActionKind, ApplicationProvenance, CaptureMode, DeliveryMode,
+    DriverCapabilities, InputRoute, PROTOCOL_VERSION, PermissionState, PermissionStatus, Platform,
+    SignatureStatus, StatePredicate,
 };
 use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
@@ -24,6 +27,7 @@ use capture::CaptureActor;
 use discovery::{DiscoveryActor, NativeWindow};
 use input::{InputAction, InputActor};
 use semantic::{SemanticAction, SemanticActor};
+use tokio::sync::Semaphore;
 
 use crate::observation::{contains_rect, fingerprint, fingerprints_match};
 
@@ -33,7 +37,10 @@ pub struct WindowsDriver {
     capture: CaptureActor,
     semantic: SemanticActor,
     input: InputActor,
+    provenance_workers: Arc<Semaphore>,
 }
+
+const PROVENANCE_WORKERS: usize = 2;
 
 impl WindowsDriver {
     /// Creates the native actors without prompting or widening OS authority.
@@ -48,6 +55,7 @@ impl WindowsDriver {
             capture: CaptureActor::spawn()?,
             semantic: SemanticActor::spawn()?,
             input: InputActor::spawn(),
+            provenance_workers: Arc::new(Semaphore::new(PROVENANCE_WORKERS)),
         })
     }
 
@@ -97,13 +105,33 @@ impl DesktopDriver for WindowsDriver {
     }
 
     async fn list_applications(&self) -> Result<Vec<DriverApplication>, DriverError> {
-        let mut applications = HashMap::new();
-        for window in self.windows().await? {
-            applications
-                .entry(window.application_key.clone())
-                .or_insert_with(|| driver_application(&window));
-        }
-        Ok(applications.into_values().collect())
+        let windows = self.windows().await?;
+        let permit = Arc::clone(&self.provenance_workers)
+            .try_acquire_owned()
+            .map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::Busy,
+                    "Windows provenance worker capacity is exhausted",
+                )
+                .retryable("retry_with_backoff")
+            })?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut applications = HashMap::new();
+            for window in windows {
+                applications
+                    .entry(window.application_key.clone())
+                    .or_insert_with(|| discovered_application(&window));
+            }
+            applications.into_values().collect()
+        })
+        .await
+        .map_err(|_| {
+            DriverError::new(
+                DriverErrorKind::Platform,
+                "Windows provenance worker stopped unexpectedly",
+            )
+        })
     }
 
     async fn list_windows(
@@ -379,10 +407,28 @@ impl WindowsDriver {
 fn driver_application(window: &NativeWindow) -> DriverApplication {
     DriverApplication {
         key: window.application_key.clone(),
+        process_generation: window.application_key.clone(),
+        identity: window.application_id.clone(),
         name: window.application_name.clone(),
         application_id: window.application_id.clone(),
         foreground: window.foreground,
+        provenance: ApplicationProvenance::Windows {
+            executable_path: window.application_id.clone(),
+            publisher: None,
+            signature_status: SignatureStatus::Unknown,
+        },
     }
+}
+
+fn discovered_application(window: &NativeWindow) -> DriverApplication {
+    let mut application = driver_application(window);
+    let (publisher, signature_status) = provenance::inspect(&window.application_id);
+    application.provenance = ApplicationProvenance::Windows {
+        executable_path: window.application_id.clone(),
+        publisher,
+        signature_status,
+    };
+    application
 }
 
 fn driver_window(window: NativeWindow) -> DriverWindow {
