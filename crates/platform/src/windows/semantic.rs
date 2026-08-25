@@ -178,10 +178,10 @@ impl NodeState {
 
     fn from_flags([enabled, focused, focusable, offscreen]: [bool; 4]) -> Self {
         Self(
-            u8::from(enabled) * Self::ENABLED
-                | u8::from(focused) * Self::FOCUSED
-                | u8::from(focusable) * Self::FOCUSABLE
-                | u8::from(offscreen) * Self::OFFSCREEN,
+            (u8::from(enabled) * Self::ENABLED)
+                | (u8::from(focused) * Self::FOCUSED)
+                | (u8::from(focusable) * Self::FOCUSABLE)
+                | (u8::from(offscreen) * Self::OFFSCREEN),
         )
     }
 
