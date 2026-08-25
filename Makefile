@@ -12,7 +12,7 @@ install: ## Fetch pinned Rust dependencies
 	$(CARGO) fetch --locked
 
 dev: ## Start an isolated debug service (Ctrl-C to stop)
-	@echo "Starting Nexus CUA development service"
+	@echo "Starting Nexus Computer Use development service"
 	@echo "State: $(DEV_ROOT)"
 	$(CARGO) run --package nexus-cua -- --log-level debug serve --dev-root "$(DEV_ROOT)"
 

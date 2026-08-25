@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Authenticated local IPC transport for Nexus CUA"
+description = "Authenticated local IPC transport for Nexus Computer Use Runtime"
 
 [dependencies]
 nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }

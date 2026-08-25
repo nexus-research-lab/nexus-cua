@@ -2,9 +2,11 @@
 
 ## Purpose
 
-`nexus-cua` is a model-neutral, cross-platform Computer Use runtime. Keep agent
-reasoning, provider adapters, product preferences, chat identities, and Nexus
-domain semantics out of this repository.
+`nexus-cua` is the repository identifier for Nexus Computer Use Runtime: a
+model-neutral, cross-platform execution layer for computer-using agents. The
+runtime is Nexus-first and ecosystem-neutral, but it is not itself an agent. Keep
+agent reasoning, provider adapters, product preferences, chat identities, and
+Nexus domain semantics out of this repository.
 
 ## Boundaries
 

@@ -12,6 +12,7 @@ use nexus_cua_runtime::{DesktopDriver, DriverError};
 
 #[cfg(target_os = "macos")]
 mod macos;
+mod observation;
 #[cfg(target_os = "windows")]
 mod windows;
 

@@ -69,7 +69,7 @@ pub struct PermissionStatus {
 pub struct DriverCapabilities {
     /// Stable protocol identifier.
     pub protocol_version: String,
-    /// Nexus CUA implementation version.
+    /// Nexus Computer Use Runtime implementation version.
     pub runtime_version: String,
     /// Host operating system.
     pub platform: Platform,

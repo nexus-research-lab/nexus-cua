@@ -8,6 +8,7 @@ mod artifact_store;
 mod driver;
 mod error;
 mod service;
+mod session;
 mod validation;
 
 pub use driver::*;

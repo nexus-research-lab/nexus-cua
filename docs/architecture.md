@@ -1,8 +1,13 @@
-# Architecture
+# Nexus Computer Use Runtime Architecture
 
-Nexus CUA is a local, model-neutral desktop driver. It owns observation,
-authorization, action delivery, and verification. It does not own agent
-reasoning or user-facing consent.
+Nexus Computer Use Runtime is a local, model-neutral desktop execution engine.
+It owns observation, authorization, action delivery, and verification. It does
+not own agent reasoning or user-facing consent.
+
+The runtime is Nexus-first and host-neutral. Nexus is the primary product
+consumer, while the same Rust API and sidecar protocol remain suitable for
+independent hosts. No Nexus user, chat, round, preference, or receipt type
+crosses the runtime boundary.
 
 ## Dependency direction
 
@@ -13,8 +18,9 @@ cli ------> transport ------> runtime ------> protocol
 ```
 
 - `protocol` contains the stable public wire types and no operating-system code.
-- `runtime` owns sessions, opaque references, capability enforcement, stale
-  observation rejection, and transient artifacts.
+- `runtime` keeps command orchestration separate from authorized session state,
+  opaque-reference projection, capability enforcement, stale-observation
+  rejection, and transient artifacts.
 - `platform` implements the internal driver trait with public OS APIs.
 - `transport` exposes authenticated local IPC and never listens on TCP.
 - `cli` is the process entrypoint and composition root.
@@ -37,9 +43,16 @@ waiting; retries reconcile through the same request identity.
 ## Trust boundaries
 
 The desktop host starts the daemon and gives trusted clients a private endpoint
-plus an authorization token. Holding that token permits creating only
-`read_only` or explicitly bounded sessions. It never implies unrestricted
-desktop access.
+plus an authorization token. The token authenticates a fully trusted policy
+host, not an untrusted model client. A compromised host or token holder can open
+many sessions across application identities it can discover; structural bounds
+limit each session and resource use but cannot make that compromise harmless.
+The token therefore permits creating only `read_only` or explicitly bounded
+sessions and must never be exposed to an agent.
+
+In Nexus, the host additionally binds each session to the authenticated owner,
+conversation round, setting, and approval state; those product facts
+deliberately stay outside this repository.
 
 The Unix socket is mode `0600`; the Windows pipe uses a protected DACL granting
 access only to LocalSystem and the object owner, and rejects remote clients.
@@ -90,8 +103,10 @@ scales themselves.
   revalidated immediately before action. Windows uses UI Automation cache
   requests rather than one cross-process call per property.
 - Semantic traversal is iterative and bounded by nodes, depth, bytes, and wall
-  time. A timed-out provider yields an explicit partial tree, never an
-  unbounded hung request.
+  time whenever the native provider returns control. Budget exhaustion yields
+  an explicit partial tree. An uninterruptible call inside a hung third-party
+  provider is ultimately bounded by host-side sidecar termination and receives
+  an indeterminate result; it is never reported as a clean cancellation.
 - Screenshot encoding and hashing happen off the native capture actor. Only
   the newest unconsumed frame is retained per target.
 - The service performs no active idle polling. Deadline-driven lease cleanup is
@@ -100,9 +115,9 @@ scales themselves.
 Normative budgets and overload behavior are defined in
 `docs/specs/runtime-contract-v1.md`.
 
-## v0.1 platform boundary
+## v0.1 implementation boundary
 
-The first release uses public APIs:
+The current implementation uses public APIs:
 
 - macOS: ScreenCaptureKit is the primary capture route, AXUIElement provides
   semantic observation/actions, and CGEvent provides foreground input.
@@ -115,3 +130,7 @@ input is foreground-only. Private macOS background APIs are explicitly outside
 the baseline and must never become a hidden fallback. Legacy capture APIs may
 exist only as separately reported compatibility drivers; they cannot be a
 silent fallback that changes privacy, fidelity, or performance semantics.
+
+Implementation does not imply supported-release status. The maintained-hardware
+fixture, benchmark, soak, and signed-package gates in the runtime contract must
+pass before an operating-system route is declared release-supported.

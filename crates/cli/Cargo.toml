@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Nexus CUA local service and diagnostics CLI"
+description = "Nexus Computer Use Runtime service and diagnostics CLI"
 
 [dependencies]
 clap.workspace = true

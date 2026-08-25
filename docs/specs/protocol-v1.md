@@ -1,9 +1,11 @@
-# Nexus CUA Protocol v1
+# Nexus Computer Use Protocol v1
 
 Status: normative for the `0.1.x` development line.
 
 The protocol identifier is `nexus.cua.v1`. Messages use closed, tagged JSON
-objects. Unknown fields are rejected by decoders at every trust boundary.
+objects. Unknown fields are rejected by decoders at every trust boundary. The
+`cua` namespace identifies the computer-using-agent domain served by Nexus
+Computer Use Runtime; it does not mean the runtime contains an agent.
 
 `request_id` is a non-empty, normalized ASCII identity of at most 128 bytes.
 It may contain letters, digits, `-`, `_`, `.`, and `:`. Caller wait time is not

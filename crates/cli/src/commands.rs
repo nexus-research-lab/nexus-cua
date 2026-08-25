@@ -15,7 +15,7 @@ use crate::diagnostics::LogFormat;
 use crate::error::CliError;
 use crate::paths::{ServicePaths, read_private_token};
 
-/// Nexus CUA native desktop service and diagnostics.
+/// Nexus Computer Use Runtime service and diagnostics.
 #[derive(Debug, Parser)]
 #[command(name = "nexus-cua", version, about)]
 pub struct Cli {
@@ -128,8 +128,11 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         server_config.max_completed_requests,
         server_config.max_request_timeout_ms,
     )?);
-    eprintln!("Nexus CUA endpoint: {}", paths.endpoint);
-    eprintln!("Nexus CUA token file: {}", paths.token_file.display());
+    eprintln!("Nexus Computer Use endpoint: {}", paths.endpoint);
+    eprintln!(
+        "Nexus Computer Use token file: {}",
+        paths.token_file.display()
+    );
     nexus_cua_transport::serve_until(dispatcher, server_config, async {
         let _ = tokio::signal::ctrl_c().await;
     })

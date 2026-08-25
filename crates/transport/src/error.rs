@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Local IPC failure that is not part of the public CUA command outcome.
+/// Local IPC failure outside the public Computer Use command outcome.
 #[derive(Debug, Error)]
 pub enum TransportError {
     /// Endpoint or token configuration is invalid.

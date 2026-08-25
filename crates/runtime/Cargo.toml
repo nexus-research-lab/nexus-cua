@@ -1,6 +1,6 @@
 [package]
 name = "nexus-cua-runtime"
-description = "Capability-bounded session runtime for Nexus CUA"
+description = "Capability-bounded session runtime for Nexus Computer Use Runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

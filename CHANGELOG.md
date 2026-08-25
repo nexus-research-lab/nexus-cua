@@ -1,8 +1,19 @@
 # Changelog
 
-All notable changes to Nexus CUA will be documented in this file.
+All notable changes to Nexus Computer Use Runtime will be documented in this
+file.
 
 ## [Unreleased]
+
+### Changed
+
+- Adopted Nexus Computer Use Runtime as the canonical project name while
+  retaining `nexus-cua`, crate names, environment variables, and
+  `nexus.cua.v1` as the technical domain namespace.
+- Separated runtime session/reference projection from command orchestration and
+  consolidated platform-neutral observation integrity helpers.
+- Reframed the documentation around one Nexus-first core with independent
+  ecosystem integration surfaces and an explicit delivery roadmap.
 
 ### Added
 
@@ -34,7 +45,7 @@ All notable changes to Nexus CUA will be documented in this file.
 - Per-process artifact generations that are removed on graceful runtime
   teardown without deleting their host-owned root.
 - Product integration contract for Nexus CLI/Skill consumption and independent
-  CUA/Browser enablement.
+  Computer Use/Browser enablement.
 - Bounded IPC connections and in-flight requests, plus an owner-and-SYSTEM-only
   Windows named-pipe DACL.
 - Native Unix-socket and Windows named-pipe end-to-end CI smoke coverage.

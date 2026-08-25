@@ -16,7 +16,6 @@ use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
     DriverErrorKind, DriverObservation, DriverVerification, DriverWindow,
 };
-use sha2::{Digest, Sha256};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
@@ -25,6 +24,8 @@ use capture::CaptureActor;
 use discovery::{DiscoveryActor, NativeWindow};
 use input::{InputAction, InputActor};
 use semantic::{SemanticAction, SemanticActor};
+
+use crate::observation::{contains_rect, fingerprint, fingerprints_match};
 
 /// Windows native driver with one actor for each native threading domain.
 pub struct WindowsDriver {
@@ -156,7 +157,11 @@ impl DesktopDriver for WindowsDriver {
             )
             .retryable("observe_window"));
         }
-        let fingerprint = fingerprint(&after, captured.as_ref().map(|(image, _bounds)| image));
+        let fingerprint = fingerprint(
+            &after.key,
+            after.screen_bounds,
+            captured.as_ref().map(|(image, _bounds)| image),
+        );
         let (screenshot, screenshot_screen_bounds) = match captured {
             Some((image, bounds)) if bounds == after.screen_bounds => (Some(image), Some(bounds)),
             Some(_) => {
@@ -200,10 +205,10 @@ impl DesktopDriver for WindowsDriver {
             }
             Ok(fingerprints_match(
                 fingerprint_value,
-                &fingerprint(&current, Some(&image)),
+                &fingerprint(&current.key, current.screen_bounds, Some(&image)),
             ))
         } else {
-            Ok(fingerprint(&current, None) == fingerprint_value)
+            Ok(fingerprint(&current.key, current.screen_bounds, None) == fingerprint_value)
         }
     }
 
@@ -405,86 +410,4 @@ fn current_window(windows: &[NativeWindow], key: &str) -> Result<NativeWindow, D
             )
             .retryable("list_windows")
         })
-}
-
-fn fingerprint(window: &NativeWindow, image: Option<&nexus_cua_runtime::RgbaImage>) -> String {
-    let mut digest = Sha256::new();
-    digest.update(window.key.as_bytes());
-    digest.update(window.screen_bounds.x.to_bits().to_be_bytes());
-    digest.update(window.screen_bounds.y.to_bits().to_be_bytes());
-    digest.update(window.screen_bounds.width.to_bits().to_be_bytes());
-    digest.update(window.screen_bounds.height.to_bits().to_be_bytes());
-    let geometry = hex::encode(digest.finalize());
-    image.map_or_else(
-        || format!("geometry:{geometry}"),
-        |image| {
-            format!(
-                "geometry:{geometry}:visual:{}",
-                hex::encode(visual_signature(image))
-            )
-        },
-    )
-}
-
-fn visual_signature(image: &nexus_cua_runtime::RgbaImage) -> Vec<u8> {
-    const GRID: u32 = 32;
-    if image.width == 0 || image.height == 0 {
-        return Vec::new();
-    }
-    let mut signature = Vec::with_capacity((GRID * GRID) as usize);
-    for grid_y in 0..GRID {
-        let y = ((u64::from(grid_y) * u64::from(image.height) + u64::from(GRID / 2))
-            / u64::from(GRID))
-        .min(u64::from(image.height - 1));
-        for grid_x in 0..GRID {
-            let x = ((u64::from(grid_x) * u64::from(image.width) + u64::from(GRID / 2))
-                / u64::from(GRID))
-            .min(u64::from(image.width - 1));
-            let index = usize::try_from((y * u64::from(image.width) + x) * 4).unwrap_or(0);
-            let pixel = image.pixels.get(index..index + 3).unwrap_or(&[0, 0, 0]);
-            let luma =
-                (u16::from(pixel[0]) * 54 + u16::from(pixel[1]) * 183 + u16::from(pixel[2]) * 19)
-                    / 256;
-            signature.push(u8::try_from(luma).unwrap_or(u8::MAX));
-        }
-    }
-    signature
-}
-
-fn fingerprints_match(expected: &str, current: &str) -> bool {
-    let Some((expected_geometry, expected_visual)) = expected.split_once(":visual:") else {
-        return expected == current;
-    };
-    let Some((current_geometry, current_visual)) = current.split_once(":visual:") else {
-        return false;
-    };
-    if expected_geometry != current_geometry {
-        return false;
-    }
-    let (Ok(expected), Ok(current)) = (hex::decode(expected_visual), hex::decode(current_visual))
-    else {
-        return false;
-    };
-    if expected.is_empty() || expected.len() != current.len() {
-        return false;
-    }
-    let mut total_difference = 0_u64;
-    let mut material_changes = 0_usize;
-    for (expected, current) in expected.iter().zip(&current) {
-        let difference = expected.abs_diff(*current);
-        total_difference += u64::from(difference);
-        material_changes += usize::from(difference > 24);
-    }
-    let sample_count = u64::try_from(expected.len()).unwrap_or(u64::MAX);
-    total_difference <= 8 * sample_count && material_changes * 5 <= expected.len()
-}
-
-fn contains_rect(
-    outer: nexus_cua_protocol::ScreenRect,
-    inner: nexus_cua_protocol::ScreenRect,
-) -> bool {
-    inner.x >= outer.x
-        && inner.y >= outer.y
-        && inner.x + inner.width <= outer.x + outer.width
-        && inner.y + inner.height <= outer.y + outer.height
 }

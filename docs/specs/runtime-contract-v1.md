@@ -1,4 +1,4 @@
-# Nexus CUA Runtime Contract v1
+# Nexus Computer Use Runtime Contract v1
 
 Status: normative for the `0.1.x` development line.
 
@@ -8,7 +8,8 @@ wire shapes remain normative in `protocol-v1.md`.
 
 ## Product scope
 
-Nexus CUA is a model-neutral native desktop execution engine. It provides:
+Nexus Computer Use Runtime is a model-neutral native desktop execution engine
+for Nexus and other bounded hosts. It provides:
 
 - running application and top-level window discovery;
 - exact-window screenshots suitable for an external vision model;
@@ -22,10 +23,10 @@ Nexus CUA is a model-neutral native desktop execution engine. It provides:
 
 It does not contain model inference, OCR, a planning loop, browser DOM/CDP,
 product approval UI, complete-desktop capture, or unrestricted background
-input. Nexus supplies its own vision model and exposes CUA to agents through a
-round-scoped CLI/Skill. The `v1` authority unit is one exact top-level window;
-system-shell surfaces require a future explicit surface contract rather than a
-silent widening of window authority.
+input. Nexus supplies its own vision model and exposes Computer Use to agents
+through a round-scoped CLI/Skill. The `v1` authority unit is one exact top-level
+window; system-shell surfaces require a future explicit surface contract rather
+than a silent widening of window authority.
 
 ## Capability truth
 
@@ -70,8 +71,9 @@ Observation uses a two-phase coherence check:
 1. Read target generation and geometry.
 2. Capture requested pixels and semantic state in parallel.
 3. Read generation and geometry again.
-4. If they differ, discard both results and retry exactly once; otherwise
-   return `stale_observation`.
+4. If they match, publish the coherent observation. If they differ, discard
+   both results and retry exactly once; a second mismatch returns
+   `stale_observation`.
 
 Animation or a blinking cursor alone does not invalidate authority. Window
 replacement, process restart, geometry/DPI change, semantic target-path change,
@@ -106,6 +108,12 @@ Traversal must:
 - enforce node, depth, string-byte, provider-call, and wall-time limits;
 - report `complete=false` and a stable truncation reason when bounded;
 - produce observation-scoped element references, never public native handles.
+
+Traversal budgets are enforced whenever the native provider returns control to
+its owning actor. Some operating-system accessibility calls cannot be safely
+interrupted while they are inside a hung third-party provider. The sidecar
+process boundary and the host's bounded reconciliation/termination policy are
+the ultimate hard bound for that case.
 
 The current implementation pulls fresh semantic state and performs an exact
 element signature preflight before each action. Future notification caches may
@@ -183,12 +191,13 @@ one-shot/fresh-read routes remain the correctness baseline.
 
 ## Nexus enablement boundary
 
-Nexus decides whether CUA is enabled. Disabled means no model-facing CUA
-capability and no host-issued session authority. Browser enablement is
-independent:
+Nexus decides whether Computer Use is enabled. Disabled means no model-facing
+Computer Use capability and no host-issued session authority. Browser
+enablement is independent:
 
-- CUA on, Browser off: native desktop control works, including visible browser
-  chrome as an ordinary app, but DOM/CDP/browser history/network tools do not.
-- CUA off, Browser on: existing browser control remains unchanged.
+- Computer Use on, Browser off: native desktop control works, including visible
+  browser chrome as an ordinary app, but DOM/CDP/browser history/network tools
+  do not.
+- Computer Use off, Browser on: existing browser control remains unchanged.
 - both on: the Skill routes web semantics to Browser and native application
-  semantics to CUA; enabling one never silently grants the other.
+  semantics to Computer Use; enabling one never silently grants the other.

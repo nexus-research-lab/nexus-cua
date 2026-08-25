@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Native desktop drivers for Nexus CUA"
+description = "Native desktop drivers for Nexus Computer Use Runtime"
 
 [dependencies]
 async-trait.workspace = true

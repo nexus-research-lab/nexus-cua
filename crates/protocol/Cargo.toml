@@ -1,6 +1,6 @@
 [package]
 name = "nexus-cua-protocol"
-description = "Versioned public protocol for Nexus CUA"
+description = "Versioned public protocol for Nexus Computer Use Runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,7 @@
 # Security Policy
 
-Nexus CUA controls user input and can observe sensitive desktop content.
+Nexus Computer Use Runtime controls user input and can observe sensitive
+desktop content.
 Please do not open public issues for suspected vulnerabilities.
 
 Report security issues privately through GitHub's security advisory flow for

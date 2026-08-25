@@ -116,13 +116,13 @@ where
     std::fs::set_permissions(path, Permissions::from_mode(0o600))?;
     let _guard = UnixSocketGuard(path.to_path_buf());
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    info!(endpoint = %config.endpoint, "local CUA service ready");
+    info!(endpoint = %config.endpoint, "local Computer Use service ready");
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             biased;
             () = &mut shutdown => {
-                info!("local CUA service stopping");
+                info!("local Computer Use service stopping");
                 return Ok(());
             }
             accepted = listener.accept() => {
@@ -136,7 +136,7 @@ where
                 tokio::spawn(async move {
                     let _permit = permit;
                     if let Err(error) = serve_connection(stream, dispatcher, max_frame_bytes).await {
-                        debug!(reason = %error, "local CUA connection closed with error");
+                        debug!(reason = %error, "local Computer Use connection closed with error");
                     }
                 });
             }
@@ -159,13 +159,13 @@ where
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut security = PipeSecurity::owner_only()?;
     let mut server = security.create_pipe(config.endpoint.as_str(), first, MAX_CONNECTIONS + 1)?;
-    info!(endpoint = %config.endpoint, "local CUA service ready");
+    info!(endpoint = %config.endpoint, "local Computer Use service ready");
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             biased;
             () = &mut shutdown => {
-                info!("local CUA service stopping");
+                info!("local Computer Use service stopping");
                 return Ok(());
             }
             connected = server.connect() => {
@@ -192,7 +192,7 @@ where
                 tokio::spawn(async move {
                     let _permit = permit;
                     if let Err(error) = serve_connection(stream, dispatcher, max_frame_bytes).await {
-                        debug!(reason = %error, "local CUA connection closed with error");
+                        debug!(reason = %error, "local Computer Use connection closed with error");
                     }
                 });
             }

@@ -1,13 +1,27 @@
-# Product Integration Contract
+# Nexus Computer Use Product Integration Contract
 
-Status: normative for consumers of the `0.1.x` runtime. The Nexus application
-adapter described below is the target integration and is not implemented by
-this repository.
+Status: normative for the behavior required of `0.1.x` runtime consumers. The
+section labeled "Nexus adapter target" specifies a downstream design target; it
+is not an implementation claim for this repository.
 
-Nexus CUA is an execution component, not an agent framework. A product owns the
-model loop, user consent, policy, process supervision, and durable audit. The
-runtime owns native observation, narrow session authority, action delivery,
-verification, and transient artifacts.
+Nexus Computer Use Runtime is an execution component, not an agent framework. A
+product owns the model loop, user consent, policy, process supervision, and
+durable audit. The runtime owns native observation, narrow session authority,
+action delivery, verification, and transient artifacts.
+
+## One core, two integration paths
+
+Nexus is the primary product consumer, but it is not encoded into the runtime.
+The project deliberately supports two front doors above the same core:
+
+- **Nexus-native:** a Go supervisor and client, built-in Computer Use Skill,
+  round-scoped `nexus computer` command, product approvals, and typed receipts.
+- **Independent host:** the embeddable Rust API or authenticated sidecar
+  protocol, consumed through a host-owned SDK, CLI, or optional adapter.
+
+The paths share protocol and driver behavior. They do not share product
+identity or ambient authority. A generic integration must meet the same session,
+target, freshness, retry, and sensitive-data rules as Nexus.
 
 ## Supported consumption modes
 
@@ -22,6 +36,8 @@ The generic `request` subcommand is a diagnostic client. A product must not
 hand its endpoint, token file, arbitrary command file, or artifact root to a
 model. Agent-facing commands belong to the embedding product so it can bind
 each call to an authenticated user, conversation, round, and approval policy.
+For a non-conversational host, the equivalent boundary is one authenticated job
+or transaction step with its own reviewed authority scope.
 
 ## Host topology
 
@@ -33,7 +49,7 @@ product policy / round grant ----> agent-facing CLI + Skill
             |                              |
             | private input + receipt      |
             v                              v
-sidecar supervisor ----------------> Nexus CUA IPC
+sidecar supervisor ----------------> Computer Use IPC
                                             |
                                  capability session
                                             |
@@ -42,8 +58,8 @@ sidecar supervisor ----------------> Nexus CUA IPC
 
 The effective authority is the intersection of five facts:
 
-1. The product build supports CUA on the current platform.
-2. The owner has explicitly enabled CUA.
+1. The product build supports Computer Use on the current platform.
+2. The owner has explicitly enabled Computer Use.
 3. The pinned sidecar is healthy and speaks the expected protocol.
 4. Required operating-system permissions are granted.
 5. The current round has a live runtime session whose manifest permits the
@@ -67,11 +83,14 @@ host responsibilities and must inherit an owner-private directory ACL. Local
 connections and distinct in-flight commands are independently bounded; `busy`
 is a capacity signal, never permission to bypass the sidecar.
 
-When CUA is disabled, the host must atomically stop issuing new round grants,
-close all sessions it owns, reconcile already admitted requests for a bounded
-period, and stop the sidecar. An admitted mutation may complete; disabling
-cannot undo an operating-system action that already happened. The host reports
-that distinction instead of claiming cancellation.
+When Computer Use is disabled, the host must atomically stop issuing new round
+grants, close all sessions it owns, reconcile already admitted requests for a
+bounded period, and stop the sidecar. An admitted mutation may complete;
+disabling cannot undo an operating-system action that already happened. The
+host reports that distinction instead of claiming cancellation. If a native
+provider remains hung when the bounded reconciliation period ends, the host
+terminates the sidecar, reports the result as indeterminate, and never replays
+that mutation under a new request identity.
 
 Each runtime creates a private artifact generation below the host-selected
 artifact root. Graceful process teardown removes only that generation. After a
@@ -82,9 +101,11 @@ durable references.
 
 ## Round and session lifecycle
 
-A product opens a fresh session for a physical model round or a smaller
-approved operation scope. Observation-only work uses `read_only`. Mutating work
-uses `bounded` with:
+A product opens a fresh session for one approved authority scope. For a
+conversational agent this is normally one physical model round or a smaller
+operation; for non-conversational automation it is one authenticated job or
+transaction step. Observation-only work uses `read_only`. Mutating work uses
+`bounded` with:
 
 - application identities selected from current discovery, not model-authored
   native handles;
@@ -92,11 +113,15 @@ uses `bounded` with:
 - foreground input disabled unless the operation requires it; and
 - a short TTL bounded by the host.
 
-The caller lists windows, observes one exact window, and supplies that
-observation to every mutation. After a successful mutation it must observe
-again. A stale observation is a normal recovery edge, not permission to bypass
-the guard. The product closes the session at round end, user cancellation,
-permission revocation, owner switch, or sidecar health loss.
+The session manifest authorizes application identities, not one permanent
+window. Within an allowed application, the caller lists windows, observes one
+exact window, and supplies that observation to every mutation. The mutation's
+authority unit is therefore one observed top-level window even though a session
+may operate on several windows from its application allowlist. After a
+successful mutation it must observe again. A stale observation is a normal
+recovery edge, not permission to bypass the guard. The product closes the
+session at round or operation end, user cancellation, permission revocation,
+owner switch, or sidecar health loss.
 
 Transport retries preserve the exact `request_id` and command. A caller that
 times out may increase only `timeout_ms` while reconciling. It must never create
@@ -129,20 +154,20 @@ other products can consume the same runtime without Nexus domain dependencies.
 
 ## Browser independence
 
-Browser and CUA are separate capabilities and settings:
+Browser and Computer Use are separate capabilities and settings:
 
-| CUA | Browser | Behavior |
+| Computer Use | Browser | Behavior |
 | --- | --- | --- |
 | off | off | No computer-control capability |
 | on | off | Native visible-window control, including browser chrome and page pixels; no DOM, CDP, network, history, or tab semantics |
 | off | on | Existing Browser extension behavior only |
-| on | on | Browser handles page semantics; CUA handles native applications and browser chrome when explicitly selected |
+| on | on | Browser handles page semantics; Computer Use handles native applications and browser chrome when explicitly selected |
 
 The Skill may recommend a route, but it cannot merge authorities. Browser
-failure does not silently widen a request into native pixel control, and CUA
-availability never enables complete CDP. Switching routes requires that the
-other capability is independently enabled and that its own policy authorizes
-the operation.
+failure does not silently widen a request into native pixel control, and
+Computer Use availability never enables complete CDP. Switching routes requires
+that the other capability is independently enabled and that its own policy
+authorizes the operation.
 
 ## Compatibility and upgrades
 
@@ -156,11 +181,13 @@ binary beside the active version, run `doctor` and a signed-package smoke test,
 then switch only after the previous sidecar exits. It must not mix one binary's
 endpoint, token, sessions, or artifact generation with another version.
 
-Non-Rust consumers can generate typed bindings from `nexus-cua schema`. Frames
-are four-byte big-endian lengths followed by closed JSON and are bounded before
-payload allocation. Implementations must preserve unknown-variant failure,
-opaque references, redacted sensitive values, and stable error codes rather
-than translating the protocol into a looser map.
+Non-Rust consumers can export the schema from their pinned local binary with
+`nexus-cua schema` and generate typed bindings. Published schema bundles,
+compatibility fixtures, and maintained reference clients are separate future
+distribution work. Frames are four-byte big-endian lengths followed by closed
+JSON and are bounded before payload allocation. Implementations must preserve
+unknown-variant failure, opaque references, redacted sensitive values, and
+stable error codes rather than translating the protocol into a looser map.
 
 ## Observability
 

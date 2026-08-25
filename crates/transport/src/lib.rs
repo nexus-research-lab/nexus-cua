@@ -1,4 +1,4 @@
-//! Authenticated, local-only IPC for Nexus CUA.
+//! Authenticated, local-only IPC for Nexus Computer Use Runtime.
 //!
 //! The transport implementation is intentionally separate from the runtime:
 //! embedders can use the Rust API directly without opening a local endpoint.

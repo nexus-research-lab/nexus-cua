@@ -1,6 +1,7 @@
 # Third-party notices
 
-Nexus CUA is MIT licensed. Its Rust dependency graph is pinned in `Cargo.lock`.
+Nexus Computer Use Runtime is MIT licensed. Its Rust dependency graph is pinned
+in `Cargo.lock`.
 The direct runtime dependencies and their declared license families are:
 
 | Area | Packages | Declared licenses |

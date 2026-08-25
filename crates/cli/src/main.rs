@@ -1,4 +1,4 @@
-//! Nexus CUA service entry point.
+//! Nexus Computer Use Runtime service entry point.
 
 mod commands;
 mod diagnostics;

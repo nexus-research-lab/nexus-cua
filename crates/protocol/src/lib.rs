@@ -1,4 +1,4 @@
-//! Versioned, model-neutral wire contract for Nexus CUA.
+//! Versioned, model-neutral wire contract for Nexus Computer Use Runtime.
 //!
 //! Public identifiers are opaque and session scoped. No platform process or
 //! window handle is exposed as authority.
@@ -21,5 +21,5 @@ pub use identifiers::*;
 pub use observation::*;
 pub use session::*;
 
-/// Stable protocol identifier for the v1 wire format.
+/// Versioned identifier for the v1 wire format.
 pub const PROTOCOL_VERSION: &str = "nexus.cua.v1";
