@@ -3,7 +3,7 @@
 CARGO ?= cargo
 DEV_ROOT ?= .cache/dev
 
-.PHONY: help install dev run doctor build release check fmt format lint test schema clean
+.PHONY: help install dev run doctor build release package check fmt format lint test schema clean
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -27,6 +27,9 @@ build: ## Build the complete workspace
 
 release: ## Build an optimized service binary
 	$(CARGO) build --workspace --release
+
+package: ## Validate publishable crate source archives
+	$(CARGO) package --workspace --no-verify --locked
 
 check: fmt lint test ## Run the local quality gate
 

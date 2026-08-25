@@ -232,12 +232,14 @@ fn extract_windows(content: &SCShareableContent) -> Vec<NativeWindow> {
         let native_applications = content.applications();
         for application in &native_applications {
             let pid = application.processID();
+            let application_key = application_generation(pid);
+            let bundle_identifier = application.bundleIdentifier().to_string();
             applications.insert(
                 pid,
                 (
-                    application.bundleIdentifier().to_string(),
+                    stable_application_id(pid, &bundle_identifier, &application_key),
                     application.applicationName().to_string(),
-                    application_generation(pid),
+                    application_key,
                 ),
             );
         }
@@ -366,6 +368,18 @@ fn application_generation(pid: i32) -> String {
         .map(|date| date.timeIntervalSinceReferenceDate().to_bits())
         .unwrap_or_default();
     format!("pid:{pid}:launch:{launch:016x}")
+}
+
+fn stable_application_id(pid: i32, bundle_identifier: &str, generation: &str) -> String {
+    if !bundle_identifier.is_empty() {
+        return bundle_identifier.to_owned();
+    }
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+        .and_then(|application| application.executableURL())
+        .and_then(|url| url.path())
+        .map(|path| path.to_string())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| format!("process:{generation}"))
 }
 
 fn native_failure(message: &str) -> DriverError {

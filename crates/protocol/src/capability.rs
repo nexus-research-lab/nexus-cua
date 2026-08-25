@@ -23,8 +23,6 @@ pub enum Platform {
 pub enum CaptureMode {
     /// One exact top-level application window.
     Window,
-    /// A complete display or virtual desktop.
-    Desktop,
 }
 
 /// Input delivery route implemented by the selected driver.
@@ -35,8 +33,6 @@ pub enum InputRoute {
     Semantic,
     /// User-visible system foreground input.
     Foreground,
-    /// Pixel input delivered without activating the target.
-    BackgroundPixel,
 }
 
 /// One system permission's current state.

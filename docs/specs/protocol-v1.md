@@ -29,6 +29,9 @@ It never permits input.
 action allowlist, a foreground-input flag, and a finite session TTL. An empty
 application or action allowlist authorizes nothing.
 
+Version 1 exposes exact top-level windows only. Complete-desktop capture is not
+represented by a dormant manifest flag or inferred from foreground authority.
+
 The protocol deliberately has no unrestricted mode.
 
 ## Observation integrity

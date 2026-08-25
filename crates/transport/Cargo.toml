@@ -8,8 +8,8 @@ repository.workspace = true
 description = "Authenticated local IPC transport for Nexus CUA"
 
 [dependencies]
-nexus-cua-protocol = { path = "../protocol" }
-nexus-cua-runtime = { path = "../runtime" }
+nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
+nexus-cua-runtime = { version = "0.1.0", path = "../runtime" }
 serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true

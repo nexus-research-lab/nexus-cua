@@ -14,15 +14,18 @@ Nexus CUA is a model-neutral native desktop execution engine. It provides:
 - exact-window screenshots suitable for an external vision model;
 - bounded accessibility snapshots with element roles, names, values, states,
   actions, hierarchy, and geometry;
-- semantic invoke/value/focus/select/toggle/expand/scroll operations when the
-  platform exposes the matching public pattern;
+- semantic invoke/value/focus/select/toggle/expand operations when the platform
+  exposes the matching public pattern;
 - foreground focus, pointer, keyboard, text, wheel, and drag operations;
 - fresh-observation guards and deterministic post-action verification;
 - private authenticated local IPC, an embeddable Rust API, and diagnostics CLI.
 
 It does not contain model inference, OCR, a planning loop, browser DOM/CDP,
-product approval UI, or unrestricted background input. Nexus supplies its own
-vision model and exposes CUA to agents through a round-scoped CLI/Skill.
+product approval UI, complete-desktop capture, or unrestricted background
+input. Nexus supplies its own vision model and exposes CUA to agents through a
+round-scoped CLI/Skill. The `v1` authority unit is one exact top-level window;
+system-shell surfaces require a future explicit surface contract rather than a
+silent widening of window authority.
 
 ## Capability truth
 

@@ -47,4 +47,5 @@ the first tagged release.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md), and
+the [dependency policy](docs/dependency-policy.md).

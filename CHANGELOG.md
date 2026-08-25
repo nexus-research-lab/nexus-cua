@@ -22,3 +22,7 @@ All notable changes to Nexus CUA will be documented in this file.
 - Minimum-Rust macOS and Windows CI gates.
 - Attested universal macOS and Windows x64 GitHub release packages with SHA-256
   checksums.
+- Publishable version-pinned Rust crates and an exact-window v1 schema without
+  dormant desktop or background-input grants.
+- Stable executable-path fallback identities for macOS applications without a
+  bundle identifier.

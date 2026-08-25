@@ -33,7 +33,7 @@ jobs:
             target/aarch64-apple-darwin/release/nexus-cua \
             target/x86_64-apple-darwin/release/nexus-cua \
             -output dist/package/nexus-cua
-          cp README.md LICENSE dist/package/
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md Cargo.lock dist/package/
           tar -czf "dist/nexus-cua-${GITHUB_REF_NAME}-macos-universal.tar.gz" -C dist/package .
       - uses: actions/attest-build-provenance@v3
         with:
@@ -57,7 +57,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/package | Out-Null
-          Copy-Item target/release/nexus-cua.exe, README.md, LICENSE dist/package/
+          Copy-Item target/release/nexus-cua.exe, README.md, LICENSE, THIRD_PARTY_NOTICES.md, Cargo.lock dist/package/
           Compress-Archive -Path dist/package/* -DestinationPath "dist/nexus-cua-$env:GITHUB_REF_NAME-windows-x86_64.zip"
       - uses: actions/attest-build-provenance@v3
         with:

@@ -27,8 +27,6 @@ pub struct CapabilityManifest {
     pub allowed_actions: Vec<ActionKind>,
     /// Whether any foreground input route is allowed.
     pub allow_foreground_input: bool,
-    /// Whether complete-desktop capture is allowed.
-    pub allow_desktop_capture: bool,
     /// Finite lifetime in seconds.
     pub ttl_seconds: u32,
 }

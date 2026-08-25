@@ -202,7 +202,6 @@ fn manifest(mode: PermissionMode) -> CapabilityManifest {
             Vec::new()
         },
         allow_foreground_input: mode == PermissionMode::Bounded,
-        allow_desktop_capture: false,
         ttl_seconds: 300,
     }
 }
