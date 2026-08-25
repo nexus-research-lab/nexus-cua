@@ -1,4 +1,4 @@
-//! Serialized Windows foreground input actor backed by SendInput.
+//! Serialized Windows foreground input actor backed by `SendInput`.
 
 use std::ffi::c_void;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -10,14 +10,14 @@ use nexus_cua_runtime::{DriverError, DriverErrorKind};
 use tokio::sync::oneshot;
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
-    VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12, VK_HOME,
-    VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB,
-    VK_UP,
+    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
+    VK_END, VK_ESCAPE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10,
+    VK_F11, VK_F12, VK_HOME, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT,
+    VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetSystemMetrics, IsIconic, SM_CXVIRTUALSCREEN,
@@ -63,7 +63,7 @@ impl InputActor {
         let (sender, receiver) = sync_channel(COMMAND_CAPACITY);
         thread::Builder::new()
             .name("nexus-cua-windows-input".to_owned())
-            .spawn(move || actor_loop(receiver))
+            .spawn(move || actor_loop(&receiver))
             .expect("create SendInput actor thread");
         Self { sender }
     }
@@ -97,7 +97,7 @@ struct InputCommand {
     reply: oneshot::Sender<Result<(), DriverError>>,
 }
 
-fn actor_loop(receiver: Receiver<InputCommand>) {
+fn actor_loop(receiver: &Receiver<InputCommand>) {
     while let Ok(command) = receiver.recv() {
         let result = perform(command.hwnd, command.action);
         let _ = command.reply.send(result);
@@ -130,7 +130,7 @@ fn activate(hwnd: HWND) -> Result<(), DriverError> {
     // caller verifies that Windows actually granted foreground ownership.
     unsafe {
         if IsIconic(hwnd).as_bool() {
-            ShowWindow(hwnd, SW_RESTORE);
+            let _ = ShowWindow(hwnd, SW_RESTORE);
         }
         if !SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() != hwnd {
             return Err(DriverError::new(
@@ -157,7 +157,8 @@ fn move_pointer(target: ScreenPoint, duration_ms: u32) -> Result<(), DriverError
     let mut current = POINT::default();
     // SAFETY: GetCursorPos writes the initialized local POINT.
     unsafe {
-        GetCursorPos(&mut current).map_err(|_| input_failure("cannot read pointer position"))?;
+        GetCursorPos(&raw mut current)
+            .map_err(|_| input_failure("cannot read pointer position"))?;
     }
     interpolate(
         ScreenPoint {
@@ -233,10 +234,10 @@ fn press_keys(keys: &[String]) -> Result<(), DriverError> {
     }
     let mut inputs = Vec::with_capacity(modifiers.len() * 2 + primary.len() * 2);
     for modifier in &modifiers {
-        inputs.push(keyboard_input(*modifier, 0, Default::default()));
+        inputs.push(keyboard_input(*modifier, 0, KEYBD_EVENT_FLAGS::default()));
     }
     for key in primary {
-        inputs.push(keyboard_input(key, 0, Default::default()));
+        inputs.push(keyboard_input(key, 0, KEYBD_EVENT_FLAGS::default()));
         inputs.push(keyboard_input(key, 0, KEYEVENTF_KEYUP));
     }
     for modifier in modifiers.into_iter().rev() {
@@ -250,13 +251,13 @@ fn scroll(delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
     if delta_y != 0.0 {
         inputs.push(relative_mouse(
             MOUSEEVENTF_WHEEL,
-            wheel_delta(delta_y) as u32,
+            u32::from_ne_bytes(wheel_delta(delta_y).to_ne_bytes()),
         ));
     }
     if delta_x != 0.0 {
         inputs.push(relative_mouse(
             MOUSEEVENTF_HWHEEL,
-            wheel_delta(delta_x) as u32,
+            u32::from_ne_bytes(wheel_delta(delta_x).to_ne_bytes()),
         ));
     }
     send(&inputs)
@@ -294,11 +295,7 @@ fn relative_mouse(flags: MOUSE_EVENT_FLAGS, data: u32) -> INPUT {
     }
 }
 
-fn keyboard_input(
-    virtual_key: VIRTUAL_KEY,
-    scan: u16,
-    flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS,
-) -> INPUT {
+fn keyboard_input(virtual_key: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -351,11 +348,15 @@ fn virtual_desktop() -> Result<(i32, i32, i32, i32), DriverError> {
     }
 }
 
+// The clamp proves that the rounded Win32 absolute coordinate fits in i32.
+#[allow(clippy::cast_possible_truncation)]
 fn normalize_absolute(value: f64, origin: i32, extent: i32) -> i32 {
     (((value - f64::from(origin)) * 65_535.0 / f64::from(extent - 1)).round()).clamp(0.0, 65_535.0)
         as i32
 }
 
+// The clamp proves that the rounded native wheel delta fits in i32.
+#[allow(clippy::cast_possible_truncation)]
 fn wheel_delta(value: f64) -> i32 {
     (value * WHEEL_DELTA)
         .round()

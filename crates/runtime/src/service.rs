@@ -20,7 +20,7 @@ use crate::artifact_store::ArtifactStore;
 use crate::driver::{
     DesktopDriver, DriverAction, DriverApplication, DriverElement, DriverObservation, DriverWindow,
 };
-use crate::error::public_error;
+use crate::error::{DriverErrorKind, public_error};
 use crate::validation::{validate_action, validate_manifest};
 
 /// Runtime limits selected by the embedding host.
@@ -235,10 +235,8 @@ impl Runtime {
             return Err(capability_denied());
         }
         let mut observation = self
-            .driver
-            .observe_window(&window, input.include_screenshot, input.accessibility)
-            .await
-            .map_err(CuaError::from)?;
+            .observe_driver_window(&window, input.include_screenshot, input.accessibility)
+            .await?;
         if observation.window_key != window.key {
             return Err(public_error(
                 ErrorCode::Internal,
@@ -308,6 +306,29 @@ impl Runtime {
             elements_complete,
             elements_truncation,
         })))
+    }
+
+    async fn observe_driver_window(
+        &self,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: nexus_cua_protocol::AccessibilityMode,
+    ) -> Result<DriverObservation, CuaError> {
+        let first = self
+            .driver
+            .observe_window(window, include_screenshot, accessibility)
+            .await;
+        if matches!(
+            &first,
+            Err(error) if error.kind == DriverErrorKind::StaleObservation
+        ) {
+            return self
+                .driver
+                .observe_window(window, include_screenshot, accessibility)
+                .await
+                .map_err(Into::into);
+        }
+        first.map_err(Into::into)
     }
 
     async fn perform_action(

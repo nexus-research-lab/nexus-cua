@@ -39,7 +39,7 @@ use windows::Win32::UI::Accessibility::{
     UIA_ToolBarControlTypeId, UIA_ToolTipControlTypeId, UIA_TreeControlTypeId,
     UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId,
 };
-use windows::core::BSTR;
+use windows::core::{BOOL, BSTR};
 
 const COMMAND_CAPACITY: usize = 32;
 const SNAPSHOT_CACHE_LIMIT: usize = 32;
@@ -74,7 +74,7 @@ impl SemanticActor {
             .spawn(move || match SemanticState::new() {
                 Ok(state) => {
                     let _ = ready.send(Ok(()));
-                    state.run(receiver);
+                    state.run(&receiver);
                 }
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -163,11 +163,47 @@ struct SnapshotBudget {
 struct NodeValues {
     role: String,
     name: String,
-    enabled: bool,
-    focused: bool,
-    focusable: bool,
-    offscreen: bool,
+    state: NodeState,
     bounds: Option<ScreenRect>,
+}
+
+#[derive(Clone, Copy)]
+struct NodeState(u8);
+
+impl NodeState {
+    const ENABLED: u8 = 1 << 0;
+    const FOCUSED: u8 = 1 << 1;
+    const FOCUSABLE: u8 = 1 << 2;
+    const OFFSCREEN: u8 = 1 << 3;
+
+    fn from_flags([enabled, focused, focusable, offscreen]: [bool; 4]) -> Self {
+        Self(
+            u8::from(enabled) * Self::ENABLED
+                | u8::from(focused) * Self::FOCUSED
+                | u8::from(focusable) * Self::FOCUSABLE
+                | u8::from(offscreen) * Self::OFFSCREEN,
+        )
+    }
+
+    fn contains(self, flag: u8) -> bool {
+        self.0 & flag != 0
+    }
+
+    fn enabled(self) -> bool {
+        self.contains(Self::ENABLED)
+    }
+
+    fn focused(self) -> bool {
+        self.contains(Self::FOCUSED)
+    }
+
+    fn focusable(self) -> bool {
+        self.contains(Self::FOCUSABLE)
+    }
+
+    fn offscreen(self) -> bool {
+        self.contains(Self::OFFSCREEN)
+    }
 }
 
 impl SemanticState {
@@ -195,7 +231,7 @@ impl SemanticState {
         }
     }
 
-    fn run(mut self, receiver: Receiver<SemanticCommand>) {
+    fn run(mut self, receiver: &Receiver<SemanticCommand>) {
         while let Ok(command) = receiver.recv() {
             match command {
                 SemanticCommand::Snapshot { hwnd, mode, reply } => {
@@ -253,17 +289,14 @@ impl SemanticState {
                 continue;
             }
             visited += 1;
-            let values = match cached_values(&element) {
-                Ok(values) => values,
-                Err(_) => {
-                    truncation = Some(TruncationReason::ProviderFailure);
-                    break;
-                }
+            let Ok(values) = cached_values(&element) else {
+                truncation = Some(TruncationReason::ProviderFailure);
+                break;
             };
             let actions = normalized_actions(&values.role);
             let emit = mode == AccessibilityMode::Full
                 || !actions.is_empty()
-                || values.focusable
+                || values.state.focusable()
                 || !values.name.is_empty()
                 || depth <= 1;
             let current_parent = if emit {
@@ -283,8 +316,8 @@ impl SemanticState {
                     name: values.name,
                     value: None,
                     screen_bounds: values.bounds,
-                    enabled: values.enabled,
-                    focused: values.focused,
+                    enabled: values.state.enabled(),
+                    focused: values.state.focused(),
                     actions,
                 });
                 stored.insert(
@@ -298,7 +331,7 @@ impl SemanticState {
             } else {
                 nearest_parent
             };
-            if !values.offscreen || mode == AccessibilityMode::Full {
+            if !values.state.offscreen() || mode == AccessibilityMode::Full {
                 for child in cached_children(&element) {
                     queue.push_back((child, current_parent.clone(), depth + 1));
                 }
@@ -435,18 +468,12 @@ fn cached_values(element: &IUIAutomationElement) -> Result<NodeValues, DriverErr
         Ok(NodeValues {
             role: normalize_control_type(control_type),
             name: bounded_string(name),
-            enabled: element
-                .CachedIsEnabled()
-                .map_or(true, |value| value.as_bool()),
-            focused: element
-                .CachedHasKeyboardFocus()
-                .is_ok_and(|value| value.as_bool()),
-            focusable: element
-                .CachedIsKeyboardFocusable()
-                .is_ok_and(|value| value.as_bool()),
-            offscreen: element
-                .CachedIsOffscreen()
-                .is_ok_and(|value| value.as_bool()),
+            state: NodeState::from_flags([
+                element.CachedIsEnabled().map_or(true, BOOL::as_bool),
+                element.CachedHasKeyboardFocus().is_ok_and(BOOL::as_bool),
+                element.CachedIsKeyboardFocusable().is_ok_and(BOOL::as_bool),
+                element.CachedIsOffscreen().is_ok_and(BOOL::as_bool),
+            ]),
             bounds: screen_rect(rectangle),
         })
     }
@@ -458,12 +485,11 @@ fn cached_children(element: &IUIAutomationElement) -> Vec<IUIAutomationElement> 
         element
             .GetCachedChildren()
             .ok()
-            .map(elements_from_array)
-            .unwrap_or_default()
+            .map_or_else(Vec::new, |array| elements_from_array(&array))
     }
 }
 
-fn elements_from_array(array: IUIAutomationElementArray) -> Vec<IUIAutomationElement> {
+fn elements_from_array(array: &IUIAutomationElementArray) -> Vec<IUIAutomationElement> {
     // SAFETY: Length bounds the indexed COM reads and all calls remain on MTA.
     unsafe {
         let length = array.Length().unwrap_or(0).max(0);
@@ -612,11 +638,7 @@ fn element_signature(values: &NodeValues) -> [u8; 32] {
     digest.update(values.role.as_bytes());
     digest.update([0]);
     digest.update(values.name.as_bytes());
-    digest.update([
-        u8::from(values.enabled),
-        u8::from(values.focused),
-        u8::from(values.offscreen),
-    ]);
+    digest.update([values.state.0]);
     if let Some(bounds) = values.bounds {
         digest.update(bounds.x.to_bits().to_be_bytes());
         digest.update(bounds.y.to_bits().to_be_bytes());

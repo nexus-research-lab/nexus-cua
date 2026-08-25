@@ -1,4 +1,4 @@
-//! Bounded Win32 top-level window discovery actor.
+//! Bounded `Win32` top-level window discovery actor.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -29,7 +29,6 @@ const MAX_PATH_UNITS: usize = 32_768;
 pub(super) struct NativeWindow {
     pub(super) key: String,
     pub(super) hwnd: isize,
-    pub(super) pid: u32,
     pub(super) application_key: String,
     pub(super) application_id: String,
     pub(super) application_name: String,
@@ -50,7 +49,7 @@ impl DiscoveryActor {
         let (sender, receiver) = sync_channel(COMMAND_CAPACITY);
         thread::Builder::new()
             .name("nexus-cua-windows-discovery".to_owned())
-            .spawn(move || actor_loop(receiver))
+            .spawn(move || actor_loop(&receiver))
             .expect("create Win32 discovery actor thread");
         Self { sender }
     }
@@ -76,7 +75,7 @@ enum DiscoveryCommand {
     },
 }
 
-fn actor_loop(receiver: Receiver<DiscoveryCommand>) {
+fn actor_loop(receiver: &Receiver<DiscoveryCommand>) {
     while let Ok(DiscoveryCommand::List { reply }) = receiver.recv() {
         let _ = reply.send(list_windows());
     }
@@ -100,8 +99,9 @@ fn list_windows() -> Result<Vec<NativeWindow>, DriverError> {
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: `lparam` originates from `list_windows` and EnumWindows is
     // synchronous, so the Vec remains uniquely borrowed for this callback.
-    let windows = unsafe { &mut *(lparam.0 as *mut Vec<isize>) };
-    windows.push(hwnd.0 as isize);
+    let address = usize::from_ne_bytes(lparam.0.to_ne_bytes());
+    let windows = unsafe { &mut *std::ptr::with_exposed_provenance_mut::<Vec<isize>>(address) };
+    windows.push(raw_hwnd(hwnd));
     true.into()
 }
 
@@ -111,7 +111,9 @@ fn describe_window(hwnd: HWND, foreground: HWND) -> Result<Option<NativeWindow>,
     unsafe {
         if !IsWindowVisible(hwnd).as_bool()
             || GetAncestor(hwnd, GA_ROOT) != hwnd
-            || (GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0) != 0
+            || (u32::from_ne_bytes(GetWindowLongW(hwnd, GWL_EXSTYLE).to_ne_bytes())
+                & WS_EX_TOOLWINDOW.0)
+                != 0
         {
             return Ok(None);
         }
@@ -144,9 +146,8 @@ fn describe_window(hwnd: HWND, foreground: HWND) -> Result<Option<NativeWindow>,
         let (application_id, application_name, generation) = identity?;
         let application_key = format!("pid:{pid}:start:{generation:016x}");
         Ok(Some(NativeWindow {
-            key: format!("hwnd:{:016x}:{application_key}", hwnd.0 as usize),
-            hwnd: hwnd.0 as isize,
-            pid,
+            key: format!("hwnd:{:016x}:{application_key}", hwnd.0.addr()),
+            hwnd: raw_hwnd(hwnd),
             application_key,
             application_id,
             application_name,
@@ -174,21 +175,26 @@ fn process_identity(
     unsafe {
         QueryFullProcessImageNameW(
             process,
-            Default::default(),
+            windows::Win32::System::Threading::PROCESS_NAME_FORMAT::default(),
             PWSTR(buffer.as_mut_ptr()),
-            &mut length,
+            &raw mut length,
         )
         .map_err(|_| native_failure("cannot read process image path"))?;
-        GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user)
-            .map_err(|_| native_failure("cannot read process generation"))?;
+        GetProcessTimes(
+            process,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+        .map_err(|_| native_failure("cannot read process generation"))?;
     }
     buffer.truncate(usize::try_from(length).unwrap_or(0));
     let path = String::from_utf16_lossy(&buffer);
     let application_name = Path::new(&path)
         .file_stem()
         .and_then(|name| name.to_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("Process {pid}"));
+        .map_or_else(|| format!("Process {pid}"), str::to_owned);
     let generation = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
     Ok((path.to_lowercase(), application_name, generation))
 }
@@ -197,9 +203,9 @@ fn window_title(hwnd: HWND) -> String {
     // SAFETY: The mutable UTF-16 buffer is sized from the current title length;
     // races only truncate the user-visible title and cannot overflow the slice.
     unsafe {
-        let length = GetWindowTextLengthW(hwnd).max(0) as usize;
+        let length = usize::try_from(GetWindowTextLengthW(hwnd).max(0)).unwrap_or(0);
         let mut buffer = vec![0_u16; length.saturating_add(1)];
-        let copied = GetWindowTextW(hwnd, &mut buffer).max(0) as usize;
+        let copied = usize::try_from(GetWindowTextW(hwnd, &mut buffer).max(0)).unwrap_or(0);
         String::from_utf16_lossy(&buffer[..copied.min(buffer.len())])
     }
 }
@@ -216,7 +222,7 @@ fn window_bounds(hwnd: HWND) -> Result<ScreenRect, DriverError> {
         )
         .is_err()
         {
-            GetWindowRect(hwnd, &mut rectangle)
+            GetWindowRect(hwnd, &raw mut rectangle)
                 .map_err(|_| native_failure("cannot read window bounds"))?;
         }
     }
@@ -232,8 +238,13 @@ fn hwnd(raw: isize) -> HWND {
     HWND(raw as *mut c_void)
 }
 
+fn raw_hwnd(hwnd: HWND) -> isize {
+    isize::from_ne_bytes(hwnd.0.addr().to_ne_bytes())
+}
+
 fn ptr_to_lparam<T>(value: &mut T) -> isize {
-    value as *mut T as isize
+    let address = std::ptr::from_mut(value).addr();
+    isize::from_ne_bytes(address.to_ne_bytes())
 }
 
 fn native_failure(message: &str) -> DriverError {

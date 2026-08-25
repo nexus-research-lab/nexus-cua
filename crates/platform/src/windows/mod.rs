@@ -1,4 +1,4 @@
-//! Windows Graphics Capture, UI Automation, and SendInput driver.
+//! Windows Graphics Capture, UI Automation, and `SendInput` driver.
 
 mod capture;
 mod discovery;
@@ -230,125 +230,7 @@ impl DesktopDriver for WindowsDriver {
             ));
         }
         let current = current_window(&self.windows().await?, &window.key)?;
-        let delivery_mode = match action {
-            DriverAction::FocusWindow => {
-                self.focus_for_input(&current).await?;
-                DeliveryMode::Foreground
-            }
-            DriverAction::FocusElement { element_key } => {
-                self.semantic
-                    .perform(element_key, SemanticAction::Focus)
-                    .await?;
-                DeliveryMode::Semantic
-            }
-            DriverAction::InvokeElement { element_key } => {
-                self.semantic
-                    .perform(element_key, SemanticAction::Invoke)
-                    .await?;
-                DeliveryMode::Semantic
-            }
-            DriverAction::SetValue { element_key, value } => {
-                self.semantic
-                    .perform(element_key, SemanticAction::SetValue(value))
-                    .await?;
-                DeliveryMode::Semantic
-            }
-            DriverAction::ToggleElement { element_key } => {
-                self.semantic
-                    .perform(element_key, SemanticAction::Toggle)
-                    .await?;
-                DeliveryMode::Semantic
-            }
-            DriverAction::SelectElement { element_key } => {
-                self.semantic
-                    .perform(element_key, SemanticAction::Select)
-                    .await?;
-                DeliveryMode::Semantic
-            }
-            DriverAction::SetExpanded {
-                element_key,
-                expanded,
-            } => {
-                self.semantic
-                    .perform(element_key, SemanticAction::SetExpanded(expanded))
-                    .await?;
-                DeliveryMode::Semantic
-            }
-            DriverAction::ClickPoint {
-                point,
-                button,
-                count,
-            } => {
-                self.focus_for_input(&current).await?;
-                self.input
-                    .perform(
-                        current.hwnd,
-                        InputAction::Click {
-                            point,
-                            button,
-                            count,
-                        },
-                    )
-                    .await?;
-                DeliveryMode::Foreground
-            }
-            DriverAction::MovePointer { point, duration_ms } => {
-                self.focus_for_input(&current).await?;
-                self.input
-                    .perform(current.hwnd, InputAction::Move { point, duration_ms })
-                    .await?;
-                DeliveryMode::Foreground
-            }
-            DriverAction::TypeText { text } => {
-                self.focus_for_input(&current).await?;
-                self.input
-                    .perform(current.hwnd, InputAction::TypeText(text))
-                    .await?;
-                DeliveryMode::Foreground
-            }
-            DriverAction::PressKeys { keys } => {
-                self.focus_for_input(&current).await?;
-                self.input
-                    .perform(current.hwnd, InputAction::PressKeys(keys))
-                    .await?;
-                DeliveryMode::Foreground
-            }
-            DriverAction::Scroll {
-                element_key,
-                delta_x,
-                delta_y,
-            } => {
-                self.focus_for_input(&current).await?;
-                if let Some(element_key) = element_key {
-                    self.semantic
-                        .perform(element_key, SemanticAction::Focus)
-                        .await?;
-                }
-                self.input
-                    .perform(current.hwnd, InputAction::Scroll { delta_x, delta_y })
-                    .await?;
-                DeliveryMode::Foreground
-            }
-            DriverAction::Drag {
-                from,
-                to,
-                duration_ms,
-            } => {
-                self.focus_for_input(&current).await?;
-                self.input
-                    .perform(
-                        current.hwnd,
-                        InputAction::Drag {
-                            from,
-                            to,
-                            duration_ms,
-                        },
-                    )
-                    .await?;
-                DeliveryMode::Foreground
-            }
-        };
-        Ok(DriverActionOutput { delivery_mode })
+        self.dispatch_action(&current, action).await
     }
 
     async fn verify_state(
@@ -381,6 +263,111 @@ impl DesktopDriver for WindowsDriver {
             }
         };
         Ok(DriverVerification { matched, evidence })
+    }
+}
+
+impl WindowsDriver {
+    async fn dispatch_action(
+        &self,
+        current: &NativeWindow,
+        action: DriverAction,
+    ) -> Result<DriverActionOutput, DriverError> {
+        let delivery_mode = match action {
+            DriverAction::FocusWindow => {
+                self.focus_for_input(current).await?;
+                DeliveryMode::Foreground
+            }
+            semantic_action @ (DriverAction::FocusElement { .. }
+            | DriverAction::InvokeElement { .. }
+            | DriverAction::SetValue { .. }
+            | DriverAction::ToggleElement { .. }
+            | DriverAction::SelectElement { .. }
+            | DriverAction::SetExpanded { .. }) => {
+                self.dispatch_semantic_action(semantic_action).await?;
+                DeliveryMode::Semantic
+            }
+            input_action => {
+                self.focus_for_input(current).await?;
+                self.dispatch_input_action(current.hwnd, input_action)
+                    .await?;
+                DeliveryMode::Foreground
+            }
+        };
+        Ok(DriverActionOutput { delivery_mode })
+    }
+
+    async fn dispatch_semantic_action(&self, action: DriverAction) -> Result<(), DriverError> {
+        let (element_key, action) = match action {
+            DriverAction::FocusElement { element_key } => (element_key, SemanticAction::Focus),
+            DriverAction::InvokeElement { element_key } => (element_key, SemanticAction::Invoke),
+            DriverAction::SetValue { element_key, value } => {
+                (element_key, SemanticAction::SetValue(value))
+            }
+            DriverAction::ToggleElement { element_key } => (element_key, SemanticAction::Toggle),
+            DriverAction::SelectElement { element_key } => (element_key, SemanticAction::Select),
+            DriverAction::SetExpanded {
+                element_key,
+                expanded,
+            } => (element_key, SemanticAction::SetExpanded(expanded)),
+            _ => {
+                return Err(DriverError::new(
+                    DriverErrorKind::Unsupported,
+                    "action is not a semantic operation",
+                ));
+            }
+        };
+        self.semantic.perform(element_key, action).await
+    }
+
+    async fn dispatch_input_action(
+        &self,
+        hwnd: isize,
+        action: DriverAction,
+    ) -> Result<(), DriverError> {
+        let action = match action {
+            DriverAction::ClickPoint {
+                point,
+                button,
+                count,
+            } => InputAction::Click {
+                point,
+                button,
+                count,
+            },
+            DriverAction::MovePointer { point, duration_ms } => {
+                InputAction::Move { point, duration_ms }
+            }
+            DriverAction::TypeText { text } => InputAction::TypeText(text),
+            DriverAction::PressKeys { keys } => InputAction::PressKeys(keys),
+            DriverAction::Scroll {
+                element_key,
+                delta_x,
+                delta_y,
+            } => {
+                if let Some(element_key) = element_key {
+                    self.semantic
+                        .perform(element_key, SemanticAction::Focus)
+                        .await?;
+                }
+                InputAction::Scroll { delta_x, delta_y }
+            }
+            DriverAction::Drag {
+                from,
+                to,
+                duration_ms,
+            } => InputAction::Drag {
+                from,
+                to,
+                duration_ms,
+            },
+            _ => {
+                return Err(DriverError::new(
+                    DriverErrorKind::Unsupported,
+                    "action is not a foreground input operation",
+                ));
+            }
+        };
+        self.input.perform(hwnd, action).await
     }
 }
 
@@ -488,8 +475,8 @@ fn fingerprints_match(expected: &str, current: &str) -> bool {
         total_difference += u64::from(difference);
         material_changes += usize::from(difference > 24);
     }
-    let mean_difference = total_difference as f64 / expected.len() as f64;
-    mean_difference <= 8.0 && material_changes * 5 <= expected.len()
+    let sample_count = u64::try_from(expected.len()).unwrap_or(u64::MAX);
+    total_difference <= 8 * sample_count && material_changes * 5 <= expected.len()
 }
 
 fn contains_rect(

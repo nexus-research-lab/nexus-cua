@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use nexus_cua_protocol::{
@@ -12,19 +13,32 @@ use nexus_cua_protocol::{
 };
 use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverElement, DriverError,
-    DriverObservation, DriverVerification, DriverWindow, RgbaImage, Runtime, RuntimeConfig,
+    DriverErrorKind, DriverObservation, DriverVerification, DriverWindow, RgbaImage, Runtime,
+    RuntimeConfig,
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 struct MockDriver {
     revision: Mutex<u64>,
+    stale_observations_remaining: Mutex<u8>,
+    observation_calls: AtomicUsize,
 }
 
 impl MockDriver {
     fn new() -> Self {
         Self {
             revision: Mutex::new(1),
+            stale_observations_remaining: Mutex::new(0),
+            observation_calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn stale_once() -> Self {
+        Self {
+            revision: Mutex::new(1),
+            stale_observations_remaining: Mutex::new(1),
+            observation_calls: AtomicUsize::new(0),
         }
     }
 
@@ -94,6 +108,16 @@ impl DesktopDriver for MockDriver {
         include_screenshot: bool,
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
+        self.observation_calls.fetch_add(1, Ordering::SeqCst);
+        let mut stale_remaining = self.stale_observations_remaining.lock().await;
+        if *stale_remaining > 0 {
+            *stale_remaining -= 1;
+            return Err(DriverError::new(
+                DriverErrorKind::StaleObservation,
+                "fixture geometry changed",
+            ));
+        }
+        drop(stale_remaining);
         let revision = *self.revision.lock().await;
         Ok(DriverObservation {
             window_key: "window-key".to_owned(),
@@ -361,5 +385,38 @@ async fn coordinates_outside_observed_window_fail_before_dispatch() {
         .await
         .expect_err("out-of-bounds click must fail");
     assert_eq!(error.code, ErrorCode::InvalidRequest);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn observation_retries_one_coherence_race() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::stale_once());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("create runtime");
+    let session_id = open_session(&runtime, PermissionMode::ReadOnly).await;
+    let windows = runtime
+        .execute(Command::ListWindows(ListWindowsInput {
+            session_id: session_id.clone(),
+            app_ref: None,
+        }))
+        .await
+        .expect("list windows");
+    let window_ref = match windows {
+        CommandResult::Windows(windows) => windows[0].window_ref.clone(),
+        _ => panic!("unexpected windows result"),
+    };
+
+    let observed = runtime
+        .execute(Command::ObserveWindow(ObserveWindowInput {
+            session_id,
+            window_ref,
+            include_screenshot: false,
+            accessibility: AccessibilityMode::Interactive,
+        }))
+        .await
+        .expect("coherence retry succeeds");
+
+    assert!(matches!(observed, CommandResult::WindowObserved(_)));
+    assert_eq!(driver.observation_calls.load(Ordering::SeqCst), 2);
     let _ = std::fs::remove_dir_all(root);
 }

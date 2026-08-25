@@ -1,4 +1,4 @@
-//! Windows.Graphics.Capture actor with a bounded target-keyed frame-pool LRU.
+//! `Windows.Graphics.Capture` actor with a bounded target-keyed frame-pool LRU.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -50,7 +50,7 @@ impl CaptureActor {
             .spawn(move || match CaptureState::new() {
                 Ok(state) => {
                     let _ = ready.send(Ok(()));
-                    state.run(receiver);
+                    state.run(&receiver);
                 }
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -148,7 +148,7 @@ impl CaptureState {
         }
     }
 
-    fn run(mut self, receiver: Receiver<CaptureCommand>) {
+    fn run(mut self, receiver: &Receiver<CaptureCommand>) {
         loop {
             self.prune_idle();
             let command = if self.pipelines.is_empty() {
@@ -335,7 +335,7 @@ fn copy_frame(
     };
     let mut description = D3D11_TEXTURE2D_DESC::default();
     // SAFETY: GetDesc writes the initialized descriptor.
-    unsafe { texture.GetDesc(&mut description) };
+    unsafe { texture.GetDesc(&raw mut description) };
     if description.Width == 0 || description.Height == 0 {
         return Err(capture_failure("WGC frame has invalid dimensions"));
     }
@@ -355,7 +355,7 @@ fn copy_frame(
     // SAFETY: D3D reads the descriptor and writes a retained texture pointer.
     unsafe {
         device
-            .CreateTexture2D(&staging_description, None, Some(&raw mut staging))
+            .CreateTexture2D(&raw const staging_description, None, Some(&raw mut staging))
             .map_err(|_| capture_failure("failed to create WGC staging texture"))?;
     }
     let staging = staging.ok_or_else(|| capture_failure("WGC staging texture is unavailable"))?;
