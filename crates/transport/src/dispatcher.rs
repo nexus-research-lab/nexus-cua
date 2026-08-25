@@ -28,7 +28,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    /// Creates a dispatcher. Tokens shorter than 32 bytes are rejected.
+    /// Creates a dispatcher. Tokens outside the supported bounded length are rejected.
     ///
     /// # Errors
     ///

@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
-use nexus_cua_protocol::{
-    AuthorizationToken, Command, PROTOCOL_VERSION, RequestEnvelope, RequestId,
-};
+use nexus_cua_protocol::{Command, PROTOCOL_VERSION, RequestEnvelope, RequestId};
 use nexus_cua_runtime::{Runtime, RuntimeConfig};
 use nexus_cua_transport::{Dispatcher, ServerConfig};
 use schemars::schema_for;
@@ -15,7 +13,7 @@ use uuid::Uuid;
 
 use crate::diagnostics::LogFormat;
 use crate::error::CliError;
-use crate::paths::ServicePaths;
+use crate::paths::{ServicePaths, read_private_token};
 
 /// Nexus CUA native desktop service and diagnostics.
 #[derive(Debug, Parser)]
@@ -185,7 +183,7 @@ fn print_schema() -> Result<(), CliError> {
 }
 
 async fn send_request(args: RequestArgs) -> Result<(), CliError> {
-    let token = read_token(&args.token_file)?;
+    let token = read_private_token(&args.token_file)?;
     let command: Command = serde_json::from_slice(&std::fs::read(&args.command_file)?)?;
     let request = RequestEnvelope {
         protocol_version: PROTOCOL_VERSION.to_owned(),
@@ -201,15 +199,4 @@ async fn send_request(args: RequestArgs) -> Result<(), CliError> {
     let response = nexus_cua_transport::request(&endpoint, &request, args.max_frame_bytes).await?;
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
-}
-
-fn read_token(path: &PathBuf) -> Result<AuthorizationToken, CliError> {
-    let value = std::fs::read_to_string(path)?;
-    let value = value.trim();
-    if value.len() < 32 {
-        return Err(CliError::InvalidConfiguration(
-            "token file must contain at least 32 non-whitespace bytes".to_owned(),
-        ));
-    }
-    Ok(AuthorizationToken::new(value))
 }

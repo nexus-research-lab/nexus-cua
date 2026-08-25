@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 
+const MINIMUM_TOKEN_BYTES: usize = 32;
+const MAXIMUM_TOKEN_BYTES: usize = 4 * 1024;
+
 pub(crate) struct ServicePaths {
     pub(crate) endpoint: LocalEndpoint,
     pub(crate) token_file: PathBuf,
@@ -56,15 +59,29 @@ impl ServicePaths {
             secure_directory(parent)?;
         }
         secure_directory(&self.artifact_root)?;
-        let value = std::fs::read_to_string(&self.token_file)?;
-        let value = value.trim();
-        if value.len() < 32 {
-            return Err(CliError::InvalidConfiguration(
-                "token file must contain at least 32 non-whitespace bytes".to_owned(),
-            ));
-        }
-        Ok(AuthorizationToken::new(value))
+        read_private_token(&self.token_file)
     }
+}
+
+pub(crate) fn read_private_token(path: &Path) -> Result<AuthorizationToken, CliError> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > MAXIMUM_TOKEN_BYTES as u64 {
+        return Err(invalid_token_file());
+    }
+    let contents = std::fs::read_to_string(path)?;
+    let value = contents.trim();
+    if !(MINIMUM_TOKEN_BYTES..=MAXIMUM_TOKEN_BYTES).contains(&value.len())
+        || value.chars().any(char::is_whitespace)
+    {
+        return Err(invalid_token_file());
+    }
+    Ok(AuthorizationToken::new(value))
+}
+
+fn invalid_token_file() -> CliError {
+    CliError::InvalidConfiguration(
+        "token file must contain 32 to 4096 non-whitespace bytes".to_owned(),
+    )
 }
 
 fn stable_path_suffix(path: &Path) -> String {
