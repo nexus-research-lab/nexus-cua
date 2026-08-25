@@ -13,8 +13,9 @@ use accessibility_sys::{
     AXUIElementSetMessagingTimeout, AXValueGetType, AXValueGetValue, AXValueRef,
     kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute, kAXErrorSuccess,
     kAXExpandedAttribute, kAXFocusedAttribute, kAXPickAction, kAXPositionAttribute, kAXPressAction,
-    kAXRaiseAction, kAXRoleAttribute, kAXSelectedAttribute, kAXSizeAttribute, kAXTitleAttribute,
-    kAXValueAttribute, kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowsAttribute,
+    kAXRaiseAction, kAXRoleAttribute, kAXSecureTextFieldSubrole, kAXSelectedAttribute,
+    kAXSizeAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute,
+    kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowsAttribute,
 };
 use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFGetTypeID, CFType, CFTypeRef, TCFType, TCFTypeRef};
@@ -192,6 +193,7 @@ struct SnapshotBudget {
 struct NodeValues {
     role: String,
     name: String,
+    value: Option<String>,
     enabled: bool,
     focused: bool,
     bounds: Option<ScreenRect>,
@@ -279,7 +281,8 @@ impl SemanticState {
                 let key = format!("{snapshot_key}:{}", elements.len());
                 aggregate_bytes = aggregate_bytes
                     .saturating_add(values.role.len())
-                    .saturating_add(values.name.len());
+                    .saturating_add(values.name.len())
+                    .saturating_add(values.value.as_ref().map_or(0, String::len));
                 if aggregate_bytes > budget.max_bytes {
                     truncation = Some(TruncationReason::ByteLimit);
                     break;
@@ -291,7 +294,7 @@ impl SemanticState {
                     parent_key: nearest_parent.clone(),
                     role: normalize_role(&values.role),
                     name: values.name,
-                    value: None,
+                    value: values.value,
                     screen_bounds: values.bounds,
                     enabled: values.enabled,
                     focused: values.focused,
@@ -424,8 +427,10 @@ fn read_node(element: &AxElement) -> Result<NodeValues, DriverError> {
         element,
         &[
             kAXRoleAttribute,
+            kAXSubroleAttribute,
             kAXTitleAttribute,
             kAXDescriptionAttribute,
+            kAXValueAttribute,
             kAXEnabledAttribute,
             kAXFocusedAttribute,
             kAXPositionAttribute,
@@ -433,15 +438,20 @@ fn read_node(element: &AxElement) -> Result<NodeValues, DriverError> {
             kAXChildrenAttribute,
         ],
     )?;
-    let title = values.get(1).and_then(cf_string).unwrap_or_default();
-    let description = values.get(2).and_then(cf_string).unwrap_or_default();
+    let subrole = values.get(1).and_then(cf_string).unwrap_or_default();
+    let title = values.get(2).and_then(cf_string).unwrap_or_default();
+    let description = values.get(3).and_then(cf_string).unwrap_or_default();
+    let value = (subrole != kAXSecureTextFieldSubrole)
+        .then(|| values.get(4).and_then(cf_string).map(bounded_string))
+        .flatten();
     Ok(NodeValues {
         role: values.first().and_then(cf_string).unwrap_or_default(),
         name: bounded_string(if title.is_empty() { description } else { title }),
-        enabled: values.get(3).and_then(cf_boolean).unwrap_or(true),
-        focused: values.get(4).and_then(cf_boolean).unwrap_or(false),
-        bounds: bounds_from_values(values.get(5), values.get(6)),
-        children: values.get(7).map(children_from_value).unwrap_or_default(),
+        value,
+        enabled: values.get(5).and_then(cf_boolean).unwrap_or(true),
+        focused: values.get(6).and_then(cf_boolean).unwrap_or(false),
+        bounds: bounds_from_values(values.get(7), values.get(8)),
+        children: values.get(9).map(children_from_value).unwrap_or_default(),
     })
 }
 
@@ -569,6 +579,10 @@ fn element_signature(values: &NodeValues) -> [u8; 32] {
     digest.update(values.role.as_bytes());
     digest.update([0]);
     digest.update(values.name.as_bytes());
+    if let Some(value) = &values.value {
+        digest.update([0]);
+        digest.update(value.as_bytes());
+    }
     digest.update([u8::from(values.enabled), u8::from(values.focused)]);
     if let Some(bounds) = values.bounds {
         digest.update(bounds.x.to_bits().to_be_bytes());

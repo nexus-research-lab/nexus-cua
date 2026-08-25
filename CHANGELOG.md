@@ -26,3 +26,5 @@ All notable changes to Nexus CUA will be documented in this file.
   dormant desktop or background-input grants.
 - Stable executable-path fallback identities for macOS applications without a
   bundle identifier.
+- Bounded non-password accessibility values on macOS and Windows, with secure
+  text fields redacted before they cross the native actor boundary.

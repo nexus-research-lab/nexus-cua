@@ -37,7 +37,8 @@ use windows::Win32::UI::Accessibility::{
     UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId,
     UIA_ThumbControlTypeId, UIA_TitleBarControlTypeId, UIA_TogglePatternId,
     UIA_ToolBarControlTypeId, UIA_ToolTipControlTypeId, UIA_TreeControlTypeId,
-    UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId,
+    UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_ValueValuePropertyId,
+    UIA_WindowControlTypeId,
 };
 use windows::core::{BOOL, BSTR};
 
@@ -163,6 +164,7 @@ struct SnapshotBudget {
 struct NodeValues {
     role: String,
     name: String,
+    value: Option<String>,
     state: NodeState,
     bounds: Option<ScreenRect>,
 }
@@ -303,7 +305,8 @@ impl SemanticState {
                 let key = format!("{snapshot_key}:{}", elements.len());
                 aggregate_bytes = aggregate_bytes
                     .saturating_add(values.role.len())
-                    .saturating_add(values.name.len());
+                    .saturating_add(values.name.len())
+                    .saturating_add(values.value.as_ref().map_or(0, String::len));
                 if aggregate_bytes > budget.max_bytes {
                     truncation = Some(TruncationReason::ByteLimit);
                     break;
@@ -314,7 +317,7 @@ impl SemanticState {
                     parent_key: nearest_parent.clone(),
                     role: values.role,
                     name: values.name,
-                    value: None,
+                    value: values.value,
                     screen_bounds: values.bounds,
                     enabled: values.state.enabled(),
                     focused: values.state.focused(),
@@ -447,6 +450,7 @@ unsafe fn cache_request(
             UIA_IsKeyboardFocusablePropertyId,
             UIA_IsOffscreenPropertyId,
             UIA_IsPasswordPropertyId,
+            UIA_ValueValuePropertyId,
         ] {
             request
                 .AddProperty(property)
@@ -465,9 +469,20 @@ fn cached_values(element: &IUIAutomationElement) -> Result<NodeValues, DriverErr
             .map_err(|_| provider_failure("cached UIA control type is unavailable"))?;
         let name = element.CachedName().unwrap_or_default().to_string();
         let rectangle = element.CachedBoundingRectangle().unwrap_or_default();
+        let is_password = element.CachedIsPassword().is_ok_and(BOOL::as_bool);
+        let value = if is_password {
+            None
+        } else {
+            element
+                .GetCachedPropertyValue(UIA_ValueValuePropertyId)
+                .ok()
+                .and_then(|value| BSTR::try_from(&value).ok())
+                .map(|value| bounded_string(value.to_string()))
+        };
         Ok(NodeValues {
             role: normalize_control_type(control_type),
             name: bounded_string(name),
+            value,
             state: NodeState::from_flags([
                 element.CachedIsEnabled().map_or(true, BOOL::as_bool),
                 element.CachedHasKeyboardFocus().is_ok_and(BOOL::as_bool),
@@ -638,6 +653,10 @@ fn element_signature(values: &NodeValues) -> [u8; 32] {
     digest.update(values.role.as_bytes());
     digest.update([0]);
     digest.update(values.name.as_bytes());
+    if let Some(value) = &values.value {
+        digest.update([0]);
+        digest.update(value.as_bytes());
+    }
     digest.update([values.state.0]);
     if let Some(bounds) = values.bounds {
         digest.update(bounds.x.to_bits().to_be_bytes());
