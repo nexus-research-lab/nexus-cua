@@ -463,7 +463,7 @@ fn cached_children(element: &IUIAutomationElement) -> Vec<IUIAutomationElement> 
     }
 }
 
-unsafe fn elements_from_array(array: IUIAutomationElementArray) -> Vec<IUIAutomationElement> {
+fn elements_from_array(array: IUIAutomationElementArray) -> Vec<IUIAutomationElement> {
     // SAFETY: Length bounds the indexed COM reads and all calls remain on MTA.
     unsafe {
         let length = array.Length().unwrap_or(0).max(0);

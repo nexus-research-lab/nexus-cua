@@ -8,7 +8,7 @@ use std::thread;
 use nexus_cua_protocol::ScreenRect;
 use nexus_cua_runtime::{DriverError, DriverErrorKind};
 use tokio::sync::oneshot;
-use windows::Win32::Foundation::{BOOL, CloseHandle, FILETIME, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
     IsWindowVisible, WS_EX_TOOLWINDOW,
 };
-use windows::core::PWSTR;
+use windows::core::{BOOL, PWSTR};
 
 const COMMAND_CAPACITY: usize = 32;
 const MAX_PATH_UNITS: usize = 32_768;
