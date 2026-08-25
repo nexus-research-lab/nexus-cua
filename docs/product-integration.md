@@ -4,18 +4,22 @@ Status: normative for the behavior required of `0.1.x` runtime consumers. The
 section labeled "Nexus adapter target" specifies a downstream design target; it
 is not an implementation claim for this repository.
 
-Nexus Computer Use Runtime is an execution component, not an agent framework. A
-product owns the model loop, user consent, policy, process supervision, and
-durable audit. The runtime owns native observation, narrow session authority,
-action delivery, verification, and transient artifacts.
+Nexus Computer Use Runtime is an execution component, not an agent framework.
+In the Nexus architecture, the Agent Runtime owns model invocation, reasoning,
+the agent loop, and tool selection. Nexus Product owns user consent, policy,
+runtime installation and supervision, round-scoped authority, receipts, and
+durable audit. `nexus-cua` owns native observation, narrow session-authority
+validation and enforcement, action delivery, verification, and transient
+artifacts.
 
 ## One core, two integration paths
 
 Nexus is the primary product consumer, but it is not encoded into the runtime.
 The project deliberately supports two front doors above the same core:
 
-- **Nexus-native:** a Go supervisor and client, built-in Computer Use Skill,
-  round-scoped `nexus computer` command, product approvals, and typed receipts.
+- **Nexus-native:** a Nexus-managed runtime package, Go supervisor and client,
+  built-in Computer Use Skill, round-scoped `nexus computer` command, product
+  approvals, and typed receipts.
 - **Independent host:** the embeddable Rust API or authenticated sidecar
   protocol, consumed through a host-owned SDK, CLI, or optional adapter.
 
@@ -23,14 +27,15 @@ The paths share protocol and driver behavior. They do not share product
 identity or ambient authority. A generic integration must meet the same session,
 target, freshness, retry, and sensitive-data rules as Nexus.
 
-## Supported consumption modes
+## Contract layers and adapter choices
 
-| Consumer | Recommended surface | Purpose |
+| Layer or consumer | Recommended surface | Purpose |
 | --- | --- | --- |
 | Rust desktop product | `nexus-cua-runtime` plus `nexus-cua-platform` | In-process composition with the same protocol semantics |
-| Go, TypeScript, Python, or another product | Versioned `nexus-cua` sidecar and private IPC | Process isolation and language-neutral integration |
+| Go, TypeScript, Python, or another trusted host | Versioned `nexus-cua` sidecar plus official client or private IPC | Process isolation and language-neutral host integration |
 | Maintainer or support engineer | `nexus-cua doctor`, `schema`, and `request` | Diagnostics and contract inspection |
-| Third-party agent framework | Product-owned adapter above private IPC | CLI, SDK, or optional MCP compatibility without weakening runtime authority |
+| Shell-capable agent | Host-owned scoped CLI plus Skill | Agent instructions and a narrow command surface above host policy |
+| MCP-capable agent runtime | Separately packaged MCP adapter | Tool-protocol compatibility above host policy |
 
 The generic `request` subcommand is a diagnostic client. A product must not
 hand its endpoint, token file, arbitrary command file, or artifact root to a
@@ -39,22 +44,36 @@ each call to an authenticated user, conversation, round, and approval policy.
 For a non-conversational host, the equivalent boundary is one authenticated job
 or transaction step with its own reviewed authority scope.
 
+The last two rows are adapter choices, not runtime modes. A Skill contains
+instructions; it does not provide transport, credentials, policy, or consent.
+An MCP server provides a tool transport; it does not become a trusted policy
+host merely by speaking MCP. Both must sit above the same bounded host contract.
+
 ## Host topology
 
 ```text
-user setting + OS permissions
-            |
-            v
-product policy / round grant ----> agent-facing CLI + Skill
-            |                              |
-            | private input + receipt      |
-            v                              v
-sidecar supervisor ----------------> Computer Use IPC
-                                            |
-                                 capability session
-                                            |
-                              exact native top-level window
+Nexus Product <----> Agent SDK Bridge <----> Agent Runtime
+setting · policy                              model · agent loop
+approval · audit                                  |
+package manager                                   | follows Skill
+      ^                                           v
+      +------ round-scoped broker <------ nexus computer CLI
+      |
+Go host adapter + sidecar supervisor
+      |
+private Computer Use IPC
+      |
+nexus-cua sidecar/runtime
+      |
+capability session
+      |
+exact native top-level window
 ```
+
+The Bridge carries the wider bidirectional Nexus/Agent Runtime protocol. The
+Computer Use command itself enters Nexus through the existing round-scoped CLI
+broker path. It does not call `nexus-cua` directly and it does not require an
+SDK MCP callback.
 
 The effective authority is the intersection of five facts:
 
@@ -71,11 +90,16 @@ permission does not imply product consent.
 
 ## Process lifecycle
 
-The host should pin an exact `nexus-cua` package version, verify its checksum
-and provenance, and create a private per-owner state directory. On every start
-it creates a fresh transport token, starts one sidecar with a private Unix
-socket or local-only Windows named pipe, and checks `get_capabilities` plus
-`get_permission_status` before advertising the feature.
+The host should pin an exact `nexus-cua` package version, verify its platform
+signature, checksum, provenance, and package manifest, and create a private
+per-owner state directory. A host-managed installer may download an official
+release package, stage it beside the active version, and activate it only after
+compatibility and health checks pass. The runtime and its drivers never
+download or update executable code themselves.
+
+On every start the host creates a fresh transport token, starts one sidecar with
+a private Unix socket or local-only Windows named pipe, and checks
+`get_capabilities` plus `get_permission_status` before advertising the feature.
 
 To grant an operation, the trusted host calls `discover_applications`, presents
 the returned display/provenance facts through its policy or approval surface,
@@ -139,15 +163,18 @@ discarding an unexpired result.
 
 ## Nexus adapter target
 
-The Nexus application should consume the sidecar through a Go host service and
-expose it to an agent through a built-in Computer Use Skill plus a round-scoped
-`nexus computer` command. This is intentionally not an MCP server in Nexus.
+Nexus should consume the sidecar through a Go host service and expose it to the
+Agent Runtime through a built-in Computer Use Skill plus a round-scoped
+`nexus computer` command. Nexus does not own the agent loop: the connected Agent
+Runtime reads the Skill and decides when to invoke the command. This is
+intentionally not an MCP server in Nexus.
 
 The command wrapper should reuse Nexus's private round input-slot and typed
-receipt pattern. The model receives neither the sidecar token nor a path where
-it can construct arbitrary protocol JSON. The host derives owner, session,
-round, application allowlist, TTL, and approval state; the model supplies only
-the operation-level intent allowed by the current command schema.
+receipt pattern. It calls the Nexus broker, not the sidecar. The model and Agent
+Runtime receive neither the sidecar token nor a path where they can construct
+arbitrary protocol JSON. The host derives owner, session, round, application
+allowlist, TTL, and approval state; the model supplies only the operation-level
+intent allowed by the current command schema.
 
 The user preference defaults to off. Turning it off revokes command admission
 immediately. A Skill already present in an active model context may remain
@@ -157,10 +184,17 @@ again. Sidecar crashes invalidate all opaque references and sessions; Nexus
 restarts the pinned binary but never replays an old mutation under a fresh
 request identity.
 
-This repository publishes the runtime packages. Nexus owns its product-facing
-preference, settings UI, sidecar supervisor, Go client, command receipts,
-Skill, and audit projection. Those layers must remain outside `nexus-cua` so
-other products can consume the same runtime without Nexus domain dependencies.
+This repository is responsible for independently versioned runtime packages and
+official host clients as they reach their release milestones. Nexus owns its
+product-facing package resolver and installer, preference, settings UI, sidecar
+supervisor, command broker, command receipts, Skill, and audit projection.
+Those layers must remain outside `nexus-cua` so other products can consume the
+same runtime without Nexus domain dependencies.
+
+Independent binary distribution removes the Rust/native implementation from
+Nexus's build and packaging graph. It does not eliminate the intentional
+dependency contract: Nexus must still pin a runtime package version and a wire
+protocol range, and, if it imports the Go client, a compatible client version.
 
 ## Browser independence
 

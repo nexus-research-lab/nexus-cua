@@ -28,8 +28,9 @@ The project has one delivery priority and one permanent design constraint:
    inheriting Nexus product semantics.
 
 Both paths use the same runtime. Nexus-specific policy, approval UI, agent
-instructions, receipts, and chat identity stay in Nexus; generic adapters and
-SDKs stay above this repository's versioned contract.
+instructions, receipts, and chat identity stay in Nexus. Model inference and
+the agent loop stay in the connected Agent Runtime. SDKs and agent adapters sit
+above this repository's versioned host contract.
 
 ## What ships here
 
@@ -63,8 +64,11 @@ complete-desktop capture or background input.
 
 Those are architectural boundaries, not missing dependencies:
 
-- **Nexus owns intent and consent.** It decides whether Computer Use is enabled,
-  which round receives authority, and what the user sees.
+- **Nexus owns the product control plane.** It decides whether Computer Use is
+  enabled, which round receives authority, what the user sees, which runtime
+  package is installed, and what enters product audit.
+- **The Agent Runtime owns reasoning.** It invokes models, runs the agent loop,
+  selects tools, and follows the Computer Use Skill supplied by Nexus.
 - **The runtime owns execution safety.** It validates the host-issued session,
   target, observation, coordinates, action, deadline, and driver capability.
 - **The platform driver owns native state.** AX objects, COM interfaces, capture
@@ -76,22 +80,26 @@ Those are architectural boundaries, not missing dependencies:
 ## Architecture
 
 ```text
-Nexus or another host
-  policy · consent · agent loop · audit
-                    |
-          host adapter / SDK / CLI
-                    |
-       versioned Computer Use protocol
-                    |
-     capability-bounded local runtime
-                    |
-        replaceable platform driver
-          /                     \
- macOS actors               Windows actors
- ScreenCaptureKit           Windows.Graphics.Capture
- AXUIElement                UI Automation
- CGEvent                    SendInput
+Nexus Product <----> Agent SDK Bridge <----> Agent Runtime
+control plane                              model + agent loop
+      ^                                           |
+      | round-scoped broker              Computer Use Skill
+      +----------- nexus computer CLI <----------+
+      |
+package manager + CUA host adapter
+      |
+version-pinned nexus-cua sidecar / private IPC
+      |
+capability-bounded runtime
+      |
+macOS actors or Windows actors
 ```
+
+The Agent SDK Bridge connects Nexus to the Agent Runtime, but Computer Use does
+not put reasoning into `nexus-cua`. In the Nexus path, the Skill instructs the
+Agent Runtime to call the round-scoped Nexus CLI. That command returns through
+Nexus's product boundary; only the trusted Nexus host adapter can reach the
+private sidecar.
 
 Every public application, window, observation, element, session, and artifact
 uses an opaque reference. A mutating command must present a live bounded
@@ -106,11 +114,17 @@ See [architecture](docs/architecture.md), the
 
 ### Nexus
 
-The intended Nexus integration is a supervised sidecar consumed by a Go host
-service. Nexus exposes a built-in Computer Use Skill and a round-scoped
-`nexus computer` command; it never exposes the transport token or generic
-request command to the model. Computer Use and Browser remain separate user
-settings and separate authorities.
+The intended Nexus integration is an independently released runtime package
+managed by Nexus. Nexus downloads and stages an exact signed version, verifies
+its package metadata, starts the private sidecar, and consumes it through a Go
+host adapter. The sidecar never downloads or updates itself.
+
+Nexus exposes a built-in Computer Use Skill and a round-scoped `nexus computer`
+command. The command talks to Nexus's scoped broker rather than directly to the
+sidecar, so the Agent Runtime never receives the transport token or generic
+request command. Computer Use and Browser remain separate user settings and
+separate authorities. This is intentionally a CLI-plus-Skill integration, not
+an MCP integration inside Nexus.
 
 The Nexus adapter is a downstream deliverable and is not implemented in this
 repository. Its lifecycle and security contract are specified in
@@ -123,9 +137,20 @@ languages can supervise the `nexus-cua` sidecar and export the local wire schema
 today with `nexus-cua schema`. Committed schemas and compatibility fixtures are
 available under `schemas/nexus.cua.v1/` and
 `fixtures/compatibility/nexus.cua.v1/`; maintained reference clients remain
-later distribution work. A third-party CLI, SDK, or MCP adapter may sit above
-the contract, but must issue bounded sessions and preserve opaque references,
-closed variants, sensitive-value handling, and retry identity.
+later distribution work.
+
+Agent frameworks have three integration patterns above that host contract:
+
+| Pattern | Role | Ownership |
+| --- | --- | --- |
+| Host SDK or private IPC | Canonical product integration | The trusted host owns policy, lifecycle, and authority |
+| Scoped CLI plus Skill | Shell-capable agent integration | The host owns the command broker; the Skill contains instructions only |
+| MCP adapter | Tool-protocol integration | A separately packaged adapter owns or receives explicit policy and keeps sidecar credentials private |
+
+A Skill by itself is not a transport or an authorization boundary. CLI-plus-
+Skill and MCP are sibling adapters, not alternate modes inside the runtime. The
+first alpha distribution does not include generic agent adapters. They may be
+shipped later as separate versioned packages above the official clients.
 
 The diagnostic `nexus-cua request` command is intentionally not an agent API.
 Production hosts should expose a narrower operation schema derived from their

@@ -7,6 +7,10 @@ file.
 
 ### Changed
 
+- Corrected the Nexus integration boundary: the Agent Runtime owns reasoning
+  and the agent loop, Nexus owns its CLI/Skill broker and managed sidecar
+  installation, and optional CLI/Skill or MCP adapters remain above the core
+  host contract.
 - Session manifests now select short-lived trusted-host discovery references;
   session creation revalidates runtime epoch, process generation, and native
   executable identity before granting authority.

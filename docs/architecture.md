@@ -23,7 +23,28 @@ cli ------> transport ------> runtime ------> protocol
   rejection, and transient artifacts.
 - `platform` implements the internal driver trait with public OS APIs.
 - `transport` exposes authenticated local IPC and never listens on TCP.
-- `cli` is the process entrypoint and composition root.
+- `cli` is the sidecar process entrypoint, diagnostic client, and composition
+  root. It is not the Nexus agent-facing `nexus computer` command.
+
+## Integration layering
+
+```text
+agent runtime -> agent adapter -> trusted product host -> nexus-cua -> native OS
+                    |                    |
+              CLI + Skill or MCP    policy + lifecycle
+```
+
+The first arrow is not part of the core runtime contract. A product may expose
+a scoped CLI plus Skill, an MCP server, or another custom tool surface. Those
+adapters translate agent intent into the host's narrower policy context; they
+never replace the trusted host or receive ambient desktop authority from the
+runtime.
+
+Nexus uses a downstream CLI-plus-Skill adapter. The Nexus Product process owns
+policy, approval, package management, supervision, receipts, and audit. Its
+connected Agent Runtime owns model invocation and the agent loop. The Agent SDK
+Bridge connects those components, but neither the Bridge nor `nexus-cua`
+contains reasoning.
 
 The runtime is asynchronous, but native objects are never moved through an
 arbitrary async worker pool. Each driver owns long-lived operating-system

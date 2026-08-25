@@ -17,13 +17,16 @@ release is the [Standalone Developer Preview PRD](prd/standalone-developer-previ
 The `0.1.x` codebase implements the basic execution chain:
 
 - closed protocol and stable error categories;
+- transport-authenticated trusted-host discovery with short-lived opaque refs
+  and executable-identity revalidation at session creation;
 - host-issued read-only and bounded sessions;
 - opaque application, window, observation, element, and artifact references;
 - exact-window screenshot and accessibility observations;
 - semantic and foreground action paths on macOS and Windows;
 - stale-observation rejection, action invalidation, and state verification;
-- bounded authenticated local IPC with request idempotency; and
-- transient screenshot storage with bounded retention.
+- bounded authenticated local IPC with same-request reconciliation;
+- deadline-driven discovery and session expiry; and
+- transient screenshot storage with bounded retention and automatic cleanup.
 
 This is sufficient for integration development. Implemented does not mean
 release-validated: native behavior has not yet passed the full
@@ -44,9 +47,12 @@ These items block the first supported Nexus integration:
    idle-CPU, and eight-hour resource-soak gates.
 4. Produce pinned, signed packages with checksums, an SBOM, third-party notices,
    and clean-machine smoke evidence.
-5. Implement the downstream Nexus supervisor, Go client, setting, approval
-   binding, receipts, built-in Skill, and round-scoped `nexus computer` command.
-6. Exercise disable, owner-switch, permission-revocation, crash-restart, timeout
+5. Complete the official Go client required by the Nexus host adapter and the
+   Python client required by the standalone developer preview.
+6. Implement the downstream Nexus package resolver/installer, supervisor,
+   setting, approval binding, receipts, built-in Skill, and round-scoped
+   `nexus computer` command.
+7. Exercise disable, owner-switch, permission-revocation, crash-restart, timeout
    reconciliation, and sidecar-upgrade flows end to end with Nexus.
 
 ## Phase 2: ecosystem-ready distribution
@@ -56,12 +62,14 @@ without weakening it:
 
 1. Keep the generated protocol schemas and versioned compatibility fixtures
    frozen and verified as the protocol evolves.
-2. Provide small reference clients for Go, TypeScript, and Python that preserve
-   closed variants, opaque references, sensitive values, and retry identity.
+2. Add a TypeScript reference client and keep the released Go and Python
+   clients conformant with closed variants, opaque references, sensitive
+   values, and retry identity.
 3. Publish sidecar lifecycle and packaging examples for non-Nexus hosts.
-4. Add a separately packaged reference agent adapter, such as MCP, above the
-   bounded host contract. It must not expose the private transport token or
-   manufacture unrestricted authority.
+4. Add separately packaged reference agent adapters above the bounded host
+   contract: a scoped CLI with runtime-specific Skill bundles and an MCP
+   adapter. Neither may expose the private transport token or manufacture
+   unrestricted authority; a Skill is never treated as an authority boundary.
 5. Document compatibility policy, supported OS versions, native permission
    ownership, troubleshooting, and upgrade/rollback procedures.
 

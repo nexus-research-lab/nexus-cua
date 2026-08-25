@@ -23,10 +23,11 @@ for Nexus and other bounded hosts. It provides:
 
 It does not contain model inference, OCR, a planning loop, browser DOM/CDP,
 product approval UI, complete-desktop capture, or unrestricted background
-input. Nexus supplies its own vision model and exposes Computer Use to agents
-through a round-scoped CLI/Skill. The `v1` authority unit is one exact top-level
-window; system-shell surfaces require a future explicit surface contract rather
-than a silent widening of window authority.
+input. A connected Agent Runtime owns model inference and its planning loop.
+Nexus exposes Computer Use to that runtime through a round-scoped CLI and
+built-in Skill. The `v1` authority unit is one exact top-level window;
+system-shell surfaces require a future explicit surface contract rather than a
+silent widening of window authority.
 
 ## Capability truth
 

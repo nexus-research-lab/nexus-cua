@@ -2,6 +2,10 @@
 
 Status: approved implementation target for the `0.1.x` development line.
 
+Implementation progress: M0 and M1 are complete. M2 is the next active
+milestone; M3 and M4 remain pending. The milestone sections retain their
+imperative wording because they are the reviewed acceptance contract.
+
 Audience: Nexus Computer Use Runtime maintainers and Codex implementation agents.
 
 ## 1. Objective
@@ -34,8 +38,10 @@ agents. It is model-neutral, policy-first, and limited to explicitly authorized
 native desktop surfaces.
 
 The runtime is not an agent. It does not own model inference, planning, memory,
-OCR, end-user approval UI, or product identity. A trusted host owns those
-decisions and consumes either the Rust API or the private sidecar protocol.
+OCR, end-user approval UI, or product identity. An Agent Runtime owns model
+inference, planning, and memory. A trusted product host owns policy, approval,
+runtime lifecycle, and product identity, and consumes either the Rust API or
+the private sidecar protocol.
 
 The same core serves two consumers:
 
@@ -71,9 +77,10 @@ The preview is complete only when all of the following are true:
 
 #### Trusted-host application discovery
 
-The current session API requires an application allowlist before the caller can
-list the applications needed to construct that allowlist. Add a distinct
-transport-authenticated, read-only discovery operation for trusted hosts.
+At the M0 baseline, the session API required an application allowlist before the
+caller could list the applications needed to construct that allowlist. M1 adds
+a distinct transport-authenticated, read-only discovery operation for trusted
+hosts.
 
 Requirements:
 
@@ -161,7 +168,8 @@ protocol-mismatch envelope.
 #### Go client
 
 Create `sdk/go` as the first supported non-Rust client. It is also the future
-Nexus integration dependency.
+client for the Nexus host adapter; the native runtime remains an independently
+installed, version-pinned sidecar package.
 
 It must provide:
 
@@ -341,6 +349,9 @@ Distribution contracts:
   public identity.
 - SDKs accept an explicit sidecar path or endpoint configuration. They never
   download or self-update executable code at runtime.
+- A trusted host package manager may download official release assets, but must
+  verify the platform signature, checksum, provenance, package manifest, and
+  compatibility before activation. This installer remains outside the runtime.
 - Upgrade and rollback use pinned side-by-side packages; sessions, request
   ledgers, tokens, and artifact generations never cross a sidecar process epoch.
 
@@ -372,20 +383,34 @@ Add:
 The README must lead with install, verified demo, and integration choices. It
 must label the release as alpha and avoid production-support language.
 
-### 4.7 Optional adapter boundary
+### 4.7 Optional agent adapter boundary
 
-An MCP adapter is useful for independent adoption but is explicitly deferred
-until after `v0.1.0-alpha.1`. It is not part of M0-M4.
+The runtime has one canonical host contract: the embeddable Rust API or private
+sidecar protocol, with official clients preserving the same semantics.
+Agent-facing CLI-plus-Skill and MCP integrations are sibling adapters above
+that contract, not alternate modes inside the runtime. A Skill alone is only
+instructions and cannot provide transport, consent, policy, or authority.
 
-When added, it must be a separate package above the official client. It must:
+Generic agent adapters are explicitly deferred until after
+`v0.1.0-alpha.1`; they are not part of M0-M4. The downstream Nexus integration
+does not add scope here: Nexus continues to own its round-scoped CLI and Skill.
+For ecosystem adoption, later milestones may ship two separate versioned
+packages:
+
+- a scoped agent CLI with runtime-specific Skill bundles; and
+- an MCP adapter for MCP-capable agent runtimes.
+
+When added, either adapter must sit above an official client or an equivalent
+conformant host implementation. It must:
 
 - keep the transport token private;
 - own or receive an explicit application/action policy;
 - never expose raw `OpenSession` manifest construction to the model;
 - preserve observation freshness and request reconciliation;
 - report the runtime's exact capability set; and
-- remain unused by the Nexus product integration, which continues to use the
-  Go client plus round-scoped CLI and Skill.
+- remain outside the core runtime crates; and
+- avoid changing the Nexus product integration, which continues to use the Go
+  client plus its own round-scoped CLI and Skill.
 
 ## 5. Explicit non-goals for `v0.1.0-alpha.1`
 
