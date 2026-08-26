@@ -277,7 +277,7 @@ impl SemanticState {
         let root = unsafe {
             self.automation
                 .ElementFromHandleBuildCache(hwnd(raw_hwnd), request)
-                .map_err(|error| provider_error(error, "UI Automation cache build failed"))?
+                .map_err(|error| provider_error(&error, "UI Automation cache build failed"))?
         };
         self.next_snapshot = self.next_snapshot.wrapping_add(1);
         let snapshot_key = format!("uia:{raw_hwnd:x}:{}", self.next_snapshot);
@@ -381,36 +381,36 @@ impl SemanticState {
             let current = stored
                 .element
                 .BuildUpdatedCache(&self.element_request)
-                .map_err(|error| preflight_error(error, "UI Automation element refresh failed"))?;
+                .map_err(|error| preflight_error(&error, "UI Automation element refresh failed"))?;
             let current_values =
                 cached_values(&current).map_err(DriverError::mutation_not_dispatched)?;
             if element_signature(&current_values) != stored.signature {
                 return Err(stale_element().mutation_not_dispatched());
             }
             match action {
-                SemanticAction::Focus => current.SetFocus().map_err(action_error),
+                SemanticAction::Focus => current.SetFocus().map_err(|error| action_error(&error)),
                 SemanticAction::Invoke => current
                     .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
                     .map_err(|_| stale_element().mutation_not_dispatched())?
                     .Invoke()
-                    .map_err(action_error),
+                    .map_err(|error| action_error(&error)),
                 SemanticAction::SetValue(value) => current
                     .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
                     .map_err(|_| stale_element().mutation_not_dispatched())?
                     .SetValue(&BSTR::from(value.expose()))
-                    .map_err(action_error),
+                    .map_err(|error| action_error(&error)),
                 SemanticAction::Toggle => current
                     .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
                     .map_err(|_| stale_element().mutation_not_dispatched())?
                     .Toggle()
-                    .map_err(action_error),
+                    .map_err(|error| action_error(&error)),
                 SemanticAction::Select => current
                     .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
                         UIA_SelectionItemPatternId,
                     )
                     .map_err(|_| stale_element().mutation_not_dispatched())?
                     .Select()
-                    .map_err(action_error),
+                    .map_err(|error| action_error(&error)),
                 SemanticAction::SetExpanded(expanded) => {
                     let pattern = current
                         .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
@@ -418,9 +418,9 @@ impl SemanticState {
                         )
                         .map_err(|_| stale_element().mutation_not_dispatched())?;
                     if expanded {
-                        pattern.Expand().map_err(action_error)
+                        pattern.Expand().map_err(|error| action_error(&error))
                     } else {
-                        pattern.Collapse().map_err(action_error)
+                        pattern.Collapse().map_err(|error| action_error(&error))
                     }
                 }
             }
@@ -710,29 +710,33 @@ fn provider_failure(message: &str) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, message).retryable("retry_uia_snapshot")
 }
 
-fn provider_error(error: windows::core::Error, message: &str) -> DriverError {
-    if error.code().0 as u32 == UIA_E_TIMEOUT {
+fn provider_error(error: &windows::core::Error, message: &str) -> DriverError {
+    if is_provider_timeout(error) {
         target_unresponsive(message)
     } else {
         provider_failure(message)
     }
 }
 
-fn preflight_error(error: windows::core::Error, message: &str) -> DriverError {
-    if error.code().0 as u32 == UIA_E_TIMEOUT {
+fn preflight_error(error: &windows::core::Error, message: &str) -> DriverError {
+    if is_provider_timeout(error) {
         target_unresponsive(message).mutation_not_dispatched()
     } else {
         stale_element().mutation_not_dispatched()
     }
 }
 
-fn action_error(error: windows::core::Error) -> DriverError {
-    let error = if error.code().0 as u32 == UIA_E_TIMEOUT {
+fn action_error(error: &windows::core::Error) -> DriverError {
+    let error = if is_provider_timeout(error) {
         target_unresponsive("UI Automation action timed out")
     } else {
         stale_element()
     };
     error.mutation_indeterminate()
+}
+
+fn is_provider_timeout(error: &windows::core::Error) -> bool {
+    error.code().0 == i32::from_ne_bytes(UIA_E_TIMEOUT.to_ne_bytes())
 }
 
 fn target_unresponsive(message: &str) -> DriverError {
