@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::slice;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,20 +36,24 @@ const COMMAND_CAPACITY: usize = 16;
 const MAX_PIPELINES: usize = 4;
 const PIPELINE_IDLE: Duration = Duration::from_secs(15);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
+const FRAME_REFRESH_WAIT: Duration = Duration::from_millis(50);
 const FRAME_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Clone)]
 pub(super) struct CaptureActor {
     sender: SyncSender<CaptureCommand>,
+    mutation_generation: Arc<AtomicU64>,
 }
 
 impl CaptureActor {
     pub(super) fn spawn() -> Result<Self, DriverError> {
         let (sender, receiver) = sync_channel(COMMAND_CAPACITY);
         let (ready, ready_receiver) = sync_channel(1);
+        let mutation_generation = Arc::new(AtomicU64::new(0));
+        let actor_generation = Arc::clone(&mutation_generation);
         thread::Builder::new()
             .name("nexus-cua-windows-capture".to_owned())
-            .spawn(move || match CaptureState::new() {
+            .spawn(move || match CaptureState::new(actor_generation) {
                 Ok(state) => {
                     let _ = ready.send(Ok(()));
                     state.run(&receiver);
@@ -60,17 +66,26 @@ impl CaptureActor {
         ready_receiver
             .recv()
             .map_err(|_| capture_failure("Windows capture actor stopped during startup"))??;
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            mutation_generation,
+        })
+    }
+
+    pub(super) fn invalidate_after_mutation(&self) {
+        self.mutation_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     pub(super) async fn capture(
         &self,
+        target_key: &str,
         hwnd: isize,
         screen_bounds: ScreenRect,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.sender
             .try_send(CaptureCommand {
+                target_key: target_key.to_owned(),
                 hwnd,
                 screen_bounds,
                 reply,
@@ -87,6 +102,7 @@ impl CaptureActor {
 }
 
 struct CaptureCommand {
+    target_key: String,
     hwnd: isize,
     screen_bounds: ScreenRect,
     reply: oneshot::Sender<Result<(RgbaImage, ScreenRect), DriverError>>,
@@ -96,7 +112,8 @@ struct CaptureState {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     winrt_device: IDirect3DDevice,
-    pipelines: HashMap<isize, CapturePipeline>,
+    pipelines: HashMap<String, CapturePipeline>,
+    mutation_generation: Arc<AtomicU64>,
 }
 
 struct CapturePipeline {
@@ -105,11 +122,13 @@ struct CapturePipeline {
     session: GraphicsCaptureSession,
     width: i32,
     height: i32,
+    latest_image: Option<RgbaImage>,
+    latest_generation: u64,
     last_used: Instant,
 }
 
 impl CaptureState {
-    fn new() -> Result<Self, DriverError> {
+    fn new(mutation_generation: Arc<AtomicU64>) -> Result<Self, DriverError> {
         // SAFETY: The dedicated actor balances this WinRT MTA initialization in
         // Drop and keeps all D3D/WinRT interfaces on the same thread.
         unsafe {
@@ -144,6 +163,7 @@ impl CaptureState {
                 context,
                 winrt_device,
                 pipelines: HashMap::new(),
+                mutation_generation,
             })
         }
     }
@@ -164,20 +184,21 @@ impl CaptureState {
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
             };
-            let result = self.capture(command.hwnd, command.screen_bounds);
+            let result = self.capture(&command.target_key, command.hwnd, command.screen_bounds);
             let _ = command.reply.send(result);
         }
     }
 
     fn capture(
         &mut self,
+        target_key: &str,
         raw_hwnd: isize,
         screen_bounds: ScreenRect,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
-        self.ensure_pipeline(raw_hwnd)?;
+        self.ensure_pipeline(target_key, raw_hwnd)?;
         let pipeline = self
             .pipelines
-            .get_mut(&raw_hwnd)
+            .get_mut(target_key)
             .expect("ensured capture pipeline exists");
         let current_size = pipeline.item.Size().map_err(|_| target_unavailable())?;
         if current_size.Width <= 0 || current_size.Height <= 0 {
@@ -195,16 +216,37 @@ impl CaptureState {
                 .map_err(|_| capture_failure("failed to resize WGC frame pool"))?;
             pipeline.width = current_size.Width;
             pipeline.height = current_size.Height;
+            pipeline.latest_image = None;
         }
         pipeline.last_used = Instant::now();
-        let frame = newest_frame(&pipeline.pool)?;
-        let image = copy_frame(&self.device, &self.context, &frame)?;
-        let _ = frame.Close();
+        let current_generation = self.mutation_generation.load(Ordering::Acquire);
+        let cache_is_current =
+            pipeline.latest_image.is_some() && pipeline.latest_generation == current_generation;
+        let wait = if cache_is_current {
+            FRAME_REFRESH_WAIT
+        } else {
+            FRAME_TIMEOUT
+        };
+        let image = if let Some(frame) = newest_frame(&pipeline.pool, wait) {
+            let image = copy_frame(&self.device, &self.context, &frame)?;
+            let _ = frame.Close();
+            pipeline.latest_image = Some(duplicate_image(&image));
+            pipeline.latest_generation = current_generation;
+            image
+        } else if cache_is_current && let Some(image) = &pipeline.latest_image {
+            duplicate_image(image)
+        } else {
+            return Err(DriverError::new(
+                DriverErrorKind::Platform,
+                "Windows Graphics Capture frame timed out",
+            )
+            .retryable("retry_native_capture"));
+        };
         Ok((image, screen_bounds))
     }
 
-    fn ensure_pipeline(&mut self, raw_hwnd: isize) -> Result<(), DriverError> {
-        if self.pipelines.contains_key(&raw_hwnd) {
+    fn ensure_pipeline(&mut self, target_key: &str, raw_hwnd: isize) -> Result<(), DriverError> {
+        if self.pipelines.contains_key(target_key) {
             return Ok(());
         }
         if self.pipelines.len() >= MAX_PIPELINES {
@@ -212,7 +254,7 @@ impl CaptureState {
                 .pipelines
                 .iter()
                 .min_by_key(|(_, pipeline)| pipeline.last_used)
-                .map(|(hwnd, _)| *hwnd)
+                .map(|(target_key, _)| target_key.clone())
             {
                 self.pipelines.remove(&oldest);
             }
@@ -238,13 +280,15 @@ impl CaptureState {
             .StartCapture()
             .map_err(|_| capture_failure("failed to start WGC session"))?;
         self.pipelines.insert(
-            raw_hwnd,
+            target_key.to_owned(),
             CapturePipeline {
                 item,
                 pool,
                 session,
                 width: size.Width,
                 height: size.Height,
+                latest_image: None,
+                latest_generation: 0,
                 last_used: Instant::now(),
             },
         );
@@ -293,8 +337,11 @@ fn capture_item(raw_hwnd: isize) -> Result<GraphicsCaptureItem, DriverError> {
     }
 }
 
-fn newest_frame(pool: &Direct3D11CaptureFramePool) -> Result<Direct3D11CaptureFrame, DriverError> {
-    let deadline = Instant::now() + FRAME_TIMEOUT;
+fn newest_frame(
+    pool: &Direct3D11CaptureFramePool,
+    wait: Duration,
+) -> Option<Direct3D11CaptureFrame> {
+    let deadline = Instant::now() + wait;
     loop {
         let mut newest = None;
         while let Ok(frame) = pool.TryGetNextFrame() {
@@ -303,17 +350,17 @@ fn newest_frame(pool: &Direct3D11CaptureFramePool) -> Result<Direct3D11CaptureFr
             }
         }
         if let Some(frame) = newest {
-            return Ok(frame);
+            return Some(frame);
         }
         if Instant::now() >= deadline {
-            return Err(DriverError::new(
-                DriverErrorKind::Platform,
-                "Windows Graphics Capture frame timed out",
-            )
-            .retryable("retry_native_capture"));
+            return None;
         }
         thread::sleep(FRAME_POLL_INTERVAL);
     }
+}
+
+fn duplicate_image(image: &RgbaImage) -> RgbaImage {
+    RgbaImage::new(image.width, image.height, image.pixels.clone())
 }
 
 fn copy_frame(
@@ -402,11 +449,7 @@ fn copy_bgra_rows(
             rgba.copy_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
         }
     }
-    Ok(RgbaImage {
-        width,
-        height,
-        pixels,
-    })
+    Ok(RgbaImage::new(width, height, pixels))
 }
 
 fn hwnd(raw: isize) -> HWND {

@@ -2,9 +2,12 @@
 
 Status: approved implementation target for the `0.1.x` development line.
 
-Implementation progress: M0 and M1 are complete. M2 is the next active
-milestone; M3 and M4 remain pending. The milestone sections retain their
-imperative wording because they are the reviewed acceptance contract.
+Implementation progress: M0 and M1 are complete. M2 engineering is implemented;
+its exit gate remains blocked on accepted evidence from the maintained macOS
+Apple Silicon and Windows x64 runners. M3 client engineering is implemented;
+its full live native acceptance remains dependent on M2. M4 remains pending.
+The milestone sections retain their imperative wording because they are the
+reviewed acceptance contract.
 
 Audience: Nexus Computer Use Runtime maintainers and Codex implementation agents.
 

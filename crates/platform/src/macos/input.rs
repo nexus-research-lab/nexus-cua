@@ -12,7 +12,6 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use nexus_cua_protocol::{PointerButton, ScreenPoint, SensitiveText};
 use nexus_cua_runtime::{DriverError, DriverErrorKind};
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
@@ -25,7 +24,6 @@ pub(super) struct InputActor {
 }
 
 pub(super) enum InputAction {
-    Activate,
     Click {
         point: ScreenPoint,
         button: PointerButton,
@@ -78,8 +76,9 @@ impl InputActor {
                 TrySendError::Full(_) => {
                     DriverError::new(DriverErrorKind::Busy, "macOS input actor is busy")
                         .retryable("retry_with_backoff")
+                        .mutation_not_dispatched()
                 }
-                TrySendError::Disconnected(_) => actor_stopped(()),
+                TrySendError::Disconnected(_) => actor_stopped(()).mutation_not_dispatched(),
             })?;
         receiver.await.map_err(actor_stopped)?
     }
@@ -97,8 +96,8 @@ struct InputState {
 
 impl InputState {
     fn new() -> Result<Self, DriverError> {
-        let source = CGEventSource::new(CGEventSourceStateID::Private)
-            .map_err(|()| input_failure("failed to create private CGEvent source"))?;
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|()| input_failure("failed to create HID CGEvent source"))?;
         Ok(Self { source })
     }
 
@@ -111,15 +110,14 @@ impl InputState {
 
     fn perform(&self, pid: i32, action: InputAction) -> Result<(), DriverError> {
         match action {
-            InputAction::Activate => activate_application(pid),
             InputAction::Click {
                 point,
                 button,
                 count,
             } => self.click(point, button, count),
             InputAction::Move { point, duration_ms } => self.move_pointer(point, duration_ms),
-            InputAction::TypeText(text) => self.type_text(text.expose()),
-            InputAction::PressKeys(keys) => self.press_keys(&keys),
+            InputAction::TypeText(text) => self.type_text(pid, text.expose()),
+            InputAction::PressKeys(keys) => self.press_keys(pid, &keys),
             InputAction::Scroll { delta_x, delta_y } => self.scroll(delta_x, delta_y),
             InputAction::Drag {
                 from,
@@ -210,47 +208,79 @@ impl InputState {
         Ok(())
     }
 
-    fn type_text(&self, text: &str) -> Result<(), DriverError> {
+    fn type_text(&self, pid: i32, text: &str) -> Result<(), DriverError> {
         let utf16 = Zeroizing::new(text.encode_utf16().collect::<Vec<_>>());
         for chunk in utf16.chunks(20) {
             let down = CGEvent::new_keyboard_event(self.source.clone(), 0, true)
                 .map_err(|()| input_failure("failed to create Unicode key-down event"))?;
             down.set_string_from_utf16_unchecked(chunk);
-            down.post(CGEventTapLocation::HID);
             let up = CGEvent::new_keyboard_event(self.source.clone(), 0, false)
                 .map_err(|()| input_failure("failed to create Unicode key-up event"))?;
             up.set_string_from_utf16_unchecked(chunk);
-            up.post(CGEventTapLocation::HID);
+            // The driver confirms this application is active before dispatch.
+            // PID routing prevents a concurrent focus change from leaking
+            // keyboard content into an unrelated foreground application.
+            down.post_to_pid(pid);
+            up.post_to_pid(pid);
         }
         Ok(())
     }
 
-    fn press_keys(&self, keys: &[String]) -> Result<(), DriverError> {
+    fn press_keys(&self, pid: i32, keys: &[String]) -> Result<(), DriverError> {
         let mut flags = CGEventFlags::empty();
+        let mut modifiers = Vec::new();
         let mut primary = Vec::new();
         for key in keys {
-            match key.as_str() {
-                "meta" | "command" => flags |= CGEventFlags::CGEventFlagCommand,
-                "control" => flags |= CGEventFlags::CGEventFlagControl,
-                "alt" | "option" => flags |= CGEventFlags::CGEventFlagAlternate,
-                "shift" => flags |= CGEventFlags::CGEventFlagShift,
-                _ => primary.push(key_code(key).ok_or_else(|| unsupported_key(key))?),
+            let modifier = match key.as_str() {
+                "meta" | "command" => Some((KeyCode::COMMAND, CGEventFlags::CGEventFlagCommand)),
+                "control" => Some((KeyCode::CONTROL, CGEventFlags::CGEventFlagControl)),
+                "alt" | "option" => Some((KeyCode::OPTION, CGEventFlags::CGEventFlagAlternate)),
+                "shift" => Some((KeyCode::SHIFT, CGEventFlags::CGEventFlagShift)),
+                _ => None,
+            };
+            if let Some((keycode, flag)) = modifier {
+                flags |= flag;
+                if !modifiers.iter().any(|(candidate, _)| *candidate == keycode) {
+                    modifiers.push((keycode, flag));
+                }
+            } else {
+                primary.push(key_code(key).ok_or_else(|| unsupported_key(key))?);
             }
         }
         if primary.is_empty() {
             return Err(unsupported_key("modifier-only chord"));
         }
+
+        let mut events = Vec::with_capacity(modifiers.len() * 2 + primary.len() * 2);
+        let mut active_flags = CGEventFlags::empty();
+        for (keycode, flag) in &modifiers {
+            active_flags |= *flag;
+            events.push(self.keyboard_event(*keycode, true, active_flags)?);
+        }
         for keycode in primary {
-            let down = CGEvent::new_keyboard_event(self.source.clone(), keycode, true)
-                .map_err(|()| input_failure("failed to create key-down event"))?;
-            down.set_flags(flags);
-            down.post(CGEventTapLocation::HID);
-            let up = CGEvent::new_keyboard_event(self.source.clone(), keycode, false)
-                .map_err(|()| input_failure("failed to create key-up event"))?;
-            up.set_flags(flags);
-            up.post(CGEventTapLocation::HID);
+            events.push(self.keyboard_event(keycode, true, flags)?);
+            events.push(self.keyboard_event(keycode, false, flags)?);
+        }
+        for (keycode, flag) in modifiers.into_iter().rev() {
+            active_flags.remove(flag);
+            events.push(self.keyboard_event(keycode, false, active_flags)?);
+        }
+        for event in events {
+            event.post_to_pid(pid);
         }
         Ok(())
+    }
+
+    fn keyboard_event(
+        &self,
+        keycode: u16,
+        key_down: bool,
+        flags: CGEventFlags,
+    ) -> Result<CGEvent, DriverError> {
+        let event = CGEvent::new_keyboard_event(self.source.clone(), keycode, key_down)
+            .map_err(|()| input_failure("failed to create keyboard event"))?;
+        event.set_flags(flags);
+        Ok(event)
     }
 
     fn scroll(&self, delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
@@ -275,24 +305,6 @@ impl InputState {
     ) -> Result<CGEvent, DriverError> {
         CGEvent::new_mouse_event(self.source.clone(), event_type, point, button)
             .map_err(|()| input_failure("failed to create pointer event"))
-    }
-}
-
-fn activate_application(pid: i32) -> Result<(), DriverError> {
-    let application = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
-        .ok_or_else(|| {
-            DriverError::new(
-                DriverErrorKind::TargetUnavailable,
-                "target application generation is unavailable",
-            )
-        })?;
-    if application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows) {
-        Ok(())
-    } else {
-        Err(DriverError::new(
-            DriverErrorKind::ForegroundRequired,
-            "macOS refused target application activation",
-        ))
     }
 }
 

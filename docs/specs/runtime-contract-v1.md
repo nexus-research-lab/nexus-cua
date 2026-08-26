@@ -43,6 +43,12 @@ Driver routes are explicit:
 | macOS | ScreenCaptureKit | AXUIElement actions/attributes | CGEvent |
 | Windows | Windows.Graphics.Capture | UI Automation patterns | SendInput |
 
+The macOS keyboard route targets the process bound to the selected application
+generation only after the driver has confirmed that application is active. PID
+routing closes a focus-change data-leak race; it does not grant background
+input. Failure to establish foreground state fails before the requested key or
+text event is posted.
+
 Compatibility capture drivers, if shipped, have distinct capability and
 diagnostic identities. Private APIs and executable third-party drivers are not
 permitted.
@@ -153,6 +159,15 @@ the result rather than claiming cancellation. A caller that times out retries
 the same `request_id`, optionally with a longer wait, to reconcile. Bounded
 native queues return `busy` before their actor executes the command.
 
+Every public failure names its mutation disposition. Runtime and driver
+preflight failures are `not_dispatched`; a failure returned after admission to
+the native mutation call defaults to `indeterminate` unless the owning actor
+can prove it did not dispatch. `target_unresponsive` distinguishes a bounded
+native-provider timeout from a disappeared target. An observation is read-only
+and therefore never indeterminate. Supervisors may terminate an unresponsive
+sidecar after an indeterminate result, but must never replay that mutation under
+a new request ID.
+
 `request_id` is an in-process idempotency key. Concurrent identical retries
 join the first execution; completed retries replay the exact response. Reusing
 the identity for a different canonical command fails closed. Completed
@@ -190,6 +205,10 @@ promises for a hung third-party application.
 Additional budgets:
 
 - idle CPU below 0.5% over five minutes with no active request;
+- resource-soak RSS leak detection uses a 1 MiB net-growth noise floor for VM
+  page and allocator settling; file and handle counts use no noise allowance;
+- macOS memory gates use `proc_pid_rusage` physical footprint, excluding
+  reclaimable purgeable capture backing; Windows uses process working set;
 - no unbounded queue, tree, frame pool, artifact set, log field, or retry loop;
 - at most 64 local connections and 64 distinct in-flight requests by default;
 - at most 64 live capability sessions by default, with an embedding host able

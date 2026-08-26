@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-cua"
+version = "0.1.0a1"
+description = "Official typed client for Nexus Computer Use Runtime"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "MIT"
+authors = [{ name = "Nexus Research Lab" }]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/nexus-research-lab/nexus-cua"
+Documentation = "https://github.com/nexus-research-lab/nexus-cua/tree/main/docs"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nexus_cua = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use nexus_cua_protocol::{
     AccessibilityMode, Action, ActionKind, ApplicationProvenance, CapabilityManifest, CaptureMode,
     Command, CommandResult, DeliveryMode, DiscoveryRef, DriverCapabilities, ErrorCode, InputRoute,
-    ListWindowsInput, ObserveWindowInput, OpenSessionInput, PermissionMode, PermissionState,
-    PermissionStatus, Platform, ScreenRect, ScreenshotPoint, SessionInput,
+    ListWindowsInput, MutationStatus, ObserveWindowInput, OpenSessionInput, PermissionMode,
+    PermissionState, PermissionStatus, Platform, ScreenRect, ScreenshotPoint, SessionInput,
 };
 use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverElement, DriverError,
@@ -24,6 +24,7 @@ struct MockDriver {
     stale_observations_remaining: Mutex<u8>,
     observation_calls: AtomicUsize,
     application_generation: AtomicUsize,
+    action_failure: Option<MutationStatus>,
 }
 
 impl MockDriver {
@@ -33,6 +34,7 @@ impl MockDriver {
             stale_observations_remaining: Mutex::new(0),
             observation_calls: AtomicUsize::new(0),
             application_generation: AtomicUsize::new(1),
+            action_failure: None,
         }
     }
 
@@ -42,6 +44,14 @@ impl MockDriver {
             stale_observations_remaining: Mutex::new(1),
             observation_calls: AtomicUsize::new(0),
             application_generation: AtomicUsize::new(1),
+            action_failure: None,
+        }
+    }
+
+    fn failing_action(status: MutationStatus) -> Self {
+        Self {
+            action_failure: Some(status),
+            ..Self::new()
         }
     }
 
@@ -141,11 +151,7 @@ impl DesktopDriver for MockDriver {
         Ok(DriverObservation {
             window_key: window.key.clone(),
             window_screen_bounds: window.screen_bounds,
-            screenshot: include_screenshot.then(|| RgbaImage {
-                width: 2,
-                height: 2,
-                pixels: vec![255; 16],
-            }),
+            screenshot: include_screenshot.then(|| RgbaImage::new(2, 2, vec![255; 16])),
             screenshot_screen_bounds: include_screenshot.then_some(window.screen_bounds),
             elements: (accessibility != AccessibilityMode::Disabled)
                 .then(|| DriverElement {
@@ -182,6 +188,15 @@ impl DesktopDriver for MockDriver {
         action: DriverAction,
         allow_foreground: bool,
     ) -> Result<DriverActionOutput, DriverError> {
+        if let Some(status) = self.action_failure {
+            let error =
+                DriverError::new(DriverErrorKind::TargetUnresponsive, "fixture action failed");
+            return Err(match status {
+                MutationStatus::NotDispatched => error.mutation_not_dispatched(),
+                MutationStatus::Indeterminate => error.mutation_indeterminate(),
+                MutationStatus::NotApplicable => error,
+            });
+        }
         let delivery_mode = match action {
             DriverAction::FocusElement { .. }
             | DriverAction::InvokeElement { .. }
@@ -562,7 +577,83 @@ async fn successful_mutation_invalidates_its_observation() {
         .await
         .expect_err("reusing observation must fail");
     assert_eq!(second.code, ErrorCode::StaleObservation);
+    assert_eq!(second.mutation_status, MutationStatus::NotDispatched);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn admitted_driver_failure_defaults_to_indeterminate() {
+    let root = artifact_root();
+    let runtime = Runtime::new(
+        Arc::new(MockDriver::failing_action(MutationStatus::NotApplicable)),
+        RuntimeConfig::new(&root),
+    )
+    .expect("create runtime");
+    let input = fixture_invoke_input(&runtime).await;
+
+    let error = runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect_err("admitted action must expose its uncertain disposition");
+
+    assert_eq!(error.code, ErrorCode::TargetUnresponsive);
+    assert_eq!(error.mutation_status, MutationStatus::Indeterminate);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn driver_preflight_failure_preserves_not_dispatched() {
+    let root = artifact_root();
+    let runtime = Runtime::new(
+        Arc::new(MockDriver::failing_action(MutationStatus::NotDispatched)),
+        RuntimeConfig::new(&root),
+    )
+    .expect("create runtime");
+    let input = fixture_invoke_input(&runtime).await;
+
+    let error = runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect_err("driver preflight must fail before dispatch");
+
+    assert_eq!(error.code, ErrorCode::TargetUnresponsive);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+async fn fixture_invoke_input(runtime: &Runtime) -> nexus_cua_protocol::PerformActionInput {
+    let session_id = open_session(runtime, PermissionMode::Bounded).await;
+    let windows = runtime
+        .execute(Command::ListWindows(ListWindowsInput {
+            session_id: session_id.clone(),
+            app_ref: None,
+        }))
+        .await
+        .expect("list windows");
+    let CommandResult::Windows(windows) = windows else {
+        panic!("unexpected windows result");
+    };
+    let window_ref = windows[0].window_ref.clone();
+    let observed = runtime
+        .execute(Command::ObserveWindow(ObserveWindowInput {
+            session_id: session_id.clone(),
+            window_ref: window_ref.clone(),
+            include_screenshot: false,
+            accessibility: AccessibilityMode::Interactive,
+        }))
+        .await
+        .expect("observe window");
+    let CommandResult::WindowObserved(observation) = observed else {
+        panic!("unexpected observation result");
+    };
+    nexus_cua_protocol::PerformActionInput {
+        session_id,
+        window_ref,
+        observation_id: observation.observation_id,
+        action: Action::InvokeElement {
+            element_ref: observation.elements[0].element_ref.clone(),
+        },
+    }
 }
 
 #[tokio::test]
@@ -609,6 +700,7 @@ async fn coordinates_outside_observed_window_fail_before_dispatch() {
         .await
         .expect_err("out-of-bounds click must fail");
     assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
     let _ = std::fs::remove_dir_all(root);
 }
 

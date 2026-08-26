@@ -190,7 +190,13 @@ impl Runtime {
             Command::ListApps(input) => self.list_apps(input).await,
             Command::ListWindows(input) => self.list_windows(input).await,
             Command::ObserveWindow(input) => self.observe_window(input).await,
-            Command::PerformAction(input) => self.perform_action(input).await,
+            Command::PerformAction(input) => self.perform_action(input).await.map_err(|error| {
+                if error.mutation_status == nexus_cua_protocol::MutationStatus::NotApplicable {
+                    error.with_mutation_status(nexus_cua_protocol::MutationStatus::NotDispatched)
+                } else {
+                    error
+                }
+            }),
             Command::VerifyState(input) => self.verify_state(input).await,
         }
     }
@@ -687,7 +693,14 @@ impl Runtime {
             let mut state = session.state.lock().await;
             state.invalidate_window_observations(&input.window_ref);
         }
-        let result = result.map_err(CuaError::from)?;
+        let result = result.map_err(|error| {
+            let error = CuaError::from(error);
+            if error.mutation_status == nexus_cua_protocol::MutationStatus::NotApplicable {
+                error.with_mutation_status(nexus_cua_protocol::MutationStatus::Indeterminate)
+            } else {
+                error
+            }
+        })?;
         if result.delivery_mode == DeliveryMode::Foreground
             && !session.manifest.allow_foreground_input
         {
@@ -697,7 +710,8 @@ impl Runtime {
                 "driver exceeded the authorized delivery mode",
                 false,
                 None,
-            ));
+            )
+            .with_mutation_status(nexus_cua_protocol::MutationStatus::Indeterminate));
         }
         debug!(
             session_id = %session.id,

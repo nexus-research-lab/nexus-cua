@@ -41,6 +41,11 @@ Client implementations must also prove that authorization tokens and sensitive
 typed text are redacted from diagnostics. Screenshot and accessibility content
 must remain transient and must not be copied into fixture or test logs.
 
+The official Go and Python clients consume this same corpus in their unit
+tests. Both reject unknown closed values, preserve opaque identifiers, read the
+transport token only from a host-private file, and retain the exact mutation
+request identity needed for reconciliation.
+
 ## Retry compatibility
 
 The canonical serialized command plus `request_id` identifies one execution.
@@ -50,3 +55,9 @@ will not evict an unexpired result to admit new mutation work. After that
 horizon an unresolved mutation is indeterminate; a client must not create a new
 request ID and replay it. Restarting the runtime invalidates its in-memory
 ledger and every runtime-local reference.
+
+Clients must decode the required `mutation_status` on every error. They may
+retry a failed mutation as a new request only when the status is
+`not_dispatched` and their host policy still authorizes it. `indeterminate`
+permits same-request reconciliation only. Unknown error codes or mutation
+statuses fail closed under the versioned protocol rules above.

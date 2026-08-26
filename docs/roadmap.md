@@ -25,8 +25,11 @@ The `0.1.x` codebase implements the basic execution chain:
 - semantic and foreground action paths on macOS and Windows;
 - stale-observation rejection, action invalidation, and state verification;
 - bounded authenticated local IPC with same-request reconciliation;
-- deadline-driven discovery and session expiry; and
-- transient screenshot storage with bounded retention and automatic cleanup.
+- deadline-driven discovery and session expiry;
+- transient screenshot storage with bounded retention and automatic cleanup;
+  and
+- typed Go and Python clients with private native transport, closed protocol
+  values, and same-request mutation reconciliation.
 
 This is sufficient for integration development. Implemented does not mean
 release-validated: native behavior has not yet passed the full
@@ -47,8 +50,9 @@ These items block the first supported Nexus integration:
    idle-CPU, and eight-hour resource-soak gates.
 4. Produce pinned, signed packages with checksums, an SBOM, third-party notices,
    and clean-machine smoke evidence.
-5. Complete the official Go client required by the Nexus host adapter and the
-   Python client required by the standalone developer preview.
+5. Complete release acceptance for the implemented Go client required by the
+   Nexus host adapter and Python client required by the standalone developer
+   preview.
 6. Implement the downstream Nexus package resolver/installer, supervisor,
    setting, approval binding, receipts, built-in Skill, and round-scoped
    `nexus computer` command.

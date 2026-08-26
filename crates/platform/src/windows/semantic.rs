@@ -17,33 +17,34 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 use windows::Win32::UI::Accessibility::{
-    AutomationElementMode_Full, CUIAutomation, IUIAutomation, IUIAutomationCacheRequest,
-    IUIAutomationElement, IUIAutomationElementArray, IUIAutomationExpandCollapsePattern,
-    IUIAutomationInvokePattern, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
-    IUIAutomationValuePattern, TreeScope_Element, TreeScope_Subtree,
-    UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
-    UIA_ComboBoxControlTypeId, UIA_ControlTypePropertyId, UIA_CustomControlTypeId,
-    UIA_DataGridControlTypeId, UIA_DataItemControlTypeId, UIA_DocumentControlTypeId,
-    UIA_EditControlTypeId, UIA_ExpandCollapsePatternId, UIA_GroupControlTypeId,
-    UIA_HasKeyboardFocusPropertyId, UIA_HeaderControlTypeId, UIA_HeaderItemControlTypeId,
-    UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId, UIA_InvokePatternId,
-    UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
-    UIA_IsPasswordPropertyId, UIA_ListControlTypeId, UIA_ListItemControlTypeId,
-    UIA_MenuBarControlTypeId, UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_NamePropertyId,
-    UIA_PaneControlTypeId, UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId,
-    UIA_ScrollBarControlTypeId, UIA_SelectionItemPatternId, UIA_SemanticZoomControlTypeId,
-    UIA_SeparatorControlTypeId, UIA_SliderControlTypeId, UIA_SpinnerControlTypeId,
-    UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId, UIA_TabControlTypeId,
-    UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId,
-    UIA_ThumbControlTypeId, UIA_TitleBarControlTypeId, UIA_TogglePatternId,
-    UIA_ToolBarControlTypeId, UIA_ToolTipControlTypeId, UIA_TreeControlTypeId,
-    UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_ValueValuePropertyId,
-    UIA_WindowControlTypeId,
+    AutomationElementMode_Full, CUIAutomation8, IUIAutomation, IUIAutomation2,
+    IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationElementArray,
+    IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern,
+    IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern, IUIAutomationValuePattern,
+    TreeScope_Element, TreeScope_Subtree, UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId,
+    UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_ControlTypePropertyId,
+    UIA_CustomControlTypeId, UIA_DataGridControlTypeId, UIA_DataItemControlTypeId,
+    UIA_DocumentControlTypeId, UIA_E_TIMEOUT, UIA_EditControlTypeId, UIA_ExpandCollapsePatternId,
+    UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId, UIA_HeaderControlTypeId,
+    UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
+    UIA_InvokePatternId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
+    UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId, UIA_ListControlTypeId,
+    UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId, UIA_MenuControlTypeId,
+    UIA_MenuItemControlTypeId, UIA_NamePropertyId, UIA_PaneControlTypeId,
+    UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId,
+    UIA_SelectionItemPatternId, UIA_SemanticZoomControlTypeId, UIA_SeparatorControlTypeId,
+    UIA_SliderControlTypeId, UIA_SpinnerControlTypeId, UIA_SplitButtonControlTypeId,
+    UIA_StatusBarControlTypeId, UIA_TabControlTypeId, UIA_TabItemControlTypeId,
+    UIA_TableControlTypeId, UIA_TextControlTypeId, UIA_ThumbControlTypeId,
+    UIA_TitleBarControlTypeId, UIA_TogglePatternId, UIA_ToolBarControlTypeId,
+    UIA_ToolTipControlTypeId, UIA_TreeControlTypeId, UIA_TreeItemControlTypeId, UIA_ValuePatternId,
+    UIA_ValueValuePropertyId, UIA_WindowControlTypeId,
 };
-use windows::core::{BOOL, BSTR};
+use windows::core::{BOOL, BSTR, Interface};
 
 const COMMAND_CAPACITY: usize = 32;
 const SNAPSHOT_CACHE_LIMIT: usize = 32;
+const PROVIDER_TIMEOUT_MS: u32 = 250;
 const MAX_FIELD_BYTES: usize = 512;
 
 #[derive(Clone)]
@@ -108,7 +109,8 @@ impl SemanticActor {
             element_key,
             action,
             reply,
-        })?;
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
         receiver.await.map_err(actor_stopped)?
     }
 
@@ -216,9 +218,19 @@ impl SemanticState {
             CoInitializeEx(None, COINIT_MULTITHREADED)
                 .ok()
                 .map_err(|_| provider_failure("failed to initialize COM MTA"))?;
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|_| provider_failure("failed to create UI Automation client"))?;
+            let automation2: IUIAutomation2 =
+                CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER).map_err(|_| {
+                    provider_failure("failed to create modern UI Automation client")
+                })?;
+            let automation: IUIAutomation = automation2.cast().map_err(|_| {
+                provider_failure("failed to access the UI Automation base interface")
+            })?;
+            automation2
+                .SetConnectionTimeout(PROVIDER_TIMEOUT_MS)
+                .map_err(|_| provider_failure("failed to configure UIA connection timeout"))?;
+            automation2
+                .SetTransactionTimeout(PROVIDER_TIMEOUT_MS)
+                .map_err(|_| provider_failure("failed to configure UIA transaction timeout"))?;
             let interactive_request = cache_request(&automation, false, TreeScope_Subtree)?;
             let full_request = cache_request(&automation, true, TreeScope_Subtree)?;
             let element_request = cache_request(&automation, true, TreeScope_Element)?;
@@ -265,7 +277,7 @@ impl SemanticState {
         let root = unsafe {
             self.automation
                 .ElementFromHandleBuildCache(hwnd(raw_hwnd), request)
-                .map_err(|_| provider_failure("UI Automation cache build failed"))?
+                .map_err(|error| provider_error(error, "UI Automation cache build failed"))?
         };
         self.next_snapshot = self.next_snapshot.wrapping_add(1);
         let snapshot_key = format!("uia:{raw_hwnd:x}:{}", self.next_snapshot);
@@ -362,48 +374,56 @@ impl SemanticState {
             .iter()
             .rev()
             .find_map(|snapshot| snapshot.elements.get(element_key))
-            .ok_or_else(stale_element)?;
+            .ok_or_else(|| stale_element().mutation_not_dispatched())?;
         // SAFETY: BuildUpdatedCache and every pattern call stay on the owning
         // COM MTA. The refreshed signature closes stale-element races.
         unsafe {
             let current = stored
                 .element
                 .BuildUpdatedCache(&self.element_request)
-                .map_err(|_| stale_element())?;
-            if element_signature(&cached_values(&current)?) != stored.signature {
-                return Err(stale_element());
+                .map_err(|error| preflight_error(error, "UI Automation element refresh failed"))?;
+            let current_values =
+                cached_values(&current).map_err(DriverError::mutation_not_dispatched)?;
+            if element_signature(&current_values) != stored.signature {
+                return Err(stale_element().mutation_not_dispatched());
             }
-            (|| -> windows::core::Result<()> {
-                match action {
-                    SemanticAction::Focus => current.SetFocus(),
-                    SemanticAction::Invoke => current
-                        .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)?
-                        .Invoke(),
-                    SemanticAction::SetValue(value) => current
-                        .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)?
-                        .SetValue(&BSTR::from(value.expose())),
-                    SemanticAction::Toggle => current
-                        .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)?
-                        .Toggle(),
-                    SemanticAction::Select => current
-                        .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                            UIA_SelectionItemPatternId,
-                        )?
-                        .Select(),
-                    SemanticAction::SetExpanded(expanded) => {
-                        let pattern = current
-                            .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
-                                UIA_ExpandCollapsePatternId,
-                            )?;
-                        if expanded {
-                            pattern.Expand()
-                        } else {
-                            pattern.Collapse()
-                        }
+            match action {
+                SemanticAction::Focus => current.SetFocus().map_err(action_error),
+                SemanticAction::Invoke => current
+                    .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+                    .map_err(|_| stale_element().mutation_not_dispatched())?
+                    .Invoke()
+                    .map_err(action_error),
+                SemanticAction::SetValue(value) => current
+                    .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                    .map_err(|_| stale_element().mutation_not_dispatched())?
+                    .SetValue(&BSTR::from(value.expose()))
+                    .map_err(action_error),
+                SemanticAction::Toggle => current
+                    .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+                    .map_err(|_| stale_element().mutation_not_dispatched())?
+                    .Toggle()
+                    .map_err(action_error),
+                SemanticAction::Select => current
+                    .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )
+                    .map_err(|_| stale_element().mutation_not_dispatched())?
+                    .Select()
+                    .map_err(action_error),
+                SemanticAction::SetExpanded(expanded) => {
+                    let pattern = current
+                        .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
+                            UIA_ExpandCollapsePatternId,
+                        )
+                        .map_err(|_| stale_element().mutation_not_dispatched())?;
+                    if expanded {
+                        pattern.Expand().map_err(action_error)
+                    } else {
+                        pattern.Collapse().map_err(action_error)
                     }
                 }
-            })()
-            .map_err(|_| stale_element())
+            }
         }
     }
 }
@@ -657,7 +677,10 @@ fn element_signature(values: &NodeValues) -> [u8; 32] {
         digest.update([0]);
         digest.update(value.as_bytes());
     }
-    digest.update([values.state.0]);
+    // Keyboard focus can move between cache construction and pattern dispatch
+    // without changing the target element. Keep stable enabled/focusable/
+    // offscreen facts, but do not manufacture staleness from transient focus.
+    digest.update([values.state.0 & !NodeState::FOCUSED]);
     if let Some(bounds) = values.bounds {
         digest.update(bounds.x.to_bits().to_be_bytes());
         digest.update(bounds.y.to_bits().to_be_bytes());
@@ -685,6 +708,36 @@ fn hwnd(raw: isize) -> HWND {
 
 fn provider_failure(message: &str) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, message).retryable("retry_uia_snapshot")
+}
+
+fn provider_error(error: windows::core::Error, message: &str) -> DriverError {
+    if error.code().0 as u32 == UIA_E_TIMEOUT {
+        target_unresponsive(message)
+    } else {
+        provider_failure(message)
+    }
+}
+
+fn preflight_error(error: windows::core::Error, message: &str) -> DriverError {
+    if error.code().0 as u32 == UIA_E_TIMEOUT {
+        target_unresponsive(message).mutation_not_dispatched()
+    } else {
+        stale_element().mutation_not_dispatched()
+    }
+}
+
+fn action_error(error: windows::core::Error) -> DriverError {
+    let error = if error.code().0 as u32 == UIA_E_TIMEOUT {
+        target_unresponsive("UI Automation action timed out")
+    } else {
+        stale_element()
+    };
+    error.mutation_indeterminate()
+}
+
+fn target_unresponsive(message: &str) -> DriverError {
+    DriverError::new(DriverErrorKind::TargetUnresponsive, message)
+        .retryable("retry_after_target_recovers")
 }
 
 fn stale_element() -> DriverError {

@@ -35,10 +35,25 @@ pub enum ErrorCode {
     ForegroundRequired,
     /// Target application or window disappeared.
     TargetUnavailable,
+    /// Native target stopped answering within the bounded provider timeout.
+    TargetUnresponsive,
     /// Platform driver failed without exposing sensitive implementation details.
     DriverFailure,
     /// Internal invariant failed.
     Internal,
+}
+
+/// Mutation disposition attached to every error response.
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationStatus {
+    /// The failed request was not a mutation.
+    #[default]
+    NotApplicable,
+    /// The runtime proved that no target mutation was dispatched.
+    NotDispatched,
+    /// Dispatch may have occurred; only same-request reconciliation is safe.
+    Indeterminate,
 }
 
 /// Public error envelope without platform handles or sensitive payloads.
@@ -53,4 +68,15 @@ pub struct CuaError {
     pub retryable: bool,
     /// Stable recovery hint for agent or product routing.
     pub recovery_action: Option<String>,
+    /// Whether a failed request could have reached the mutation target.
+    pub mutation_status: MutationStatus,
+}
+
+impl CuaError {
+    /// Attaches the mutation disposition known at the failure boundary.
+    #[must_use]
+    pub fn with_mutation_status(mut self, status: MutationStatus) -> Self {
+        self.mutation_status = status;
+        self
+    }
 }

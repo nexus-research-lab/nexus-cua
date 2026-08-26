@@ -20,12 +20,13 @@ zeroize.workspace = true
 accessibility-sys = "0.2.0"
 block2 = "0.6.2"
 core-foundation = "0.10.1"
-core-graphics = { version = "0.25.0", features = ["highsierra"] }
+core-graphics = { version = "0.25.0", features = ["elcapitan", "highsierra"] }
 foreign-types = "0.5.0"
+libc = "0.2.189"
 macos-accessibility-client = "0.0.2"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
-objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGImage"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSApplication", "NSResponder", "NSRunningApplication"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGImage"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDate", "NSEnumerator", "NSError", "NSString", "NSURL"] }
 objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "objc2-core-graphics", "SCShareableContent", "SCScreenshotManager", "SCStream"] }
 

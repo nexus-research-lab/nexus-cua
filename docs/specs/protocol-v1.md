@@ -88,6 +88,27 @@ indeterminate and an SDK must not manufacture a new request ID. A sidecar
 restart creates a new runtime epoch, destroys the ledger, and invalidates every
 discovery, session, observation, and artifact reference.
 
+Every error carries a required `mutation_status`:
+
+- `not_applicable` means the command was not a mutation;
+- `not_dispatched` means the runtime proved the mutation did not reach the
+  target; and
+- `indeterminate` means dispatch may have occurred and the caller must not
+  issue an equivalent mutation under a new request ID.
+
+Transport validation, authority checks, stale observations, coordinate checks,
+native queue admission, and native action preflight report `not_dispatched` for
+a failed `perform_action`. Once a native action call is admitted, an otherwise
+unclassified failure is conservatively `indeterminate`. Only an indeterminate
+failure or admitted request deadline is reconciled by waiting longer with the
+same request ID. A new request ID is a new mutation and is forbidden as a
+recovery mechanism.
+
+`target_unresponsive` is the stable error for a native accessibility provider
+that exceeds the driver's bounded provider timeout. Observation failures always
+use `not_applicable`; action preflight uses `not_dispatched`; and a timeout from
+inside the native mutation call uses `indeterminate`.
+
 ## Schemas and compatibility fixtures
 
 The normative generated request and response schemas live under

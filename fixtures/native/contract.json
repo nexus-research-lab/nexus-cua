@@ -1,0 +1,104 @@
+{
+  "contract_version": "nexus.cua.fixture.v1",
+  "application_name": "Nexus CUA Native Fixture",
+  "window_title_prefix": "Nexus CUA Native Fixture · Generation ",
+  "initial_state": "Fixture State: generation=1; counter=0; text=ready; checked=false; selection=none; expanded=false; dropped=false",
+  "secure_sentinel": "fixture-secret",
+  "controls": {
+    "increment": {
+      "name": "Increment Counter",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    },
+    "text": {
+      "name": "Fixture Text",
+      "roles_by_platform": {"macos": ["textfield"], "windows": ["edit"]},
+      "required_actions": ["focus", "set_value"]
+    },
+    "secure_text": {
+      "name": "Fixture Secure Text",
+      "roles_by_platform": {"macos": ["textfield"], "windows": ["edit"]},
+      "required_actions": ["focus", "set_value"]
+    },
+    "toggle": {
+      "name": "Enable Feature",
+      "roles_by_platform": {"macos": ["checkbox"], "windows": ["checkbox"]},
+      "required_actions": ["toggle"]
+    },
+    "list": {
+      "name": "Fixture Choices",
+      "roles_by_platform": {"macos": ["table"], "windows": ["list"]},
+      "required_actions": []
+    },
+    "list_beta": {
+      "name": "Beta",
+      "roles_by_platform": {"macos": ["row", "cell"], "windows": ["listitem"]},
+      "required_actions": ["select"]
+    },
+    "expandable": {
+      "name": "Advanced Options",
+      "roles_by_platform": {"macos": ["disclosuretriangle"], "windows": ["treeitem"]},
+      "required_actions": ["set_expanded"]
+    },
+    "scroll": {
+      "name": "Fixture Scroll Region",
+      "roles_by_platform": {"macos": ["scrollarea"], "windows": ["pane"]},
+      "required_actions": []
+    },
+    "scroll_marker": {
+      "name": "Scroll Marker 20",
+      "roles_by_platform": {"macos": ["statictext"], "windows": ["text"]},
+      "required_actions": []
+    },
+    "drag_token": {
+      "name": "Drag Token",
+      "roles_by_platform": {"macos": ["group"], "windows": ["button"]},
+      "required_actions": []
+    },
+    "drop_zone": {
+      "name": "Drop Zone",
+      "roles_by_platform": {"macos": ["group"], "windows": ["button"]},
+      "required_actions": []
+    },
+    "state": {
+      "name": "Fixture State",
+      "roles_by_platform": {"macos": ["statictext"], "windows": ["text"]},
+      "required_actions": []
+    },
+    "replace_window": {
+      "name": "Replace Fixture Window",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    },
+    "change_geometry": {
+      "name": "Change Fixture Geometry",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    },
+    "minimize_window": {
+      "name": "Minimize Fixture Window",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    },
+    "toggle_occluder": {
+      "name": "Toggle Fixture Occluder",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    },
+    "move_to_next_display": {
+      "name": "Move Fixture To Next Display",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    },
+    "hang_before_mutation": {
+      "name": "Hang Before Mutation",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    },
+    "hang_during_invoke": {
+      "name": "Hang During Invoke",
+      "roles_by_platform": {"macos": ["button"], "windows": ["button"]},
+      "required_actions": ["invoke"]
+    }
+  }
+}

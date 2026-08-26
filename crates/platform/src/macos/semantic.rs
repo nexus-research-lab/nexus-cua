@@ -8,14 +8,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use accessibility_sys::{
+    AXUIElementCopyAttributeValue, AXUIElementCopyElementAtPosition,
     AXUIElementCopyMultipleAttributeValues, AXUIElementCreateApplication, AXUIElementGetTypeID,
     AXUIElementPerformAction, AXUIElementRef, AXUIElementSetAttributeValue,
     AXUIElementSetMessagingTimeout, AXValueGetType, AXValueGetValue, AXValueRef,
-    kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute, kAXErrorSuccess,
-    kAXExpandedAttribute, kAXFocusedAttribute, kAXPickAction, kAXPositionAttribute, kAXPressAction,
-    kAXRaiseAction, kAXRoleAttribute, kAXSecureTextFieldSubrole, kAXSelectedAttribute,
-    kAXSizeAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute,
-    kAXValueTypeCGPoint, kAXValueTypeCGSize, kAXWindowsAttribute,
+    kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute, kAXErrorCannotComplete,
+    kAXErrorSuccess, kAXExpandedAttribute, kAXFocusedAttribute, kAXFrontmostAttribute,
+    kAXMainAttribute, kAXPickAction, kAXPositionAttribute, kAXPressAction, kAXRaiseAction,
+    kAXRoleAttribute, kAXSecureTextFieldSubrole, kAXSelectedAttribute, kAXSizeAttribute,
+    kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute, kAXValueTypeCGPoint,
+    kAXValueTypeCGSize, kAXWindowAttribute, kAXWindowsAttribute,
 };
 use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFGetTypeID, CFType, CFTypeRef, TCFType, TCFTypeRef};
@@ -116,7 +118,8 @@ impl SemanticActor {
             element_key,
             action,
             reply,
-        })?;
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
         receiver.await.map_err(actor_stopped)?
     }
 
@@ -267,6 +270,9 @@ impl SemanticState {
             visited += 1;
             let values = match read_node(&element) {
                 Ok(values) => values,
+                Err(error) if error.kind == DriverErrorKind::TargetUnresponsive => {
+                    return Err(error);
+                }
                 Err(error) if error.retryable => {
                     truncation = Some(TruncationReason::ProviderFailure);
                     break;
@@ -310,6 +316,8 @@ impl SemanticState {
             }
         }
 
+        propagate_table_row_names(&mut elements);
+
         self.snapshots
             .push_back(StoredSnapshot { elements: stored });
         while self.snapshots.len() > SNAPSHOT_CACHE_LIMIT {
@@ -333,10 +341,16 @@ impl SemanticState {
             .iter()
             .rev()
             .find_map(|snapshot| snapshot.elements.get(element_key))
-            .ok_or_else(stale_element)?;
-        let current = read_node(&stored.element).map_err(|_| stale_element())?;
+            .ok_or_else(|| stale_element().mutation_not_dispatched())?;
+        let current = read_action_identity(&stored.element).map_err(|error| {
+            if error.kind == DriverErrorKind::TargetUnresponsive {
+                error.mutation_not_dispatched()
+            } else {
+                stale_element().mutation_not_dispatched()
+            }
+        })?;
         if element_signature(&current) != stored.signature {
-            return Err(stale_element());
+            return Err(stale_element().mutation_not_dispatched());
         }
         match action {
             SemanticAction::Focus => set_boolean(&stored.element, kAXFocusedAttribute, true),
@@ -352,6 +366,27 @@ impl SemanticState {
             SemanticAction::SetExpanded(expanded) => {
                 set_boolean(&stored.element, kAXExpandedAttribute, expanded)
             }
+        }
+    }
+}
+
+fn propagate_table_row_names(elements: &mut [DriverElement]) {
+    let child_names: HashMap<_, _> = elements
+        .iter()
+        .filter(|element| !element.name.is_empty())
+        .filter_map(|element| {
+            element
+                .parent_key
+                .as_ref()
+                .map(|parent| (parent.clone(), element.name.clone()))
+        })
+        .collect();
+    for element in elements {
+        if element.role == "row"
+            && element.name.is_empty()
+            && let Some(name) = child_names.get(&element.key)
+        {
+            element.name.clone_from(name);
         }
     }
 }
@@ -386,27 +421,115 @@ fn find_window(
 ) -> Result<AxElement, DriverError> {
     let application = AxElement::application(pid);
     application.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)?;
-    let values = copy_multiple(&application, &[kAXWindowsAttribute])?;
-    let windows = values.first().map(children_from_value).unwrap_or_default();
-    windows
+    if let Ok(element) = element_at_position(
+        &application,
+        expected_bounds.x + expected_bounds.width * 0.5,
+        expected_bounds.y + expected_bounds.height * 0.5,
+    ) && let Ok(window) = copy_element(&element, kAXWindowAttribute)
+        && let Ok((title, bounds)) = read_window_identity(&window)
+        && window_identity_matches(bounds, title.as_deref(), expected_bounds, expected_title)
+    {
+        return Ok(window);
+    }
+    let windows = copy_children(&application, kAXWindowsAttribute)?;
+    let mut matching_windows = windows
         .into_iter()
         .filter_map(|window| {
-            read_window_identity(&window).ok().map(|(title, bounds)| {
-                (
-                    window,
-                    window_score(bounds, title.as_deref(), expected_bounds, expected_title),
-                )
-            })
+            let (title, bounds) = read_window_identity(&window).ok()?;
+            window_identity_matches(bounds, title.as_deref(), expected_bounds, expected_title)
+                .then_some(window)
         })
-        .min_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(window, _)| window)
-        .ok_or_else(|| {
-            DriverError::new(
-                DriverErrorKind::TargetUnavailable,
-                "matching accessibility window is unavailable",
-            )
-            .retryable("observe_window")
-        })
+        .take(2);
+    let Some(window) = matching_windows.next() else {
+        return Err(matching_window_unavailable());
+    };
+    if matching_windows.next().is_some() {
+        return Err(DriverError::new(
+            DriverErrorKind::TargetUnavailable,
+            "matching accessibility window identity is ambiguous",
+        )
+        .retryable("observe_window"));
+    }
+    Ok(window)
+}
+
+fn matching_window_unavailable() -> DriverError {
+    DriverError::new(
+        DriverErrorKind::TargetUnavailable,
+        "matching accessibility window is unavailable",
+    )
+    .retryable("observe_window")
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn element_at_position(application: &AxElement, x: f64, y: f64) -> Result<AxElement, DriverError> {
+    let mut element: AXUIElementRef = ptr::null_mut();
+    // SAFETY: The retained application remains live and success transfers a
+    // retained AX element through `element`.
+    let error = unsafe {
+        AXUIElementCopyElementAtPosition(
+            application.as_concrete_TypeRef(),
+            x as f32,
+            y as f32,
+            &raw mut element,
+        )
+    };
+    if error != kAXErrorSuccess || element.is_null() {
+        return Err(provider_error(error, "accessibility hit testing failed"));
+    }
+    // SAFETY: The successful create-rule AX copy returned this non-null value.
+    Ok(unsafe { AxElement::wrap_under_create_rule(element) })
+}
+
+fn copy_element(element: &AxElement, attribute: &str) -> Result<AxElement, DriverError> {
+    copy_attribute(element, attribute)?
+        .downcast::<AxElement>()
+        .ok_or_else(|| provider_failure("accessibility element relation has an invalid type"))
+}
+
+fn copy_attribute(element: &AxElement, attribute: &str) -> Result<CFType, DriverError> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null();
+    // SAFETY: The retained element and attribute remain live for the call;
+    // success transfers a retained CF object through `value`.
+    let error = unsafe {
+        AXUIElementCopyAttributeValue(
+            element.as_concrete_TypeRef(),
+            attribute.as_concrete_TypeRef(),
+            &raw mut value,
+        )
+    };
+    if error != kAXErrorSuccess || value.is_null() {
+        return Err(provider_error(
+            error,
+            "accessibility element relation read failed",
+        ));
+    }
+    // SAFETY: A successful create-rule AX copy returned this non-null object.
+    Ok(unsafe { CFType::wrap_under_create_rule(value) })
+}
+
+fn copy_children(element: &AxElement, attribute: &str) -> Result<Vec<AxElement>, DriverError> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = ptr::null();
+    // SAFETY: The retained element and attribute remain live for the call;
+    // success transfers a retained CF object through `value`.
+    let error = unsafe {
+        AXUIElementCopyAttributeValue(
+            element.as_concrete_TypeRef(),
+            attribute.as_concrete_TypeRef(),
+            &raw mut value,
+        )
+    };
+    if error != kAXErrorSuccess || value.is_null() {
+        return Err(provider_error(
+            error,
+            "accessibility provider child read failed",
+        ));
+    }
+    // SAFETY: A successful create-rule AX copy returned this non-null object.
+    let value = unsafe { CFType::wrap_under_create_rule(value) };
+    Ok(children_from_value(&value))
 }
 
 fn read_window_identity(
@@ -455,6 +578,37 @@ fn read_node(element: &AxElement) -> Result<NodeValues, DriverError> {
     })
 }
 
+fn read_action_identity(element: &AxElement) -> Result<NodeValues, DriverError> {
+    let values = copy_multiple(
+        element,
+        &[
+            kAXRoleAttribute,
+            kAXSubroleAttribute,
+            kAXTitleAttribute,
+            kAXDescriptionAttribute,
+            kAXValueAttribute,
+            kAXEnabledAttribute,
+            kAXPositionAttribute,
+            kAXSizeAttribute,
+        ],
+    )?;
+    let subrole = values.get(1).and_then(cf_string).unwrap_or_default();
+    let title = values.get(2).and_then(cf_string).unwrap_or_default();
+    let description = values.get(3).and_then(cf_string).unwrap_or_default();
+    let value = (subrole != kAXSecureTextFieldSubrole)
+        .then(|| values.get(4).and_then(cf_string).map(bounded_string))
+        .flatten();
+    Ok(NodeValues {
+        role: values.first().and_then(cf_string).unwrap_or_default(),
+        name: bounded_string(if title.is_empty() { description } else { title }),
+        value,
+        enabled: values.get(5).and_then(cf_boolean).unwrap_or(true),
+        focused: false,
+        bounds: bounds_from_values(values.get(6), values.get(7)),
+        children: Vec::new(),
+    })
+}
+
 fn copy_multiple(element: &AxElement, attributes: &[&str]) -> Result<Vec<CFType>, DriverError> {
     let attributes: Vec<_> = attributes
         .iter()
@@ -473,7 +627,10 @@ fn copy_multiple(element: &AxElement, attributes: &[&str]) -> Result<Vec<CFType>
         )
     };
     if error != kAXErrorSuccess || values.is_null() {
-        return Err(provider_failure("accessibility provider batch read failed"));
+        return Err(provider_error(
+            error,
+            "accessibility provider batch read failed",
+        ));
     }
     // SAFETY: A successful create-rule AX copy returned this non-null array.
     let values = unsafe { CFArray::<CFType>::wrap_under_create_rule(values) };
@@ -583,7 +740,10 @@ fn element_signature(values: &NodeValues) -> [u8; 32] {
         digest.update([0]);
         digest.update(value.as_bytes());
     }
-    digest.update([u8::from(values.enabled), u8::from(values.focused)]);
+    // Keyboard focus can change as the accessibility provider serves the
+    // snapshot. It is observable state, but not part of an element's stable
+    // identity for action revalidation.
+    digest.update([u8::from(values.enabled)]);
     if let Some(bounds) = values.bounds {
         digest.update(bounds.x.to_bits().to_be_bytes());
         digest.update(bounds.y.to_bits().to_be_bytes());
@@ -626,28 +786,49 @@ fn bounded_string(mut value: String) -> String {
     value
 }
 
-fn window_score(
+fn window_identity_matches(
     bounds: Option<ScreenRect>,
     title: Option<&str>,
     expected_bounds: ScreenRect,
     expected_title: &str,
-) -> f64 {
-    let geometry = bounds.map_or(1_000_000.0, |bounds| {
-        (bounds.x - expected_bounds.x).abs()
-            + (bounds.y - expected_bounds.y).abs()
-            + (bounds.width - expected_bounds.width).abs()
-            + (bounds.height - expected_bounds.height).abs()
-    });
-    if !expected_title.is_empty() && title == Some(expected_title) {
-        geometry - 10_000.0
-    } else {
-        geometry
-    }
+) -> bool {
+    const AX_GEOMETRY_TOLERANCE: f64 = 1.0;
+
+    let Some(bounds) = bounds else {
+        return false;
+    };
+    let geometry_matches = (bounds.x - expected_bounds.x).abs() <= AX_GEOMETRY_TOLERANCE
+        && (bounds.y - expected_bounds.y).abs() <= AX_GEOMETRY_TOLERANCE
+        && (bounds.width - expected_bounds.width).abs() <= AX_GEOMETRY_TOLERANCE
+        && (bounds.height - expected_bounds.height).abs() <= AX_GEOMETRY_TOLERANCE;
+    let title_matches =
+        expected_title.is_empty() || title.is_none_or(|title| title == expected_title);
+    geometry_matches && title_matches
 }
 
 fn raise_window(pid: i32, bounds: ScreenRect, title: &str) -> Result<(), DriverError> {
     ensure_accessibility_permission()?;
-    perform_native_action(&find_window(pid, bounds, title)?, kAXRaiseAction)
+    let application = AxElement::application(pid);
+    application.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)?;
+    set_boolean(&application, kAXFrontmostAttribute, true).map_err(|error| {
+        DriverError::new(
+            DriverErrorKind::ForegroundRequired,
+            format!(
+                "macOS refused target application activation: {}",
+                error.message
+            ),
+        )
+        .mutation_not_dispatched()
+    })?;
+    let window = find_window(pid, bounds, title)?;
+    set_boolean(&window, kAXMainAttribute, true).map_err(|error| {
+        DriverError::new(
+            DriverErrorKind::ForegroundRequired,
+            format!("macOS refused target window activation: {}", error.message),
+        )
+        .mutation_not_dispatched()
+    })?;
+    perform_native_action(&window, kAXRaiseAction)
 }
 
 fn perform_native_action(element: &AxElement, action: &str) -> Result<(), DriverError> {
@@ -688,6 +869,8 @@ fn set_attribute(
 fn map_action_error(error: i32) -> Result<(), DriverError> {
     if error == kAXErrorSuccess {
         Ok(())
+    } else if error == kAXErrorCannotComplete {
+        Err(target_unresponsive("accessibility action timed out").mutation_indeterminate())
     } else {
         Err(DriverError::new(
             DriverErrorKind::StaleObservation,
@@ -704,12 +887,26 @@ fn ensure_accessibility_permission() -> Result<(), DriverError> {
         Err(DriverError::new(
             DriverErrorKind::PermissionRequired,
             "macOS accessibility permission is required",
-        ))
+        )
+        .mutation_not_dispatched())
     }
 }
 
 fn provider_failure(message: &str) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, message).retryable("retry_accessibility_snapshot")
+}
+
+fn provider_error(error: i32, message: &str) -> DriverError {
+    if error == kAXErrorCannotComplete {
+        target_unresponsive(message)
+    } else {
+        provider_failure(message)
+    }
+}
+
+fn target_unresponsive(message: &str) -> DriverError {
+    DriverError::new(DriverErrorKind::TargetUnresponsive, message)
+        .retryable("retry_after_target_recovers")
 }
 
 fn stale_element() -> DriverError {
@@ -722,4 +919,73 @@ fn stale_element() -> DriverError {
 
 fn actor_stopped<T>(_error: T) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, "macOS semantic actor stopped")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_identity_matches;
+    use nexus_cua_protocol::ScreenRect;
+
+    const EXPECTED: ScreenRect = ScreenRect {
+        x: 100.0,
+        y: 200.0,
+        width: 800.0,
+        height: 600.0,
+    };
+
+    #[test]
+    fn window_identity_requires_matching_geometry() {
+        assert!(window_identity_matches(
+            Some(EXPECTED),
+            Some("Fixture"),
+            EXPECTED,
+            "Fixture",
+        ));
+        assert!(window_identity_matches(
+            Some(ScreenRect {
+                x: 100.5,
+                ..EXPECTED
+            }),
+            Some("Fixture"),
+            EXPECTED,
+            "Fixture",
+        ));
+        assert!(!window_identity_matches(
+            Some(ScreenRect {
+                x: 102.0,
+                ..EXPECTED
+            }),
+            Some("Fixture"),
+            EXPECTED,
+            "Fixture",
+        ));
+        assert!(!window_identity_matches(
+            None,
+            Some("Fixture"),
+            EXPECTED,
+            "Fixture",
+        ));
+    }
+
+    #[test]
+    fn window_identity_rejects_conflicting_titles() {
+        assert!(!window_identity_matches(
+            Some(EXPECTED),
+            Some("Another Window"),
+            EXPECTED,
+            "Fixture",
+        ));
+        assert!(window_identity_matches(
+            Some(EXPECTED),
+            None,
+            EXPECTED,
+            "Fixture",
+        ));
+        assert!(window_identity_matches(
+            Some(EXPECTED),
+            Some("Any Window"),
+            EXPECTED,
+            "",
+        ));
+    }
 }

@@ -534,6 +534,10 @@
           "description": "Concise user-safe explanation.",
           "type": "string"
         },
+        "mutation_status": {
+          "description": "Whether a failed request could have reached the mutation target.",
+          "$ref": "#/$defs/MutationStatus"
+        },
         "recovery_action": {
           "description": "Stable recovery hint for agent or product routing.",
           "type": [
@@ -550,7 +554,8 @@
       "required": [
         "code",
         "message",
-        "retryable"
+        "retryable",
+        "mutation_status"
       ]
     },
     "DeliveryMode": {
@@ -764,6 +769,11 @@
           "const": "target_unavailable"
         },
         {
+          "description": "Native target stopped answering within the bounded provider timeout.",
+          "type": "string",
+          "const": "target_unresponsive"
+        },
+        {
           "description": "Platform driver failed without exposing sensitive implementation details.",
           "type": "string",
           "const": "driver_failure"
@@ -787,6 +797,26 @@
           "description": "User-visible system foreground input.",
           "type": "string",
           "const": "foreground"
+        }
+      ]
+    },
+    "MutationStatus": {
+      "description": "Mutation disposition attached to every error response.",
+      "oneOf": [
+        {
+          "description": "The failed request was not a mutation.",
+          "type": "string",
+          "const": "not_applicable"
+        },
+        {
+          "description": "The runtime proved that no target mutation was dispatched.",
+          "type": "string",
+          "const": "not_dispatched"
+        },
+        {
+          "description": "Dispatch may have occurred; only same-request reconciliation is safe.",
+          "type": "string",
+          "const": "indeterminate"
         }
       ]
     },

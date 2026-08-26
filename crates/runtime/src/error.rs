@@ -1,6 +1,6 @@
 //! Internal errors projected to stable public failures.
 
-use nexus_cua_protocol::{CuaError, ErrorCode};
+use nexus_cua_protocol::{CuaError, ErrorCode, MutationStatus};
 use thiserror::Error;
 
 /// Stable driver failure category hidden behind the public error model.
@@ -14,6 +14,8 @@ pub enum DriverErrorKind {
     Unsupported,
     /// Target disappeared or can no longer be addressed.
     TargetUnavailable,
+    /// Native target stopped answering within a bounded provider timeout.
+    TargetUnresponsive,
     /// Action requires foreground delivery.
     ForegroundRequired,
     /// Observation no longer matches platform state.
@@ -34,6 +36,8 @@ pub struct DriverError {
     pub retryable: bool,
     /// Stable recovery hint.
     pub recovery_action: Option<String>,
+    /// Mutation disposition known by the native driver.
+    pub mutation_status: MutationStatus,
 }
 
 impl DriverError {
@@ -44,6 +48,7 @@ impl DriverError {
             message: message.into(),
             retryable: false,
             recovery_action: None,
+            mutation_status: MutationStatus::NotApplicable,
         }
     }
 
@@ -52,6 +57,20 @@ impl DriverError {
     pub fn retryable(mut self, recovery_action: impl Into<String>) -> Self {
         self.retryable = true;
         self.recovery_action = Some(recovery_action.into());
+        self
+    }
+
+    /// Marks an action failure as known to have happened before dispatch.
+    #[must_use]
+    pub fn mutation_not_dispatched(mut self) -> Self {
+        self.mutation_status = MutationStatus::NotDispatched;
+        self
+    }
+
+    /// Marks an action failure as potentially occurring after dispatch.
+    #[must_use]
+    pub fn mutation_indeterminate(mut self) -> Self {
+        self.mutation_status = MutationStatus::Indeterminate;
         self
     }
 }
@@ -63,6 +82,7 @@ impl From<DriverError> for CuaError {
             DriverErrorKind::PermissionRequired => ErrorCode::PermissionRequired,
             DriverErrorKind::Unsupported => ErrorCode::Unsupported,
             DriverErrorKind::TargetUnavailable => ErrorCode::TargetUnavailable,
+            DriverErrorKind::TargetUnresponsive => ErrorCode::TargetUnresponsive,
             DriverErrorKind::ForegroundRequired => ErrorCode::ForegroundRequired,
             DriverErrorKind::StaleObservation => ErrorCode::StaleObservation,
             DriverErrorKind::Platform => ErrorCode::DriverFailure,
@@ -72,6 +92,7 @@ impl From<DriverError> for CuaError {
             message: value.message,
             retryable: value.retryable,
             recovery_action: value.recovery_action,
+            mutation_status: value.mutation_status,
         }
     }
 }
@@ -88,5 +109,6 @@ pub(crate) fn public_error(
         message: message.into(),
         retryable,
         recovery_action: recovery_action.map(str::to_owned),
+        mutation_status: MutationStatus::NotApplicable,
     }
 }

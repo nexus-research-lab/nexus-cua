@@ -1,5 +1,6 @@
 //! Best-effort macOS code-signing provenance for trusted-host discovery.
 
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::path::Path;
 use std::ptr;
@@ -49,10 +50,40 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-#[derive(Default)]
+const CACHE_LIMIT: usize = 256;
+
+#[derive(Clone, Default)]
 pub(super) struct SigningIdentity {
     pub(super) team_id: Option<String>,
     pub(super) designated_requirement: Option<String>,
+}
+
+#[derive(Default)]
+pub(super) struct Cache {
+    entries: HashMap<String, SigningIdentity>,
+    order: VecDeque<String>,
+}
+
+impl Cache {
+    pub(super) fn inspect(
+        &mut self,
+        process_generation: &str,
+        executable_path: &str,
+    ) -> SigningIdentity {
+        let key = format!("{process_generation}\0{executable_path}");
+        if let Some(identity) = self.entries.get(&key) {
+            return identity.clone();
+        }
+        let identity = inspect(executable_path);
+        self.entries.insert(key.clone(), identity.clone());
+        self.order.push_back(key);
+        while self.entries.len() > CACHE_LIMIT {
+            if let Some(expired) = self.order.pop_front() {
+                self.entries.remove(&expired);
+            }
+        }
+        identity
+    }
 }
 
 pub(super) fn inspect(executable_path: &str) -> SigningIdentity {

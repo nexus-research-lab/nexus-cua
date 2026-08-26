@@ -6,7 +6,7 @@ mod provenance;
 mod semantic;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use core_graphics::access::ScreenCaptureAccess;
@@ -19,6 +19,9 @@ use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
     DriverErrorKind, DriverObservation, DriverVerification, DriverWindow,
 };
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_core_graphics::CGPreflightPostEventAccess;
 
 use capture::{CaptureActor, NativeWindow};
 use input::{InputAction, InputActor};
@@ -33,6 +36,7 @@ pub struct MacosDriver {
     semantic: SemanticActor,
     input: InputActor,
     provenance_workers: Arc<Semaphore>,
+    provenance_cache: Arc<Mutex<provenance::Cache>>,
 }
 
 const PROVENANCE_WORKERS: usize = 2;
@@ -40,17 +44,49 @@ const PROVENANCE_WORKERS: usize = 2;
 impl MacosDriver {
     /// Creates a driver without prompting for operating-system permissions.
     pub fn new() -> Result<Self, DriverError> {
+        initialize_appkit()?;
         Ok(Self {
             capture: CaptureActor::spawn(),
             semantic: SemanticActor::spawn(),
             input: InputActor::spawn()?,
             provenance_workers: Arc::new(Semaphore::new(PROVENANCE_WORKERS)),
+            provenance_cache: Arc::new(Mutex::new(provenance::Cache::default())),
         })
     }
 
     async fn windows(&self) -> Result<Vec<NativeWindow>, DriverError> {
+        if !ScreenCaptureAccess.preflight() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS screen-recording permission is required for trusted-host discovery",
+            )
+            .retryable("grant_screen_recording_permission"));
+        }
         self.capture.list_windows().await
     }
+
+    async fn current_window(&self, key: &str) -> Result<NativeWindow, DriverError> {
+        if !ScreenCaptureAccess.preflight() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS screen-recording permission is required for target validation",
+            )
+            .retryable("grant_screen_recording_permission"));
+        }
+        self.capture.resolve_window(key.to_owned()).await
+    }
+}
+
+fn initialize_appkit() -> Result<(), DriverError> {
+    let main_thread = MainThreadMarker::new().ok_or_else(|| {
+        DriverError::new(
+            DriverErrorKind::Platform,
+            "macOS driver must be created on the process main thread",
+        )
+    })?;
+    let application = NSApplication::sharedApplication(main_thread);
+    application.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
+    Ok(())
 }
 
 #[async_trait]
@@ -94,7 +130,7 @@ impl DesktopDriver for MacosDriver {
             } else {
                 PermissionState::Denied
             },
-            input_control: if accessibility {
+            input_control: if CGPreflightPostEventAccess() {
                 PermissionState::Granted
             } else {
                 PermissionState::Denied
@@ -113,15 +149,22 @@ impl DesktopDriver for MacosDriver {
                 )
                 .retryable("retry_with_backoff")
             })?;
+        let provenance_cache = Arc::clone(&self.provenance_cache);
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            let mut cache = provenance_cache.lock().map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::Platform,
+                    "macOS provenance cache is unavailable",
+                )
+            })?;
             let mut applications = HashMap::new();
             for window in windows {
                 applications
                     .entry(window.application_key.clone())
-                    .or_insert_with(|| discovered_application(&window));
+                    .or_insert_with(|| discovered_application(&window, &mut cache));
             }
-            applications.into_values().collect()
+            Ok(applications.into_values().collect())
         })
         .await
         .map_err(|_| {
@@ -129,7 +172,7 @@ impl DesktopDriver for MacosDriver {
                 DriverErrorKind::Platform,
                 "macOS provenance worker stopped unexpectedly",
             )
-        })
+        })?
     }
 
     async fn list_windows(
@@ -151,10 +194,27 @@ impl DesktopDriver for MacosDriver {
         include_screenshot: bool,
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
-        let before = current_window(&self.windows().await?, &window.key)?;
+        if include_screenshot && !ScreenCaptureAccess.preflight() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS screen-recording permission is required",
+            )
+            .retryable("grant_screen_recording_permission"));
+        }
+        let before = self.current_window(&window.key).await?;
+        if include_screenshot && !before.visible {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "minimized macOS target cannot provide a current exact-window frame",
+            )
+            .retryable("restore_window_then_observe"));
+        }
         let capture = async {
             if include_screenshot {
-                self.capture.capture(window.key.clone()).await.map(Some)
+                self.capture
+                    .capture(window.key.clone(), before.screen_bounds)
+                    .await
+                    .map(Some)
             } else {
                 Ok(None)
             }
@@ -177,7 +237,7 @@ impl DesktopDriver for MacosDriver {
         let (captured, semantics) = tokio::join!(capture, semantics);
         let captured = captured?;
         let semantics = semantics?;
-        let after = current_window(&self.windows().await?, &window.key)?;
+        let after = self.current_window(&window.key).await?;
         if before.screen_bounds != after.screen_bounds {
             return Err(DriverError::new(
                 DriverErrorKind::StaleObservation,
@@ -222,9 +282,12 @@ impl DesktopDriver for MacosDriver {
         window: &DriverWindow,
         fingerprint_value: &str,
     ) -> Result<bool, DriverError> {
-        let current = current_window(&self.windows().await?, &window.key)?;
+        let current = self.current_window(&window.key).await?;
         if fingerprint_value.contains(":visual:") {
-            let (image, captured_bounds) = self.capture.capture(window.key.clone()).await?;
+            let (image, captured_bounds) = self
+                .capture
+                .capture(window.key.clone(), current.screen_bounds)
+                .await?;
             if captured_bounds != current.screen_bounds {
                 return Ok(false);
             }
@@ -257,9 +320,20 @@ impl DesktopDriver for MacosDriver {
             return Err(DriverError::new(
                 DriverErrorKind::ForegroundRequired,
                 "action requires foreground input",
-            ));
+            )
+            .mutation_not_dispatched());
         }
-        let current = current_window(&self.windows().await?, &window.key)?;
+        if foreground && !CGPreflightPostEventAccess() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS event-synthesis permission is required",
+            )
+            .mutation_not_dispatched());
+        }
+        let current = self
+            .current_window(&window.key)
+            .await
+            .map_err(DriverError::mutation_not_dispatched)?;
         self.dispatch_action(&current, action).await
     }
 
@@ -268,7 +342,7 @@ impl DesktopDriver for MacosDriver {
         window: &DriverWindow,
         predicate: &StatePredicate,
     ) -> Result<DriverVerification, DriverError> {
-        let current = current_window(&self.windows().await?, &window.key)?;
+        let current = self.current_window(&window.key).await?;
         let (matched, evidence) = match predicate {
             StatePredicate::WindowTitleContains { text } => (
                 current.title.contains(text),
@@ -309,9 +383,6 @@ impl MacosDriver {
     ) -> Result<DriverActionOutput, DriverError> {
         let delivery_mode = match action {
             DriverAction::FocusWindow => {
-                self.input
-                    .perform(current.pid, InputAction::Activate)
-                    .await?;
                 self.semantic
                     .raise_window(current.pid, current.screen_bounds, current.title.clone())
                     .await?;
@@ -353,7 +424,8 @@ impl MacosDriver {
                 return Err(DriverError::new(
                     DriverErrorKind::Unsupported,
                     "action is not a semantic operation",
-                ));
+                )
+                .mutation_not_dispatched());
             }
         };
         self.semantic.perform(element_key, action).await
@@ -404,19 +476,18 @@ impl MacosDriver {
                 return Err(DriverError::new(
                     DriverErrorKind::Unsupported,
                     "action is not a foreground input operation",
-                ));
+                )
+                .mutation_not_dispatched());
             }
         };
         self.input.perform(pid, action).await
     }
 
     async fn focus_for_input(&self, window: &NativeWindow) -> Result<(), DriverError> {
-        self.input
-            .perform(window.pid, InputAction::Activate)
-            .await?;
         self.semantic
             .raise_window(window.pid, window.screen_bounds, window.title.clone())
             .await
+            .map_err(DriverError::mutation_not_dispatched)
     }
 }
 
@@ -441,12 +512,15 @@ fn driver_application(window: &NativeWindow) -> DriverApplication {
     }
 }
 
-fn discovered_application(window: &NativeWindow) -> DriverApplication {
+fn discovered_application(
+    window: &NativeWindow,
+    cache: &mut provenance::Cache,
+) -> DriverApplication {
     let mut application = driver_application(window);
     let signing = window
         .executable_path
         .as_deref()
-        .map(provenance::inspect)
+        .map(|path| cache.inspect(&window.application_key, path))
         .unwrap_or_default();
     application.provenance = ApplicationProvenance::Macos {
         bundle_id: window.bundle_id.clone(),
@@ -468,18 +542,4 @@ fn driver_window(window: NativeWindow) -> DriverWindow {
         visible: window.visible,
         foreground: window.foreground,
     }
-}
-
-fn current_window(windows: &[NativeWindow], key: &str) -> Result<NativeWindow, DriverError> {
-    windows
-        .iter()
-        .find(|window| window.key == key)
-        .cloned()
-        .ok_or_else(|| {
-            DriverError::new(
-                DriverErrorKind::TargetUnavailable,
-                "target window generation is unavailable",
-            )
-            .retryable("list_windows")
-        })
 }

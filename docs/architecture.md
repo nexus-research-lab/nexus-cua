@@ -25,6 +25,8 @@ cli ------> transport ------> runtime ------> protocol
 - `transport` exposes authenticated local IPC and never listens on TCP.
 - `cli` is the sidecar process entrypoint, diagnostic client, and composition
   root. It is not the Nexus agent-facing `nexus computer` command.
+- `sdk/go` and `sdk/python` are typed trusted-host clients above the private
+  transport. They do not own policy, sidecar installation, or agent behavior.
 
 ## Integration layering
 
@@ -150,7 +152,10 @@ Normative budgets and overload behavior are defined in
 The current implementation uses public APIs:
 
 - macOS: ScreenCaptureKit is the primary capture route, AXUIElement provides
-  semantic observation/actions, and CGEvent provides foreground input.
+  semantic observation/actions, and CGEvent provides foreground input. After
+  active-application confirmation, keyboard events are routed to the bound
+  process so a concurrent focus change cannot leak typed content to another
+  application; pointer events retain global foreground semantics.
 - Windows: Windows.Graphics.Capture is the primary capture route, UI Automation
   provides cached semantic observation/actions, and SendInput provides
   foreground input.

@@ -1,11 +1,12 @@
 //! Runtime-owned transient screenshot storage.
 
 use std::collections::{HashMap, VecDeque};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use fs2::FileExt;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -23,6 +24,7 @@ pub(crate) struct ArtifactStore {
     max_image_pixels: u64,
     max_artifacts_per_session: usize,
     artifacts: Mutex<HashMap<SessionId, VecDeque<PathBuf>>>,
+    lease: Option<File>,
 }
 
 impl ArtifactStore {
@@ -45,16 +47,13 @@ impl ArtifactStore {
         #[cfg(unix)]
         fs::set_permissions(requested, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
         let base = requested.canonicalize().map_err(io_error)?;
-        let generation = base.join(format!("runtime_{}", Uuid::new_v4().simple()));
-        fs::create_dir(&generation).map_err(io_error)?;
-        #[cfg(unix)]
-        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
-        let root = generation.canonicalize().map_err(io_error)?;
+        let (root, lease) = prepare_generation(&base)?;
         Ok(Self {
             root,
             max_image_pixels,
             max_artifacts_per_session,
             artifacts: Mutex::new(HashMap::new()),
+            lease: Some(lease),
         })
     }
 
@@ -164,8 +163,57 @@ impl ArtifactStore {
 
 impl Drop for ArtifactStore {
     fn drop(&mut self) {
+        if let Some(lease) = self.lease.take() {
+            let _ = FileExt::unlock(&lease);
+            drop(lease);
+        }
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+fn prepare_generation(base: &Path) -> Result<(PathBuf, File), CuaError> {
+    let cleanup_lock = open_lock(&base.join(".cleanup.lock"))?;
+    FileExt::lock_exclusive(&cleanup_lock).map_err(io_error)?;
+    reap_stale_generations(base)?;
+
+    let generation = base.join(format!("runtime_{}", Uuid::new_v4().simple()));
+    fs::create_dir(&generation).map_err(io_error)?;
+    #[cfg(unix)]
+    fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
+    let root = generation.canonicalize().map_err(io_error)?;
+    let lease = open_lock(&root.join(".lease"))?;
+    FileExt::lock_exclusive(&lease).map_err(io_error)?;
+    let _ = FileExt::unlock(&cleanup_lock);
+    Ok((root, lease))
+}
+
+fn reap_stale_generations(base: &Path) -> Result<(), CuaError> {
+    for entry in fs::read_dir(base).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let file_type = entry.file_type().map_err(io_error)?;
+        let name = entry.file_name();
+        if !file_type.is_dir() || !name.to_string_lossy().starts_with("runtime_") {
+            continue;
+        }
+        let lease_path = entry.path().join(".lease");
+        let Ok(lease) = OpenOptions::new().read(true).write(true).open(lease_path) else {
+            continue;
+        };
+        if FileExt::try_lock_exclusive(&lease).is_ok() {
+            let _ = FileExt::unlock(&lease);
+            drop(lease);
+            fs::remove_dir_all(entry.path()).map_err(io_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn open_lock(path: &Path) -> Result<File, CuaError> {
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path).map_err(io_error)
 }
 
 fn io_error(_error: std::io::Error) -> CuaError {
@@ -179,4 +227,59 @@ fn io_error(_error: std::io::Error) -> CuaError {
 
 fn invalid_image(message: &str) -> CuaError {
     public_error(ErrorCode::DriverFailure, message, false, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "nexus_cua_artifacts_{name}_{}",
+            Uuid::new_v4().simple()
+        ))
+    }
+
+    #[test]
+    fn startup_reaps_an_unlocked_generation() {
+        let root = test_root("stale");
+        let stale = root.join("runtime_stale");
+        fs::create_dir_all(&stale).unwrap();
+        drop(open_lock(&stale.join(".lease")).unwrap());
+
+        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        assert!(!stale.exists());
+        let current = store.root.clone();
+        drop(store);
+        assert!(!current.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_preserves_a_locked_generation() {
+        let root = test_root("live");
+        let live = root.join("runtime_live");
+        fs::create_dir_all(&live).unwrap();
+        let lease = open_lock(&live.join(".lease")).unwrap();
+        FileExt::lock_exclusive(&lease).unwrap();
+
+        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        assert!(live.exists());
+        drop(store);
+        FileExt::unlock(&lease).unwrap();
+        drop(lease);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_does_not_assume_legacy_directories_are_stale() {
+        let root = test_root("legacy");
+        let legacy = root.join("runtime_legacy_without_lease");
+        fs::create_dir_all(&legacy).unwrap();
+
+        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        assert!(legacy.exists());
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

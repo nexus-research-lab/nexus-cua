@@ -1,0 +1,68 @@
+{
+  "runner_id": "nexus-cua-macos-m4-max-01",
+  "status": "active",
+  "platform": "macos",
+  "architecture": "aarch64",
+  "cpu": {
+    "model": "Apple M4 Max",
+    "physical_cores": 14,
+    "logical_cores": 14
+  },
+  "memory_bytes": 38654705664,
+  "gpu": {
+    "model": "Apple M4 Max",
+    "cores": 32
+  },
+  "display_topology": {
+    "coordinate_space": "AppKit logical points",
+    "displays": [
+      {
+        "name": "Built-in Retina Display",
+        "bounds": [0, 0, 1512, 982],
+        "backing_scale_factor": 2.0,
+        "refresh_hz": 120,
+        "primary": true
+      },
+      {
+        "name": "Mi Monitor",
+        "bounds": [-1080, 339, 1080, 1920],
+        "backing_scale_factor": 1.0,
+        "refresh_hz": 60,
+        "rotation_degrees": 90,
+        "primary": false
+      },
+      {
+        "name": "BenQ RD280UG",
+        "bounds": [0, 982, 1920, 1280],
+        "backing_scale_factor": 2.0,
+        "refresh_hz": 120,
+        "primary": false
+      }
+    ]
+  },
+  "power_mode": {
+    "source": "AC Power",
+    "mode": "automatic",
+    "pmset_powermode": 0
+  },
+  "os_build": {
+    "product": "macOS",
+    "version": "26.6.2",
+    "build": "25G83",
+    "kernel": "Darwin 25.6.0"
+  },
+  "toolchain": {
+    "rustc": "1.88.0 (6b00bc388 2025-06-23)",
+    "cargo": "1.88.0 (873a06493 2025-05-10)",
+    "swift": "6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)",
+    "apple_clang": "21.0.0 (clang-2100.1.1.101)",
+    "macos_sdk": "26.5",
+    "command_line_tools": "26.6.0.0.1781586589"
+  },
+  "signing_identity": {
+    "common_name": "Nexus CUA Hardware Test Signing",
+    "certificate_sha1": "DB5C871245B34A424D097D5F19F74B4070C4621C",
+    "identifier": "io.nexus.cua.hardware-sidecar",
+    "publication_authority": false
+  }
+}

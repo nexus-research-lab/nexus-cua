@@ -6,6 +6,7 @@ use nexus_cua_protocol::{
     ObservationTruncation, PermissionStatus, PointerButton, ScreenPoint, ScreenRect, SensitiveText,
     StatePredicate,
 };
+use zeroize::Zeroize;
 
 use crate::DriverError;
 
@@ -65,6 +66,43 @@ pub struct RgbaImage {
     pub height: u32,
     /// Row-major RGBA8 pixels.
     pub pixels: Vec<u8>,
+    recycler: Option<Box<dyn FnOnce(Vec<u8>) + Send + 'static>>,
+}
+
+impl RgbaImage {
+    /// Creates an image whose pixel storage is released normally.
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+            recycler: None,
+        }
+    }
+
+    /// Creates an image whose storage returns to a bounded driver-owned pool.
+    pub fn with_recycler(
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        recycler: impl FnOnce(Vec<u8>) + Send + 'static,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+            recycler: Some(Box::new(recycler)),
+        }
+    }
+}
+
+impl Drop for RgbaImage {
+    fn drop(&mut self) {
+        self.pixels.zeroize();
+        if let Some(recycler) = self.recycler.take() {
+            recycler(std::mem::take(&mut self.pixels));
+        }
+    }
 }
 
 /// Internal accessibility element with a driver-owned key.
@@ -261,4 +299,26 @@ pub trait DesktopDriver: Send + Sync {
         window: &DriverWindow,
         predicate: &StatePredicate,
     ) -> Result<DriverVerification, DriverError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::RgbaImage;
+
+    #[test]
+    fn recycled_pixels_are_zeroized_before_returning_to_the_driver() {
+        let returned = Arc::new(Mutex::new(None));
+        let output = Arc::clone(&returned);
+        drop(RgbaImage::with_recycler(
+            2,
+            2,
+            vec![0x5a; 16],
+            move |pixels| *output.lock().unwrap() = Some(pixels),
+        ));
+        let pixels = returned.lock().unwrap().take().unwrap();
+        assert!(pixels.is_empty());
+        assert!(pixels.capacity() >= 16);
+    }
 }

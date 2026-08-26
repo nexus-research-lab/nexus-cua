@@ -98,9 +98,9 @@ impl DesktopDriver for WindowsDriver {
 
     async fn permission_status(&self) -> Result<PermissionStatus, DriverError> {
         Ok(PermissionStatus {
-            screen_capture: PermissionState::Granted,
-            accessibility: PermissionState::Granted,
-            input_control: PermissionState::Granted,
+            screen_capture: PermissionState::NotApplicable,
+            accessibility: PermissionState::NotApplicable,
+            input_control: PermissionState::NotApplicable,
         })
     }
 
@@ -154,10 +154,17 @@ impl DesktopDriver for WindowsDriver {
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
         let before = current_window(&self.windows().await?, &window.key)?;
+        if include_screenshot && before.minimized {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "minimized Windows target cannot provide a current exact-window frame",
+            )
+            .retryable("restore_window_then_observe"));
+        }
         let capture = async {
             if include_screenshot {
                 self.capture
-                    .capture(before.hwnd, before.screen_bounds)
+                    .capture(&before.key, before.hwnd, before.screen_bounds)
                     .await
                     .map(Some)
             } else {
@@ -226,7 +233,7 @@ impl DesktopDriver for WindowsDriver {
         if fingerprint_value.contains(":visual:") {
             let (image, bounds) = self
                 .capture
-                .capture(current.hwnd, current.screen_bounds)
+                .capture(&current.key, current.hwnd, current.screen_bounds)
                 .await?;
             if bounds != current.screen_bounds {
                 return Ok(false);
@@ -260,10 +267,16 @@ impl DesktopDriver for WindowsDriver {
             return Err(DriverError::new(
                 DriverErrorKind::ForegroundRequired,
                 "action requires foreground input",
-            ));
+            )
+            .mutation_not_dispatched());
         }
-        let current = current_window(&self.windows().await?, &window.key)?;
-        self.dispatch_action(&current, action).await
+        let current = current_window(&self.windows().await?, &window.key)
+            .map_err(DriverError::mutation_not_dispatched)?;
+        let result = self.dispatch_action(&current, action).await;
+        if result.is_ok() {
+            self.capture.invalidate_after_mutation();
+        }
+        result
     }
 
     async fn verify_state(
@@ -346,7 +359,8 @@ impl WindowsDriver {
                 return Err(DriverError::new(
                     DriverErrorKind::Unsupported,
                     "action is not a semantic operation",
-                ));
+                )
+                .mutation_not_dispatched());
             }
         };
         self.semantic.perform(element_key, action).await
@@ -397,7 +411,8 @@ impl WindowsDriver {
                 return Err(DriverError::new(
                     DriverErrorKind::Unsupported,
                     "action is not a foreground input operation",
-                ));
+                )
+                .mutation_not_dispatched());
             }
         };
         self.input.perform(hwnd, action).await

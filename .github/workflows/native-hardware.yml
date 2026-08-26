@@ -1,0 +1,383 @@
+name: Native hardware evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      soak_profile:
+        description: Resource evidence duration
+        required: true
+        default: diagnostic
+        type: choice
+        options:
+          - diagnostic
+          - idle
+          - engineering
+          - release
+      enforce_release_gates:
+        description: Fail unless benchmark and soak evidence are release-eligible
+        required: true
+        default: false
+        type: boolean
+      run_macos_permission_revocation:
+        description: Reset the stable test identity's TCC grants after the macOS matrix
+        required: true
+        default: false
+        type: boolean
+      run_windows_protected_target:
+        description: Launch the Windows fixture elevated and wait for operator UAC approval
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-hardware-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  macos:
+    name: Maintained macOS Apple Silicon
+    runs-on: [self-hosted, nexus-cua, macos, apple-silicon]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify maintained runner assignment
+        env:
+          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          RUN_PERMISSION_REVOCATION: ${{ inputs.run_macos_permission_revocation }}
+        run: |
+          test -f benchmarks/runners/macos-apple-silicon.json
+          if [[ "$ENFORCE_RELEASE_GATES" == "true" && "$RUN_PERMISSION_REVOCATION" != "true" ]]; then
+            echo "release enforcement requires run_macos_permission_revocation=true" >&2
+            exit 1
+          fi
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+      - name: Build release runtime, harness, and fixture
+        run: |
+          cargo +1.88.0 build --workspace --release --locked
+          cargo +1.88.0 build --release --locked --manifest-path tools/native-harness/Cargo.toml
+          fixtures/native/macos/build.sh release
+      - name: Bind stable macOS permission identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="${NEXUS_CUA_TEST_SIGNING_IDENTITY:-}"
+          if [[ -z "$identity" || "$identity" == "-" ]]; then
+            echo "NEXUS_CUA_TEST_SIGNING_IDENTITY must name a real operator-provisioned signing identity" >&2
+            exit 1
+          fi
+          sidecar="$PWD/target/release/nexus-cua"
+          evidence="$PWD/target/native-evidence/macos"
+          mkdir -p "$evidence"
+          codesign --force --sign "$identity" --identifier io.nexus.cua.hardware-sidecar --timestamp=none "$sidecar"
+          codesign --verify --strict --verbose=4 "$sidecar"
+          codesign -dr - "$sidecar" 2>"$evidence/sidecar-designated-requirement.txt"
+          codesign -dvvv "$sidecar" 2>"$evidence/sidecar-signing-details.txt"
+      - name: Run native evidence matrix
+        shell: bash
+        env:
+          SOAK_PROFILE: ${{ inputs.soak_profile }}
+          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          RUN_PERMISSION_REVOCATION: ${{ inputs.run_macos_permission_revocation }}
+        run: |
+          set -euo pipefail
+          evidence="$PWD/target/native-evidence/macos"
+          state="$evidence/restart.json"
+          endpoint="$PWD/target/native-evidence/service.sock"
+          token="$PWD/target/native-evidence/token"
+          artifacts="$PWD/target/native-evidence/artifacts"
+          fixture="$PWD/target/native-fixtures/macos/Nexus CUA Native Fixture.app"
+          harness="$PWD/tools/native-harness/target/release/nexus-cua-native-harness"
+          sidecar="$PWD/target/release/nexus-cua"
+          manifest="$PWD/benchmarks/runners/macos-apple-silicon.json"
+          mkdir -p "$evidence" "$artifacts"
+          umask 077
+          openssl rand -hex 32 > "$token"
+          service_pid=""
+          fixture_launcher_pid=""
+          stop_fixture() {
+            pkill -TERM -f '/Nexus CUA Native Fixture.app/Contents/MacOS/nexus-cua-native-fixture$' 2>/dev/null || true
+            if [[ -n "$fixture_launcher_pid" ]]; then
+              wait "$fixture_launcher_pid" 2>/dev/null || true
+              fixture_launcher_pid=""
+            fi
+          }
+          cleanup() {
+            if [[ -n "$service_pid" ]]; then kill -INT "$service_pid" 2>/dev/null || true; fi
+            stop_fixture
+          }
+          trap cleanup EXIT
+          wait_for_fixture() {
+            for _ in {1..50}; do
+              if pgrep -f '/Nexus CUA Native Fixture.app/Contents/MacOS/nexus-cua-native-fixture$' >/dev/null; then
+                break
+              fi
+              sleep 0.1
+            done
+            if ! pgrep -f '/Nexus CUA Native Fixture.app/Contents/MacOS/nexus-cua-native-fixture$' >/dev/null; then
+              echo "fixture process did not start before the readiness deadline" >&2
+              return 1
+            fi
+            open -a "$fixture"
+            for _ in {1..40}; do
+              if "$harness" --endpoint "$endpoint" --token-file "$token" inspect --no-screenshot >"$evidence/fixture-readiness.log" 2>&1; then
+                return
+              fi
+              sleep 0.25
+            done
+            cat "$evidence/fixture-readiness.log" >&2
+            echo "fixture did not expose its exact accessibility window before the readiness deadline" >&2
+            return 1
+          }
+          start_fixture() {
+            profile="${1:-default}"
+            stop_fixture
+            open_args=(-n -W -o "$evidence/fixture.out.log" --stderr "$evidence/fixture.err.log")
+            if [[ "$profile" == "default" ]]; then
+              open "${open_args[@]}" "$fixture" &
+            else
+              open "${open_args[@]}" --env "NEXUS_CUA_FIXTURE_PROFILE=$profile" "$fixture" &
+            fi
+            fixture_launcher_pid=$!
+            wait_for_fixture
+          }
+          start_fault_fixture() {
+            stop_fixture
+            open -n -W -o "$evidence/fixture-fault.out.log" --stderr "$evidence/fixture-fault.err.log" \
+              --env NEXUS_CUA_FIXTURE_FAULT_ARM_MS=3000 \
+              --env NEXUS_CUA_FIXTURE_FAULT_HANG_MS=5000 "$fixture" &
+            fixture_launcher_pid=$!
+            wait_for_fixture
+          }
+          start_service() {
+            "$sidecar" serve --log-level info --endpoint "$endpoint" --token-file "$token" --artifact-root "$artifacts" >"$evidence/service.log" 2>&1 &
+            service_pid=$!
+            for _ in {1..100}; do [[ -S "$endpoint" ]] && return; sleep 0.1; done
+            echo "sidecar endpoint did not become ready" >&2
+            return 1
+          }
+          start_service
+          start_fixture default
+          validation_args=()
+          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then validation_args+=(--enforce); fi
+          "$harness" --endpoint "$endpoint" --token-file "$token" validate "${validation_args[@]}" | tee "$evidence/validation.json"
+          start_fault_fixture
+          "$harness" --endpoint "$endpoint" --token-file "$token" fault preflight --arm-delay-ms 3000 | tee "$evidence/fault-preflight.json"
+          start_fault_fixture
+          "$harness" --endpoint "$endpoint" --token-file "$token" fault dispatch | tee "$evidence/fault-dispatch.json"
+          start_fixture default
+          "$harness" --endpoint "$endpoint" --token-file "$token" permission protected | tee "$evidence/permission-protected.json"
+          start_fixture 1080p
+          benchmark_args=(--runner-manifest "$manifest")
+          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then
+            benchmark_args+=(--enforce)
+          fi
+          "$harness" --endpoint "$endpoint" --token-file "$token" benchmark "${benchmark_args[@]}" | tee "$evidence/benchmark.json"
+          if [[ "$ENFORCE_RELEASE_GATES" == "true" || "$SOAK_PROFILE" == "release" ]]; then
+            "$harness" --endpoint "$endpoint" --token-file "$token" soak --profile idle --service-pid "$service_pid" --runner-manifest "$manifest" --enforce | tee "$evidence/soak-idle.json"
+          fi
+          active_profile="$SOAK_PROFILE"
+          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then active_profile=release; fi
+          if [[ "$active_profile" != "idle" ]]; then
+            start_fixture 4k
+            soak_args=(--profile "$active_profile" --service-pid "$service_pid" --runner-manifest "$manifest")
+            if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then soak_args+=(--enforce); fi
+            "$harness" --endpoint "$endpoint" --token-file "$token" soak "${soak_args[@]}" | tee "$evidence/soak-active.json"
+          elif [[ "$ENFORCE_RELEASE_GATES" != "true" ]]; then
+            "$harness" --endpoint "$endpoint" --token-file "$token" soak --profile idle --service-pid "$service_pid" --runner-manifest "$manifest" | tee "$evidence/soak-idle.json"
+          fi
+          start_fixture default
+          "$harness" --endpoint "$endpoint" --token-file "$token" restart-prepare --state-file "$state" | tee "$evidence/restart-prepare.json"
+          kill -INT "$service_pid"
+          wait "$service_pid"
+          service_pid=""
+          start_service
+          "$harness" --endpoint "$endpoint" --token-file "$token" restart-verify --state-file "$state" | tee "$evidence/restart-verify.json"
+          if [[ "$RUN_PERMISSION_REVOCATION" == "true" ]]; then
+            revoke_permission() {
+              permission="$1"
+              service="$2"
+              permission_state="$evidence/revoke-$permission.json"
+              "$harness" --endpoint "$endpoint" --token-file "$token" permission revoke-prepare "$permission" --state-file "$permission_state" | tee "$evidence/revoke-$permission-prepare.json"
+              /usr/bin/tccutil reset "$service" io.nexus.cua.hardware-sidecar
+              "$harness" --endpoint "$endpoint" --token-file "$token" permission revoke-verify "$permission" --state-file "$permission_state" | tee "$evidence/revoke-$permission-verify.json"
+              "$harness" --endpoint "$endpoint" --token-file "$token" permission denied "$permission" | tee "$evidence/denied-$permission.json"
+            }
+            revoke_permission input-control PostEvent
+            revoke_permission accessibility Accessibility
+            revoke_permission screen-capture ScreenCapture
+          fi
+          source_revision="$(git rev-parse HEAD)"
+          runtime_sha256="$(shasum -a 256 "$sidecar" | awk '{print $1}')"
+          evidence_args=(evidence --evidence-dir "$evidence" --runner-manifest "$manifest" --source-revision "$source_revision" --runtime-sha256 "$runtime_sha256")
+          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then evidence_args+=(--enforce); fi
+          "$harness" "${evidence_args[@]}" | tee "$evidence/summary.json"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: nexus-cua-macos-native-evidence
+          path: target/native-evidence/macos
+          if-no-files-found: error
+
+  windows:
+    name: Maintained Windows 11 x64
+    runs-on: [self-hosted, nexus-cua, windows, x64]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify maintained runner assignment
+        shell: pwsh
+        env:
+          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          RUN_PROTECTED_TARGET: ${{ inputs.run_windows_protected_target }}
+        run: |
+          if (-not (Test-Path benchmarks/runners/windows-x64.json)) { throw "runner manifest is not assigned" }
+          if ($env:ENFORCE_RELEASE_GATES -eq "true" -and $env:RUN_PROTECTED_TARGET -ne "true") {
+            throw "release enforcement requires run_windows_protected_target=true"
+          }
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+      - name: Build release runtime, harness, and fixture
+        shell: pwsh
+        run: |
+          cargo +1.88.0 build --workspace --release --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo +1.88.0 build --release --locked --manifest-path tools/native-harness/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          fixtures/native/windows/build.ps1 Release win-x64
+      - name: Run native evidence matrix
+        shell: pwsh
+        env:
+          SOAK_PROFILE: ${{ inputs.soak_profile }}
+          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          RUN_PROTECTED_TARGET: ${{ inputs.run_windows_protected_target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidence = Join-Path $PWD "target/native-evidence/windows"
+          $state = Join-Path $evidence "restart.json"
+          $token = Join-Path $evidence "token"
+          $artifacts = Join-Path $evidence "artifacts"
+          $harness = Join-Path $PWD "tools/native-harness/target/release/nexus-cua-native-harness.exe"
+          $sidecar = Join-Path $PWD "target/release/nexus-cua.exe"
+          $fixture = Join-Path $PWD "target/native-fixtures/windows/nexus-cua-native-fixture.exe"
+          $manifest = Join-Path $PWD "benchmarks/runners/windows-x64.json"
+          New-Item -ItemType Directory -Force $evidence, $artifacts | Out-Null
+          ([guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")) | Set-Content -NoNewline $token
+          $endpoint = "\\.\pipe\nexus-cua-hardware-$PID"
+          $serviceOut = Join-Path $evidence "service.out.log"
+          $serviceErr = Join-Path $evidence "service.err.log"
+          $service = $null
+          $fixtureProcess = $null
+          function Start-ServiceProcess {
+            $script:service = Start-Process $sidecar -PassThru -ArgumentList @(
+              "serve", "--log-level", "info", "--endpoint", $endpoint,
+              "--token-file", $token, "--artifact-root", $artifacts
+            ) -RedirectStandardOutput $serviceOut -RedirectStandardError $serviceErr
+            Start-Sleep -Seconds 2
+            if ($script:service.HasExited) { throw "sidecar exited during startup" }
+          }
+          function Start-FixtureProcess([string]$Profile = "default") {
+            if ($script:fixtureProcess -and -not $script:fixtureProcess.HasExited) {
+              $script:fixtureProcess.Kill()
+              $script:fixtureProcess.WaitForExit()
+            }
+            if ($Profile -eq "default") {
+              Remove-Item Env:NEXUS_CUA_FIXTURE_PROFILE -ErrorAction SilentlyContinue
+            } else {
+              $env:NEXUS_CUA_FIXTURE_PROFILE = $Profile
+            }
+            $script:fixtureProcess = Start-Process $fixture -PassThru
+            Remove-Item Env:NEXUS_CUA_FIXTURE_PROFILE -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+          }
+          try {
+            Start-ServiceProcess
+            Start-FixtureProcess default
+            $validationArgs = @("--endpoint", $endpoint, "--token-file", $token, "validate")
+            if ($env:ENFORCE_RELEASE_GATES -eq "true") { $validationArgs += "--enforce" }
+            & $harness @validationArgs | Tee-Object (Join-Path $evidence "validation.json")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($fixtureProcess -and -not $fixtureProcess.HasExited) {
+              $fixtureProcess.Kill()
+              $fixtureProcess.WaitForExit()
+              $fixtureProcess = $null
+            }
+            & (Join-Path $PWD "tools/native-harness/run-windows-fault.ps1") -RepositoryRoot $PWD -EvidenceRoot $evidence -BuildProfile release -FlatOutput
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            foreach ($permission in @("screen-capture", "accessibility", "input-control")) {
+              & $harness --endpoint $endpoint --token-file $token permission denied $permission | Tee-Object (Join-Path $evidence "denied-$permission.json")
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            Start-FixtureProcess 1080p
+            $benchmarkArgs = @("--endpoint", $endpoint, "--token-file", $token, "benchmark", "--runner-manifest", $manifest)
+            if ($env:ENFORCE_RELEASE_GATES -eq "true") { $benchmarkArgs += "--enforce" }
+            & $harness @benchmarkArgs | Tee-Object (Join-Path $evidence "benchmark.json")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($env:ENFORCE_RELEASE_GATES -eq "true" -or $env:SOAK_PROFILE -eq "release") {
+              & $harness --endpoint $endpoint --token-file $token soak --profile idle --service-pid $service.Id --runner-manifest $manifest --enforce | Tee-Object (Join-Path $evidence "soak-idle.json")
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            $activeProfile = if ($env:ENFORCE_RELEASE_GATES -eq "true") { "release" } else { $env:SOAK_PROFILE }
+            if ($activeProfile -ne "idle") {
+              Start-FixtureProcess 4k
+              $soakArgs = @("--endpoint", $endpoint, "--token-file", $token, "soak", "--profile", $activeProfile, "--service-pid", $service.Id, "--runner-manifest", $manifest)
+              if ($env:ENFORCE_RELEASE_GATES -eq "true") { $soakArgs += "--enforce" }
+              & $harness @soakArgs | Tee-Object (Join-Path $evidence "soak-active.json")
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } elseif ($env:ENFORCE_RELEASE_GATES -ne "true") {
+              & $harness --endpoint $endpoint --token-file $token soak --profile idle --service-pid $service.Id --runner-manifest $manifest | Tee-Object (Join-Path $evidence "soak-idle.json")
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            Start-FixtureProcess default
+            & $harness --endpoint $endpoint --token-file $token restart-prepare --state-file $state | Tee-Object (Join-Path $evidence "restart-prepare.json")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $service.Kill()
+            $service.WaitForExit()
+            Start-ServiceProcess
+            & $harness --endpoint $endpoint --token-file $token restart-verify --state-file $state | Tee-Object (Join-Path $evidence "restart-verify.json")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($fixtureProcess -and -not $fixtureProcess.HasExited) {
+              $fixtureProcess.Kill()
+              $fixtureProcess.WaitForExit()
+              $fixtureProcess = $null
+            }
+            if ($env:RUN_PROTECTED_TARGET -eq "true") {
+              $env:NEXUS_CUA_FIXTURE_AUTO_EXIT_MS = "120000"
+              try {
+                $protectedFixture = Start-Process $fixture -Verb RunAs -PassThru
+                Start-Sleep -Seconds 2
+                & $harness --endpoint $endpoint --token-file $token permission protected | Tee-Object (Join-Path $evidence "permission-protected.json")
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              }
+              finally {
+                Remove-Item Env:NEXUS_CUA_FIXTURE_AUTO_EXIT_MS -ErrorAction SilentlyContinue
+                if ($protectedFixture -and -not $protectedFixture.HasExited) {
+                  try { $protectedFixture.Kill() } catch { Write-Warning "elevated fixture will exit on its bounded timer" }
+                }
+              }
+            }
+            $sourceRevision = (git rev-parse HEAD).Trim()
+            $runtimeSha256 = (Get-FileHash -Algorithm SHA256 $sidecar).Hash.ToLowerInvariant()
+            $evidenceArgs = @("evidence", "--evidence-dir", $evidence, "--runner-manifest", $manifest, "--source-revision", $sourceRevision, "--runtime-sha256", $runtimeSha256)
+            if ($env:ENFORCE_RELEASE_GATES -eq "true") { $evidenceArgs += "--enforce" }
+            & $harness @evidenceArgs | Tee-Object (Join-Path $evidence "summary.json")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            if ($fixtureProcess -and -not $fixtureProcess.HasExited) { $fixtureProcess.Kill() }
+            if ($service -and -not $service.HasExited) { $service.Kill() }
+          }
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: nexus-cua-windows-native-evidence
+          path: target/native-evidence/windows
+          if-no-files-found: error

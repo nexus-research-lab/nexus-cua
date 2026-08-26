@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nexus_cua_protocol::{
-    AuthorizationToken, Command, CuaError, ErrorCode, PROTOCOL_VERSION, RequestEnvelope, RequestId,
-    ResponseEnvelope, ResponseOutcome,
+    AuthorizationToken, Command, CuaError, ErrorCode, MutationStatus, PROTOCOL_VERSION,
+    RequestEnvelope, RequestId, ResponseEnvelope, ResponseOutcome,
 };
 use nexus_cua_runtime::Runtime;
 use sha2::{Digest, Sha256};
@@ -94,75 +94,84 @@ impl Dispatcher {
         operation: &'static str,
     ) -> ResponseEnvelope {
         let request_id = request.request_id.clone();
-        if request.protocol_version != PROTOCOL_VERSION {
-            return failure(
-                request_id,
-                public_error(
-                    ErrorCode::ProtocolMismatch,
-                    "unsupported protocol version",
-                    false,
-                    Some("negotiate_protocol_version"),
-                ),
-            );
-        }
-        if !self.token.accepts(&request.authorization) {
-            warn!(
-                request_id = request_id_log_value(&request_id),
-                "rejected unauthorized local request"
-            );
-            return failure(
-                request_id,
-                public_error(
-                    ErrorCode::Unauthorized,
-                    "invalid local transport authorization",
-                    false,
-                    None,
-                ),
-            );
-        }
-        if !valid_request_id(&request_id) {
-            return failure(
-                request_id,
-                public_error(
-                    ErrorCode::InvalidRequest,
-                    "request_id is empty, too long, or not normalized",
-                    false,
-                    Some("use_fresh_request_id"),
-                ),
-            );
-        }
-        if request.timeout_ms == 0 || request.timeout_ms > self.max_request_timeout_ms {
-            return failure(
-                request_id,
-                public_error(
-                    ErrorCode::InvalidRequest,
-                    "timeout_ms is outside the configured bound",
-                    false,
-                    Some("use_bounded_timeout"),
-                ),
-            );
-        }
-
-        let Some(digest) = command_digest(&request.command) else {
-            return failure(
-                request_id,
-                public_error(
-                    ErrorCode::Internal,
-                    "failed to compute request identity",
-                    false,
-                    None,
-                ),
-            );
+        let is_mutation = matches!(&request.command, Command::PerformAction(_));
+        let digest = match self.validate_request(&request) {
+            Ok(digest) => digest,
+            Err(error) => {
+                return pre_admission_failure(request_id, error, is_mutation);
+            }
         };
         let deadline =
             Instant::now() + std::time::Duration::from_millis(u64::from(request.timeout_ms));
-        match self.begin_request(&request_id, digest).await {
+        let begin = self.begin_request(&request_id, digest).await;
+        self.resolve_request(begin, request, digest, operation, deadline, is_mutation)
+            .await
+    }
+
+    fn validate_request(&self, request: &RequestEnvelope) -> Result<[u8; 32], CuaError> {
+        if request.protocol_version != PROTOCOL_VERSION {
+            return Err(public_error(
+                ErrorCode::ProtocolMismatch,
+                "unsupported protocol version",
+                false,
+                Some("negotiate_protocol_version"),
+            ));
+        }
+        if !self.token.accepts(&request.authorization) {
+            warn!(
+                request_id = request_id_log_value(&request.request_id),
+                "rejected unauthorized local request"
+            );
+            return Err(public_error(
+                ErrorCode::Unauthorized,
+                "invalid local transport authorization",
+                false,
+                None,
+            ));
+        }
+        if !valid_request_id(&request.request_id) {
+            return Err(public_error(
+                ErrorCode::InvalidRequest,
+                "request_id is empty, too long, or not normalized",
+                false,
+                Some("use_fresh_request_id"),
+            ));
+        }
+        if request.timeout_ms == 0 || request.timeout_ms > self.max_request_timeout_ms {
+            return Err(public_error(
+                ErrorCode::InvalidRequest,
+                "timeout_ms is outside the configured bound",
+                false,
+                Some("use_bounded_timeout"),
+            ));
+        }
+        command_digest(&request.command).ok_or_else(|| {
+            public_error(
+                ErrorCode::Internal,
+                "failed to compute request identity",
+                false,
+                None,
+            )
+        })
+    }
+
+    async fn resolve_request(
+        &self,
+        begin: BeginRequest,
+        request: RequestEnvelope,
+        digest: [u8; 32],
+        operation: &'static str,
+        deadline: Instant,
+        is_mutation: bool,
+    ) -> ResponseEnvelope {
+        let request_id = request.request_id;
+        match begin {
             BeginRequest::Execute(receiver) => {
                 debug!(request_id = %request_id, operation, "dispatching local request");
                 self.spawn_execution(request_id.clone(), digest, operation, request.command);
                 wait_for_response(receiver, deadline)
                     .await
-                    .unwrap_or_else(|| deadline_exceeded(request_id))
+                    .unwrap_or_else(|| deadline_exceeded(request_id, is_mutation))
             }
             BeginRequest::Replay(response) => {
                 debug!(request_id = %request_id, operation, "replayed idempotent response");
@@ -170,8 +179,8 @@ impl Dispatcher {
             }
             BeginRequest::Wait(receiver) => wait_for_response(receiver, deadline)
                 .await
-                .unwrap_or_else(|| deadline_exceeded(request_id)),
-            BeginRequest::Busy => failure(
+                .unwrap_or_else(|| deadline_exceeded(request_id, is_mutation)),
+            BeginRequest::Busy => pre_admission_failure(
                 request_id,
                 public_error(
                     ErrorCode::Busy,
@@ -179,8 +188,9 @@ impl Dispatcher {
                     true,
                     Some("retry_after_capacity"),
                 ),
+                is_mutation,
             ),
-            BeginRequest::Conflict => failure(
+            BeginRequest::Conflict => pre_admission_failure(
                 request_id,
                 public_error(
                     ErrorCode::InvalidRequest,
@@ -188,6 +198,7 @@ impl Dispatcher {
                     false,
                     Some("use_fresh_request_id"),
                 ),
+                is_mutation,
             ),
         }
     }
@@ -328,7 +339,12 @@ async fn wait_for_response(
     }
 }
 
-fn deadline_exceeded(request_id: RequestId) -> ResponseEnvelope {
+fn deadline_exceeded(request_id: RequestId, is_mutation: bool) -> ResponseEnvelope {
+    let mutation_status = if is_mutation {
+        MutationStatus::Indeterminate
+    } else {
+        MutationStatus::NotApplicable
+    };
     failure(
         request_id,
         public_error(
@@ -336,7 +352,8 @@ fn deadline_exceeded(request_id: RequestId) -> ResponseEnvelope {
             "request deadline elapsed; retry with the same request_id to reconcile",
             true,
             Some("retry_same_request_id"),
-        ),
+        )
+        .with_mutation_status(mutation_status),
     )
 }
 
@@ -402,6 +419,7 @@ fn error_code_name(code: ErrorCode) -> &'static str {
         ErrorCode::Unsupported => "unsupported",
         ErrorCode::ForegroundRequired => "foreground_required",
         ErrorCode::TargetUnavailable => "target_unavailable",
+        ErrorCode::TargetUnresponsive => "target_unresponsive",
         ErrorCode::DriverFailure => "driver_failure",
         ErrorCode::Internal => "internal",
     }
@@ -422,7 +440,21 @@ pub(crate) fn public_error(
         message: message.to_owned(),
         retryable,
         recovery_action: recovery_action.map(str::to_owned),
+        mutation_status: MutationStatus::NotApplicable,
     }
+}
+
+fn pre_admission_failure(
+    request_id: RequestId,
+    error: CuaError,
+    is_mutation: bool,
+) -> ResponseEnvelope {
+    let status = if is_mutation {
+        MutationStatus::NotDispatched
+    } else {
+        MutationStatus::NotApplicable
+    };
+    failure(request_id, error.with_mutation_status(status))
 }
 
 pub(crate) fn failure(request_id: RequestId, error: CuaError) -> ResponseEnvelope {
@@ -560,6 +592,26 @@ mod tests {
         ));
         assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
         cleanup(root);
+    }
+
+    #[test]
+    fn admitted_mutation_deadline_is_indeterminate() {
+        let response = deadline_exceeded(RequestId::new("mutation-timeout"), true);
+        assert_error(
+            &response,
+            ErrorCode::DeadlineExceeded,
+            MutationStatus::Indeterminate,
+        );
+    }
+
+    #[test]
+    fn rejected_mutation_is_not_dispatched() {
+        let response = pre_admission_failure(
+            RequestId::new("mutation-rejected"),
+            public_error(ErrorCode::Busy, "busy", true, Some("retry_after_capacity")),
+            true,
+        );
+        assert_error(&response, ErrorCode::Busy, MutationStatus::NotDispatched);
     }
 
     #[tokio::test]
@@ -739,6 +791,18 @@ mod tests {
             panic!("expected error response");
         };
         assert_eq!(error.code, expected);
+    }
+
+    fn assert_error(
+        response: &ResponseEnvelope,
+        expected_code: ErrorCode,
+        expected_mutation_status: MutationStatus,
+    ) {
+        let ResponseOutcome::Error { error } = &response.outcome else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, expected_code);
+        assert_eq!(error.mutation_status, expected_mutation_status);
     }
 
     fn unexpected_call() -> DriverError {

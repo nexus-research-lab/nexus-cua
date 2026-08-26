@@ -104,11 +104,7 @@ mod tests {
     };
 
     fn image(value: u8) -> RgbaImage {
-        RgbaImage {
-            width: 32,
-            height: 32,
-            pixels: [value, value, value, u8::MAX].repeat(32 * 32),
-        }
+        RgbaImage::new(32, 32, [value, value, value, u8::MAX].repeat(32 * 32))
     }
 
     #[test]

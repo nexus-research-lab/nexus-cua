@@ -84,8 +84,9 @@ impl InputActor {
                 TrySendError::Full(_) => {
                     DriverError::new(DriverErrorKind::Busy, "Windows input actor is busy")
                         .retryable("retry_with_backoff")
+                        .mutation_not_dispatched()
                 }
-                TrySendError::Disconnected(_) => actor_stopped(()),
+                TrySendError::Disconnected(_) => actor_stopped(()).mutation_not_dispatched(),
             })?;
         receiver.await.map_err(actor_stopped)?
     }
@@ -323,10 +324,16 @@ fn send(inputs: &[INPUT]) -> Result<(), DriverError> {
     };
     if sent == u32::try_from(inputs.len()).unwrap_or(u32::MAX) {
         Ok(())
+    } else if sent == 0 {
+        Err(DriverError::new(
+            DriverErrorKind::PermissionRequired,
+            "Windows UIPI or the secure desktop blocked foreground input",
+        )
+        .retryable("run_host_at_matching_integrity"))
     } else {
         Err(DriverError::new(
             DriverErrorKind::Platform,
-            "SendInput was rejected or blocked by Windows UIPI",
+            "Windows accepted only part of the foreground input sequence",
         ))
     }
 }

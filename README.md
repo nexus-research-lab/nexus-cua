@@ -41,6 +41,8 @@ above this repository's versioned host contract.
 | `nexus-cua-platform` | Native macOS and Windows capture, accessibility, discovery, and input actors |
 | `nexus-cua-transport` | Authenticated local-only Unix socket or Windows named-pipe transport with bounded idempotency |
 | `nexus-cua` | Service composition, diagnostics, schema export, and controlled maintainer requests |
+| `sdk/go` | Official typed trusted-host client with same-request mutation reconciliation |
+| `sdk/python` | Official typed Python 3.10–3.13 client and standalone quickstart |
 
 The public protocol currently supports:
 
@@ -51,6 +53,8 @@ The public protocol currently supports:
 - semantic focus, invoke, set-value, toggle, select, and expand operations;
 - foreground focus, click, pointer movement, text, key, scroll, and drag input;
 - fresh-observation authorization and deterministic post-action verification;
+- explicit `not_dispatched` versus `indeterminate` mutation failures, bounded
+  native-provider timeouts, and same-request reconciliation;
 - read-only or explicitly bounded sessions with finite lifetimes; and
 - authenticated local IPC plus an embeddable Rust runtime.
 
@@ -132,12 +136,11 @@ repository. Its lifecycle and security contract are specified in
 
 ### Independent hosts
 
-Rust products can embed `nexus-cua-runtime` and `nexus-cua-platform`. Other
-languages can supervise the `nexus-cua` sidecar and export the local wire schema
-today with `nexus-cua schema`. Committed schemas and compatibility fixtures are
-available under `schemas/nexus.cua.v1/` and
-`fixtures/compatibility/nexus.cua.v1/`; maintained reference clients remain
-later distribution work.
+Rust products can embed `nexus-cua-runtime` and `nexus-cua-platform`. Go and
+Python products can supervise the `nexus-cua` sidecar through the official
+typed clients under `sdk/`. Committed schemas and the shared conformance corpus
+remain available under `schemas/nexus.cua.v1/` and
+`fixtures/compatibility/nexus.cua.v1/`.
 
 Agent frameworks have three integration patterns above that host contract:
 
@@ -156,12 +159,19 @@ The diagnostic `nexus-cua request` command is intentionally not an agent API.
 Production hosts should expose a narrower operation schema derived from their
 own authenticated user and approval context.
 
+Start with the [15-minute Python quickstart](docs/quickstart-python.md), the
+[Go embedding example](sdk/go/examples/observe/main.go), and the
+[sidecar supervision contract](docs/sidecar-supervision.md). These source
+workflows are implemented and tested, but no official alpha package has been
+published yet.
+
 ## Development quick start
 
 Prerequisites are Rust 1.88 or newer and a macOS or Windows development host.
-The supported OS and hardware matrix has not been declared yet. Native
-observation and actions additionally require the operating-system permissions
-reported by `doctor`.
+The preview validation matrix is declared, but the repository has not yet
+earned a supported release claim on that matrix. Native observation and
+actions additionally require the operating-system permissions reported by
+`doctor`.
 
 ```bash
 make check
@@ -195,7 +205,16 @@ Useful targets:
 | `make schema` | Closed request and response JSON schemas |
 | `make schema-check` | Fail when committed schemas drift from Rust wire types |
 | `make docs` | Validate local Markdown paths and heading anchors |
+| `make sdk-check` | Format, vet/compile, and test the Go and Python clients |
+| `make python-package-verify` | Build the Python wheel from local package metadata |
 | `make release` | Optimized workspace build |
+| `make native-fixture-macos` | Build the deterministic AppKit fixture |
+| `make native-validate` | Run the strict real-driver fixture path |
+| `make native-benchmark` | Measure release-runner p50/p95 distributions |
+| `make native-soak` | Run diagnostic, idle, engineering, or release resource evidence |
+| `make native-fault` | Prove provider timeout and mutation-disposition behavior |
+| `make native-permission` | Run denied, revoked, or protected-target probes |
+| `make native-evidence` | Aggregate raw hardware reports and enforce the release gate |
 
 The code MSRV remains Rust 1.88. `make package-verify` requires Cargo 1.90 or
 newer because it packages the unpublished, interdependent workspace crates as
@@ -207,10 +226,20 @@ The codebase is in active `0.1.x` development. The protocol, authorization
 runtime, local IPC, and native macOS/Windows implementations are functional,
 but the project is not release-complete.
 
-Release blockers include maintained-hardware GUI fixtures, benchmark baselines,
-an eight-hour resource soak, signed-package smoke tests on both operating
-systems, and the downstream Nexus adapter. Aspirational work is not advertised
-as an active driver capability.
+The deterministic GUI fixtures, controlled provider faults, permission and
+protected-target probes, benchmark/soak harnesses, and machine-readable evidence
+gate now exist. Real Windows 11 ARM64 engineering validation covers the complete
+read/mutation path and both provider-timeout boundaries, but it is not the
+required Windows x64 release runner. Official Go and Python client engineering,
+shared compatibility-fixture tests, local sidecar smoke, and package builds are
+implemented; their full native acceptance remains dependent on the M2 hardware
+gate. Release blockers include an accepted full
+macOS fixture path under a stable permission identity, maintained Apple Silicon
+and Windows x64 runner assignments, accepted topology/permission/
+protected-target reports, benchmark baselines and eight-hour resource soaks,
+and signed-package smoke tests on both operating systems. The Nexus adapter is
+a downstream integration deliverable rather than a runtime release gate.
+Aspirational work is not advertised as an active driver capability.
 
 The prioritized delivery sequence is documented in the
 [roadmap](docs/roadmap.md). Current machine-tested evidence, including the

@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use nexus_cua_protocol::{Command, CommandResult, CuaError, PROTOCOL_VERSION, RequestEnvelope};
+use nexus_cua_protocol::{
+    Command, CommandResult, CuaError, MutationStatus, PROTOCOL_VERSION, RequestEnvelope,
+};
 
 const REQUESTS: &str = include_str!("../../../fixtures/compatibility/nexus.cua.v1/requests.json");
 const RESULTS: &str = include_str!("../../../fixtures/compatibility/nexus.cua.v1/results.json");
@@ -86,6 +88,7 @@ fn error_fixtures_cover_every_stable_code() {
         "stale_discovery",
         "stale_observation",
         "target_unavailable",
+        "target_unresponsive",
         "unauthorized",
         "unsupported",
     ]
@@ -93,6 +96,13 @@ fn error_fixtures_cover_every_stable_code() {
     .map(|code| format!("\"{code}\""))
     .collect::<BTreeSet<_>>();
     assert_eq!(actual, expected);
+    for status in [
+        MutationStatus::NotApplicable,
+        MutationStatus::NotDispatched,
+        MutationStatus::Indeterminate,
+    ] {
+        assert!(errors.iter().any(|error| error.mutation_status == status));
+    }
 }
 
 #[test]

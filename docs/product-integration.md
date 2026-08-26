@@ -32,7 +32,8 @@ target, freshness, retry, and sensitive-data rules as Nexus.
 | Layer or consumer | Recommended surface | Purpose |
 | --- | --- | --- |
 | Rust desktop product | `nexus-cua-runtime` plus `nexus-cua-platform` | In-process composition with the same protocol semantics |
-| Go, TypeScript, Python, or another trusted host | Versioned `nexus-cua` sidecar plus official client or private IPC | Process isolation and language-neutral host integration |
+| Go or Python trusted host | Versioned `nexus-cua` sidecar plus official client | Typed process-isolated host integration |
+| TypeScript or another trusted host | Versioned `nexus-cua` sidecar plus private IPC | Language-neutral integration against the committed schema |
 | Maintainer or support engineer | `nexus-cua doctor`, `schema`, and `request` | Diagnostics and contract inspection |
 | Shell-capable agent | Host-owned scoped CLI plus Skill | Agent instructions and a narrow command surface above host policy |
 | MCP-capable agent runtime | Separately packaged MCP adapter | Tool-protocol compatibility above host policy |
@@ -185,7 +186,8 @@ restarts the pinned binary but never replays an old mutation under a fresh
 request identity.
 
 This repository is responsible for independently versioned runtime packages and
-official host clients as they reach their release milestones. Nexus owns its
+official Go and Python host clients; release support begins only after their
+gates pass. Nexus owns its
 product-facing package resolver and installer, preference, settings UI, sidecar
 supervisor, command broker, command receipts, Skill, and audit projection.
 Those layers must remain outside `nexus-cua` so other products can consume the
@@ -228,9 +230,11 @@ endpoint, token, sessions, or artifact generation with another version.
 Non-Rust consumers use the committed schemas in `schemas/nexus.cua.v1/` or
 export the same contract from their pinned local binary with `nexus-cua
 schema`. Compatibility fixtures in `fixtures/compatibility/nexus.cua.v1/`
-provide the cross-language conformance corpus; maintained reference clients are
-a later milestone. Frames are four-byte big-endian lengths followed by closed
-JSON and are bounded before payload allocation. Implementations must preserve
+provide the cross-language conformance corpus. The Go and Python reference
+clients consume that corpus; their source and local package builds are present,
+while release support remains gated by native M2 evidence and M4 packaging.
+Frames are four-byte big-endian lengths followed by closed JSON and are bounded
+before payload allocation. Implementations must preserve
 unknown-variant failure, opaque references, redacted sensitive values, stable
 error codes, and same-request retry identity rather than translating the
 protocol into a looser map.

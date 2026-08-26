@@ -3,5 +3,10 @@
 /coverage.out
 /dist/
 /target/
+fixtures/native/macos/.build/
+sdk/python/build/
+sdk/python/dist/
+sdk/python/src/*.egg-info/
+**/__pycache__/
 *.log
 .DS_Store
