@@ -219,7 +219,7 @@ jobs:
           evidence_args=(evidence --evidence-dir "$evidence" --runner-manifest "$manifest" --source-revision "$source_revision" --runtime-sha256 "$runtime_sha256")
           if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then evidence_args+=(--enforce); fi
           "$harness" "${evidence_args[@]}" | tee "$evidence/summary.json"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: nexus-cua-macos-native-evidence
@@ -375,7 +375,7 @@ jobs:
             if ($fixtureProcess -and -not $fixtureProcess.HasExited) { $fixtureProcess.Kill() }
             if ($service -and -not $service.HasExited) { $service.Kill() }
           }
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: nexus-cua-windows-native-evidence
