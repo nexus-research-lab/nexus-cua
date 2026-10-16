@@ -12,9 +12,11 @@ crosses the runtime boundary.
 ## Dependency direction
 
 ```text
-cli ------> transport ------> runtime ------> protocol
- |                              ^                ^
- +----------> platform ---------+----------------+
+host ----> transport ------> runtime ------> protocol
+ |            ^                 ^                ^
+ |            +---- cli <--- provider            |
+ +------------------------------+----------------+
+                 platform ------+----------------+
 ```
 
 - `protocol` contains the stable public wire types and no operating-system code.
@@ -23,8 +25,17 @@ cli ------> transport ------> runtime ------> protocol
   rejection, and transient artifacts.
 - `platform` implements the internal driver trait with public OS APIs.
 - `transport` exposes authenticated local IPC and never listens on TCP.
-- `cli` is the sidecar process entrypoint, diagnostic client, and composition
-  root. It is not the Nexus agent-facing `nexus computer` command.
+- `host` optionally registers multiple independent desktop runtimes, issues
+  bounded lease/epoch capabilities, and frames authenticated remote requests
+  over a caller-supplied secure byte stream. It does not provision machines or
+  open a listener.
+- `provider` authenticates owner-private host registrations with Keychain/DPAPI
+  protected secrets, revalidates the exact launching host executable, and
+  issues short challenge-bound adapter grants without exposing credentials to
+  model input or configuration.
+- `cli` is the `nexuscua` sidecar/MCP process entrypoint, diagnostic client,
+  and composition root. The Cargo package remains `nexus-cua`; the old binary
+  name is not registered as a compatibility alias.
 - `sdk/go` and `sdk/python` are typed trusted-host clients above the private
   transport. They do not own policy, sidecar installation, or agent behavior.
 
@@ -56,12 +67,27 @@ actors with the thread and run-loop model required by that platform.
                          +-> capture actor ----> one-shot / warm capture session
 runtime -> platform bus -+-> semantic actor ---> AX / UI Automation cache
                          +-> input actor ------> serialized foreground input
+                         +-> clipboard actor --> guarded native pasteboard
 ```
 
 The platform bus is bounded. Backpressure and idempotent caller deadlines are
 part of the contract rather than accidental properties of the Tokio scheduler.
 Once admitted, a command runs to a recorded result even if its caller stops
 waiting; retries reconcile through the same request identity.
+
+Independent desktops are composed above this per-runtime actor model:
+
+```text
+trusted scheduler -> bounded worker registry -> exact worker lease + epoch
+                                          |
+remote secure stream -> authenticated gateway -> worker dispatcher -> runtime
+                                          |
+                                 checksum-bound artifact ticket
+```
+
+The gateway never returns worker-local screenshot paths. Placement has no
+pending queue, and a worker reconnect produces a fresh epoch that invalidates
+old leases before dispatch.
 
 ## Trust boundaries
 
@@ -83,21 +109,48 @@ Connection tasks and distinct in-flight requests have independent hard bounds.
 Capacity is rejected before a new side effect reaches the runtime.
 
 Platform identifiers stay behind the runtime. Public callers receive opaque
-discovery, application, window, element, observation, session, and artifact
-references. Discovery is available only to an authenticated policy host and
-does not create authority. Session creation revalidates its short-lived refs
-against the same runtime epoch, process generation, and executable identity.
-Every mutation is authorized against its session and requires a fresh
+launch-discovery, running-discovery, application, window, display, element,
+observation, clipboard, session, and artifact references. Discovery is
+available only to an authenticated policy host and does not create authority.
+Installed launch refs
+are short-lived, single-use, and bound to freshly revalidated native
+registration provenance; they never contain caller-authored paths or arguments.
+Successful launch returns a separate running-generation discovery ref. Session
+creation revalidates that ref against the same runtime epoch, process
+generation, and executable identity. Every session mutation requires a fresh
 observation of the exact target window.
+
+A host may separately authorize physical-display overview. Display enumeration
+and capture use their own opaque refs and produce transient read-only
+observations. They do not populate the window observation table, cannot guard
+an action, and never substitute for failed exact-window capture. This keeps the
+real user desktop visible to a CUA without requiring a VM while preserving the
+exact-window mutation boundary.
+
+Clipboard authority is independent from application, display, and input
+authority. A read returns bounded plain text plus a session-scoped opaque guard;
+the runtime retains only the native change marker. A write consumes that guard
+before dispatch and fails stale when another actor changed the clipboard. Native
+pasteboard handles remain on a dedicated bounded platform actor, and clipboard
+text never enters runtime logs or durable state.
 
 ## Data lifetime
 
-Screenshots and accessibility text are untrusted, transient observations.
+Screenshots, accessibility text, and clipboard text are untrusted, transient
+observations.
 Screenshot files are created in one random runtime generation below a
 host-selected private root, use restrictive permissions, and are deleted when
 their session expires or closes. Graceful runtime teardown deletes its entire
 generation without deleting the host root. Neither screenshot bytes nor typed
 text may enter logs.
+
+Adapters that return image bytes instead of artifact references use the
+runtime's checked single-use artifact take: identity, path ownership, length,
+and digest are revalidated before the exact file is removed. The MCP adapter
+uses this route, redacts the private path from structured content, and keeps
+only a bounded 32 MiB aggregate in-memory image cache for normalized actions
+and zoom. A killed stdio child therefore cannot strand already-returned MCP
+screenshots on disk.
 
 One nearest-deadline task expires discovery refs and sessions without polling.
 It owns no native object, stores no frame, and wakes only when a deadline or
@@ -147,6 +200,17 @@ scales themselves.
 Normative budgets and overload behavior are defined in
 `docs/specs/runtime-contract-v1.md`.
 
+Multiple Agent sessions may share one bounded runtime, but one OS desktop still
+has one serialized foreground-input lane. The runtime uses fail-fast admission
+for that lane, so contention returns `busy/not_dispatched` without consuming the
+observation or building an unbounded worker queue. A separate host grant can
+restore the exact prior foreground process generation after temporary input;
+the native actor skips restoration if foreground changed after dispatch.
+Remote desktop workers and optional
+VM-backed checkpoint/reset/clone live above the local-only sidecar boundary;
+their truthful capability split is defined in
+[`execution environments`](specs/execution-environments.md).
+
 ## v0.1 implementation boundary
 
 The current implementation uses public APIs:
@@ -155,13 +219,19 @@ The current implementation uses public APIs:
   semantic observation/actions, and CGEvent provides foreground input. After
   active-application confirmation, keyboard events are routed to the bound
   process so a concurrent focus change cannot leak typed content to another
-  application; pointer events retain global foreground semantics.
+  application; pointer events retain global foreground semantics. Installed
+  bundles are enumerated within standard application roots and launched through
+  `NSWorkspace` only after bundle/file/signing revalidation.
 - Windows: Windows.Graphics.Capture is the primary capture route, UI Automation
   provides cached semantic observation/actions, and SendInput provides
-  foreground input.
+  foreground input. A dedicated COM actor resolves only bounded local Start
+  Menu executable shortcuts without Shell tracking/repair and launches a
+  freshly revalidated registration through `ShellExecuteExW`.
 
-Semantic accessibility actions may work without foreground activation. Pixel
-input is foreground-only. Private macOS background APIs are explicitly outside
+Semantic accessibility actions may work without foreground activation. The
+negotiated best-effort background pixel-click route targets an exact process or
+window and never activates or silently escalates; other pixel/keyboard input
+remains foreground-only. Private macOS background APIs are explicitly outside
 the baseline and must never become a hidden fallback. Legacy capture APIs may
 exist only as separately reported compatibility drivers; they cannot be a
 silent fallback that changes privacy, fidelity, or performance semantics.

@@ -13,6 +13,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     private var selection: String?
     private var expanded = false
     private var dropped = false
+    private var pressed = false
     private var geometryChanged = false
     private let captureProfile = ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_PROFILE"]
     private let faultHangDuration: TimeInterval = {
@@ -30,6 +31,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     private var window: NSWindow?
     private var occluderWindow: NSWindow?
     private var textField: NSTextField!
+    private var rangeSlider: NSSlider!
     private var stateLabel: NSTextField!
     private var advancedLabel: NSTextField!
     private var tableView: NSTableView!
@@ -194,6 +196,22 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         secureField.setAccessibilityLabel("Fixture Secure Text")
         let secureRow = row([secureCaption, secureField])
 
+        let rangeCaption = label("Fixture Range")
+        rangeCaption.setContentHuggingPriority(.required, for: .horizontal)
+        rangeSlider = NSSlider(
+            value: 50,
+            minValue: 0,
+            maxValue: 100,
+            target: self,
+            action: #selector(changeRange(_:))
+        )
+        rangeSlider.numberOfTickMarks = 11
+        rangeSlider.allowsTickMarkValuesOnly = false
+        rangeSlider.identifier = NSUserInterfaceItemIdentifier("fixture.range")
+        rangeSlider.setAccessibilityLabel("Fixture Range")
+        rangeSlider.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        let rangeRow = row([rangeCaption, rangeSlider])
+
         let toggle = NSButton(
             checkboxWithTitle: "Enable Feature",
             target: self,
@@ -269,9 +287,17 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         }
         dragToken.translatesAutoresizingMaskIntoConstraints = false
         dragToken.setAccessibilityLabel("Drag Token")
+        let pressTarget = LongPressTargetView { [weak self] duration in
+            guard let self, duration >= 0.25 else { return }
+            self.pressed = true
+            self.updateState()
+        }
+        pressTarget.translatesAutoresizingMaskIntoConstraints = false
+        pressTarget.setAccessibilityLabel("Long Press Target")
         let dragRow = NSView()
         dragRow.translatesAutoresizingMaskIntoConstraints = false
         dragRow.addSubview(dragToken)
+        dragRow.addSubview(pressTarget)
         dragRow.addSubview(dropZone)
         NSLayoutConstraint.activate([
             dragRow.heightAnchor.constraint(equalToConstant: 56),
@@ -279,6 +305,10 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             dragToken.centerYAnchor.constraint(equalTo: dragRow.centerYAnchor),
             dragToken.widthAnchor.constraint(equalToConstant: 120),
             dragToken.heightAnchor.constraint(equalToConstant: 40),
+            pressTarget.centerXAnchor.constraint(equalTo: dragRow.centerXAnchor),
+            pressTarget.centerYAnchor.constraint(equalTo: dragRow.centerYAnchor),
+            pressTarget.widthAnchor.constraint(equalToConstant: 80),
+            pressTarget.heightAnchor.constraint(equalToConstant: 40),
             dropZone.trailingAnchor.constraint(equalTo: dragRow.trailingAnchor),
             dropZone.centerYAnchor.constraint(equalTo: dragRow.centerYAnchor),
             dropZone.widthAnchor.constraint(equalToConstant: 180),
@@ -298,6 +328,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             faultRow,
             textRow,
             secureRow,
+            rangeRow,
             toggle,
             listCaption,
             listScroll,
@@ -318,7 +349,6 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             right.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
             right.topAnchor.constraint(equalTo: root.topAnchor, constant: 88),
             right.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -24),
-            right.widthAnchor.constraint(equalToConstant: captureProfile == "4k" ? 1348 : 388),
         ])
         return root
     }
@@ -365,7 +395,8 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         let selected = selection ?? "none"
         let state = "Fixture State: generation=\(generation); counter=\(counter); "
             + "text=\(textField.stringValue); checked=\(checked); selection=\(selected); "
-            + "expanded=\(expanded); dropped=\(dropped)"
+            + "level=\(Int(rangeSlider.doubleValue)); expanded=\(expanded); "
+            + "pressed=\(pressed); dropped=\(dropped)"
         stateLabel.stringValue = state
         stateLabel.setAccessibilityLabel(state)
     }
@@ -377,6 +408,10 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
 
     @objc private func toggleFeature(_ sender: NSButton) {
         checked = sender.state == .on
+        updateState()
+    }
+
+    @objc private func changeRange(_ sender: NSSlider) {
         updateState()
     }
 
@@ -510,6 +545,41 @@ private final class DragTokenView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let superview else { return }
         onDrop(superview.convert(event.locationInWindow, from: nil))
+    }
+}
+
+private final class LongPressTargetView: NSView {
+    private let onRelease: (TimeInterval) -> Void
+    private var pressedAt: TimeInterval?
+
+    init(onRelease: @escaping (TimeInterval) -> Void) {
+        self.onRelease = onRelease
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.systemOrange.cgColor
+        layer?.cornerRadius = 8
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        drawCentered("Hold", color: .white)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        pressedAt = ProcessInfo.processInfo.systemUptime
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let pressedAt else { return }
+        self.pressedAt = nil
+        onRelease(max(0, ProcessInfo.processInfo.systemUptime - pressedAt))
     }
 }
 

@@ -53,9 +53,9 @@ unsafe extern "C" {
 const CACHE_LIMIT: usize = 256;
 
 #[derive(Clone, Default)]
-pub(super) struct SigningIdentity {
-    pub(super) team_id: Option<String>,
-    pub(super) designated_requirement: Option<String>,
+pub(crate) struct SigningIdentity {
+    pub(crate) team_id: Option<String>,
+    pub(crate) designated_requirement: Option<String>,
 }
 
 #[derive(Default)]
@@ -86,7 +86,7 @@ impl Cache {
     }
 }
 
-pub(super) fn inspect(executable_path: &str) -> SigningIdentity {
+pub(crate) fn inspect(executable_path: &str) -> SigningIdentity {
     let Some(url) = CFURL::from_path(Path::new(executable_path), false) else {
         return SigningIdentity::default();
     };

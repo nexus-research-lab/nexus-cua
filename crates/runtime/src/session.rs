@@ -1,18 +1,19 @@
 //! Authorized session state and public-reference projection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use nexus_cua_protocol::{
-    AccessibilityElement, Action, AppRef, CapabilityManifest, CuaError, ElementRef, ErrorCode,
-    ObservationId, ScreenPoint, ScreenshotMapping, ScreenshotPoint, SessionId, WindowRef,
+    AccessibilityElement, Action, AppRef, CapabilityManifest, ClipboardRef, CuaError, DisplayRef,
+    ElementRef, ErrorCode, ObservationId, ScreenPoint, ScreenshotMapping, ScreenshotPoint,
+    SessionId, WindowRef,
 };
 use tokio::sync::Mutex;
 use tokio::time::Instant as TokioInstant;
 use uuid::Uuid;
 
 use crate::driver::{
-    DriverAction, DriverApplication, DriverElement, DriverObservation, DriverWindow,
+    DriverAction, DriverApplication, DriverDisplay, DriverElement, DriverObservation, DriverWindow,
 };
 use crate::error::public_error;
 
@@ -38,7 +39,10 @@ pub(crate) struct SessionState {
     pub(crate) application_refs: HashMap<String, AppRef>,
     pub(crate) windows: HashMap<WindowRef, DriverWindow>,
     pub(crate) window_refs: HashMap<String, WindowRef>,
+    pub(crate) displays: HashMap<DisplayRef, DriverDisplay>,
+    pub(crate) display_refs: HashMap<String, DisplayRef>,
     pub(crate) observations: HashMap<ObservationId, ObservationRecord>,
+    pub(crate) clipboard: Option<ClipboardRecord>,
 }
 
 impl SessionState {
@@ -68,9 +72,35 @@ impl SessionState {
         window_ref
     }
 
+    pub(crate) fn project_display(&mut self, display: &DriverDisplay) -> DisplayRef {
+        if let Some(existing) = self.display_refs.get(&display.key) {
+            self.displays.insert(existing.clone(), display.clone());
+            return existing.clone();
+        }
+        let display_ref = DisplayRef::new(format!("display_{}", Uuid::new_v4().simple()));
+        self.display_refs
+            .insert(display.key.clone(), display_ref.clone());
+        self.displays.insert(display_ref.clone(), display.clone());
+        display_ref
+    }
+
     pub(crate) fn invalidate_window_observations(&mut self, window_ref: &WindowRef) {
         for observation in self.observations.values_mut() {
             if &observation.window_ref == window_ref {
+                observation.status = ObservationStatus::Invalid;
+            }
+        }
+    }
+
+    pub(crate) fn invalidate_application_observations(&mut self, application: &DriverApplication) {
+        let affected_windows = self
+            .windows
+            .iter()
+            .filter(|(_, window)| window.application.matches_generation(application))
+            .map(|(window_ref, _)| window_ref.clone())
+            .collect::<HashSet<_>>();
+        for observation in self.observations.values_mut() {
+            if affected_windows.contains(&observation.window_ref) {
                 observation.status = ObservationStatus::Invalid;
             }
         }
@@ -91,6 +121,31 @@ impl SessionState {
             self.observations.remove(&id);
         }
     }
+
+    pub(crate) fn project_clipboard(&mut self, change_marker: String) -> ClipboardRef {
+        let clipboard_ref = ClipboardRef::new(format!("clipboard_{}", Uuid::new_v4().simple()));
+        self.clipboard = Some(ClipboardRecord {
+            id: clipboard_ref.clone(),
+            change_marker,
+        });
+        clipboard_ref
+    }
+
+    pub(crate) fn take_clipboard_marker(&mut self, clipboard_ref: &ClipboardRef) -> Option<String> {
+        if self
+            .clipboard
+            .as_ref()
+            .is_some_and(|record| &record.id == clipboard_ref)
+        {
+            return self.clipboard.take().map(|record| record.change_marker);
+        }
+        None
+    }
+}
+
+pub(crate) struct ClipboardRecord {
+    id: ClipboardRef,
+    change_marker: String,
 }
 
 pub(crate) struct ObservationRecord {
@@ -144,9 +199,13 @@ pub(crate) fn project_observation(
             role: element.role.clone(),
             name: element.name.clone(),
             value: element.value.clone(),
+            range_value: element.range_value,
             screen_bounds: element.screen_bounds,
             enabled: element.enabled,
             focused: element.focused,
+            selected: element.selected,
+            checked: element.checked,
+            expanded: element.expanded,
             actions: element.actions.clone(),
         });
     }
@@ -168,15 +227,21 @@ pub(crate) fn resolve_action(
     action: &Action,
     observation: &ObservationRecord,
 ) -> Result<DriverAction, CuaError> {
-    let element_key = |element_ref: &ElementRef| {
+    let element = |element_ref: &ElementRef| {
         observation
             .elements
             .get(element_ref)
-            .map(|element| element.key.clone())
             .ok_or_else(stale_observation)
     };
+    let element_key =
+        |element_ref: &ElementRef| element(element_ref).map(|element| element.key.clone());
     Ok(match action {
         Action::FocusWindow => DriverAction::FocusWindow,
+        Action::SetWindowBounds { bounds } => DriverAction::SetWindowBounds { bounds: *bounds },
+        Action::SetWindowMinimized { minimized } => DriverAction::SetWindowMinimized {
+            minimized: *minimized,
+        },
+        Action::TerminateApplication => DriverAction::TerminateApplication,
         Action::FocusElement { element_ref } => DriverAction::FocusElement {
             element_key: element_key(element_ref)?,
         },
@@ -187,15 +252,29 @@ pub(crate) fn resolve_action(
             point,
             button,
             count,
+            delivery,
         } => DriverAction::ClickPoint {
             point: resolve_screenshot_point(*point, observation)?,
             button: *button,
             count: *count,
+            delivery: *delivery,
+        },
+        Action::PressPoint {
+            point,
+            button,
+            duration_ms,
+        } => DriverAction::PressPoint {
+            point: resolve_screenshot_point(*point, observation)?,
+            button: *button,
+            duration_ms: *duration_ms,
         },
         Action::SetValue { element_ref, value } => DriverAction::SetValue {
             element_key: element_key(element_ref)?,
             value: value.clone(),
         },
+        Action::SetRangeValue { element_ref, value } => {
+            resolve_range_value(element_ref, *value, observation)?
+        }
         Action::ToggleElement { element_ref } => DriverAction::ToggleElement {
             element_key: element_key(element_ref)?,
         },
@@ -233,6 +312,37 @@ pub(crate) fn resolve_action(
             to: resolve_screenshot_point(*to, observation)?,
             duration_ms: *duration_ms,
         },
+    })
+}
+
+fn resolve_range_value(
+    element_ref: &ElementRef,
+    value: f64,
+    observation: &ObservationRecord,
+) -> Result<DriverAction, CuaError> {
+    let element = observation
+        .elements
+        .get(element_ref)
+        .ok_or_else(stale_observation)?;
+    let range = element.range_value.ok_or_else(|| {
+        public_error(
+            ErrorCode::InvalidRequest,
+            "element does not expose a numeric range value",
+            false,
+            Some("observe_window"),
+        )
+    })?;
+    if !element.enabled || range.read_only || value < range.minimum || value > range.maximum {
+        return Err(public_error(
+            ErrorCode::InvalidRequest,
+            "numeric range value is disabled, read-only, or outside the observed bounds",
+            false,
+            Some("fix_request"),
+        ));
+    }
+    Ok(DriverAction::SetRangeValue {
+        element_key: element.key.clone(),
+        value,
     })
 }
 

@@ -28,6 +28,12 @@ pub(super) enum InputAction {
         point: ScreenPoint,
         button: PointerButton,
         count: u8,
+        background: bool,
+    },
+    Press {
+        point: ScreenPoint,
+        button: PointerButton,
+        duration_ms: u32,
     },
     Move {
         point: ScreenPoint,
@@ -114,7 +120,19 @@ impl InputState {
                 point,
                 button,
                 count,
-            } => self.click(point, button, count),
+                background,
+            } => {
+                if background {
+                    self.click_background(pid, point, button, count)
+                } else {
+                    self.click(point, button, count)
+                }
+            }
+            InputAction::Press {
+                point,
+                button,
+                duration_ms,
+            } => self.press(point, button, duration_ms),
             InputAction::Move { point, duration_ms } => self.move_pointer(point, duration_ms),
             InputAction::TypeText(text) => self.type_text(pid, text.expose()),
             InputAction::PressKeys(keys) => self.press_keys(pid, &keys),
@@ -143,6 +161,44 @@ impl InputState {
             up.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
             up.post(CGEventTapLocation::HID);
         }
+        Ok(())
+    }
+
+    fn click_background(
+        &self,
+        pid: i32,
+        point: ScreenPoint,
+        button: PointerButton,
+        count: u8,
+    ) -> Result<(), DriverError> {
+        let (down_type, up_type, native_button) = mouse_types(button);
+        let point = cg_point(point);
+        for click in 1..=count {
+            let down = self.mouse_event(down_type, point, native_button)?;
+            down.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
+            let up = self.mouse_event(up_type, point, native_button)?;
+            up.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
+            down.post_to_pid(pid);
+            up.post_to_pid(pid);
+        }
+        Ok(())
+    }
+
+    fn press(
+        &self,
+        point: ScreenPoint,
+        button: PointerButton,
+        duration_ms: u32,
+    ) -> Result<(), DriverError> {
+        let (down_type, up_type, native_button) = mouse_types(button);
+        let point = cg_point(point);
+        // Construct both events before posting the down event so allocation
+        // failure cannot leave a synthetic button held.
+        let down = self.mouse_event(down_type, point, native_button)?;
+        let up = self.mouse_event(up_type, point, native_button)?;
+        down.post(CGEventTapLocation::HID);
+        thread::sleep(Duration::from_millis(u64::from(duration_ms)));
+        up.post(CGEventTapLocation::HID);
         Ok(())
     }
 

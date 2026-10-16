@@ -16,15 +16,23 @@ from .types import (
     AccessibilityMode,
     Action,
     ActionOutput,
+    ApplicationLaunchOutput,
     ApplicationSummary,
     CapabilityManifest,
+    ClipboardSnapshot,
+    ClipboardWriteOutput,
     CUAError,
     DiscoverApplicationsOutput,
+    DiscoverLaunchableApplicationsOutput,
     DiscoveredApplication,
+    DisplayObservation,
+    DisplaySummary,
     DriverCapabilities,
+    MutationReconciliation,
     MutationStatus,
     OpenSessionOutput,
     PermissionStatus,
+    SensitiveText,
     StatePredicate,
     VerificationOutput,
     WindowObservation,
@@ -121,10 +129,50 @@ class ActionRequest:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
+@dataclass
+class LaunchRequest:
+    request_id: str
+    _command: dict[str, Any] = field(repr=False)
+    _created_at: float = field(repr=False)
+    _last_timeout: float = field(default=0.0, repr=False)
+    _completed: bool = field(default=False, repr=False)
+    _invalidated: bool = field(default=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+@dataclass
+class ClipboardRequest:
+    request_id: str
+    _command: dict[str, Any] = field(repr=False)
+    _created_at: float = field(repr=False)
+    _last_timeout: float = field(default=0.0, repr=False)
+    _completed: bool = field(default=False, repr=False)
+    _invalidated: bool = field(default=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
 class MutationIndeterminateError(Exception):
     def __init__(self, request: ActionRequest, cause: BaseException) -> None:
         super().__init__(
             f"nexus-cua: mutation {request.request_id} is indeterminate: {cause}"
+        )
+        self.request = request
+        self.cause = cause
+
+
+class LaunchIndeterminateError(Exception):
+    def __init__(self, request: LaunchRequest, cause: BaseException) -> None:
+        super().__init__(
+            f"nexus-cua: launch {request.request_id} is indeterminate: {cause}"
+        )
+        self.request = request
+        self.cause = cause
+
+
+class ClipboardIndeterminateError(Exception):
+    def __init__(self, request: ClipboardRequest, cause: BaseException) -> None:
+        super().__init__(
+            f"nexus-cua: clipboard mutation {request.request_id} is indeterminate: {cause}"
         )
         self.request = request
         self.cause = cause
@@ -175,6 +223,42 @@ class Client:
             DiscoverApplicationsOutput.from_wire,
         )
 
+    def discover_launchable_applications(
+        self, timeout: float = 30.0
+    ) -> DiscoverLaunchableApplicationsOutput:
+        return self._request_result(
+            {"operation": "discover_launchable_applications"},
+            timeout,
+            "launchable_applications_discovered",
+            DiscoverLaunchableApplicationsOutput.from_wire,
+        )
+
+    def launch_application(
+        self,
+        launch_ref: str,
+        *,
+        allow_foreground_activation: bool,
+        timeout: float = 30.0,
+    ) -> tuple[ApplicationLaunchOutput, LaunchRequest]:
+        if not launch_ref.strip():
+            raise ValueError("launch reference is required")
+        command = {
+            "operation": "launch_application",
+            "input": {
+                "launch_ref": launch_ref,
+                "allow_foreground_activation": allow_foreground_activation,
+            },
+        }
+        request = LaunchRequest(self._request_id(), command, self._clock())
+        return self._wait_for_launch(request, timeout), request
+
+    def reconcile_launch(
+        self, request: LaunchRequest, timeout: float
+    ) -> ApplicationLaunchOutput:
+        if not isinstance(request, LaunchRequest):
+            raise TypeError("request must be a LaunchRequest")
+        return self._wait_for_launch(request, timeout)
+
     def open_session(
         self, manifest: CapabilityManifest, timeout: float = 30.0
     ) -> OpenSessionOutput:
@@ -217,6 +301,31 @@ class Client:
             lambda value: tuple(WindowSummary.from_wire(item) for item in _list(value)),
         )
 
+    def list_displays(
+        self, session_id: str, timeout: float = 30.0
+    ) -> tuple[DisplaySummary, ...]:
+        return self._request_result(
+            {"operation": "list_displays", "input": {"session_id": session_id}},
+            timeout,
+            "displays",
+            lambda value: tuple(
+                DisplaySummary.from_wire(item) for item in _list(value)
+            ),
+        )
+
+    def observe_display(
+        self, session_id: str, display_ref: str, timeout: float = 30.0
+    ) -> DisplayObservation:
+        return self._request_result(
+            {
+                "operation": "observe_display",
+                "input": {"session_id": session_id, "display_ref": display_ref},
+            },
+            timeout,
+            "display_observed",
+            DisplayObservation.from_wire,
+        )
+
     def observe_window(
         self,
         session_id: str,
@@ -239,6 +348,45 @@ class Client:
             command, timeout, "window_observed", WindowObservation.from_wire
         )
 
+    def read_clipboard(
+        self, session_id: str, timeout: float = 30.0
+    ) -> ClipboardSnapshot:
+        return self._request_result(
+            {"operation": "read_clipboard", "input": {"session_id": session_id}},
+            timeout,
+            "clipboard_read",
+            ClipboardSnapshot.from_wire,
+        )
+
+    def write_clipboard(
+        self,
+        session_id: str,
+        clipboard_ref: str,
+        text: SensitiveText,
+        timeout: float = 30.0,
+    ) -> tuple[ClipboardWriteOutput, ClipboardRequest]:
+        if not clipboard_ref.strip():
+            raise ValueError("clipboard reference is required")
+        if not isinstance(text, SensitiveText):
+            raise TypeError("clipboard text must use SensitiveText")
+        command = {
+            "operation": "write_clipboard",
+            "input": {
+                "session_id": session_id,
+                "clipboard_ref": clipboard_ref,
+                "text": text._wire_value(),
+            },
+        }
+        request = ClipboardRequest(self._request_id(), command, self._clock())
+        return self._wait_for_clipboard(request, timeout), request
+
+    def reconcile_clipboard(
+        self, request: ClipboardRequest, timeout: float
+    ) -> ClipboardWriteOutput:
+        if not isinstance(request, ClipboardRequest):
+            raise TypeError("request must be a ClipboardRequest")
+        return self._wait_for_clipboard(request, timeout)
+
     def verify_state(
         self,
         session_id: str,
@@ -256,6 +404,35 @@ class Client:
         }
         return self._request_result(
             command, timeout, "state_verified", VerificationOutput.from_wire
+        )
+
+    def reconcile_mutation(
+        self, request_id: str, *, wait: float = 0.0, timeout: float = 30.0
+    ) -> MutationReconciliation:
+        if (
+            not request_id
+            or len(request_id.encode("utf-8")) > 128
+            or any(
+                not (
+                    character.isascii()
+                    and (character.isalnum() or character in "-_.:")
+                )
+                for character in request_id
+            )
+        ):
+            raise ValueError("request_id must be normalized ASCII within 128 bytes")
+        if wait < 0 or wait > 120.0:
+            raise ValueError(
+                "reconciliation wait must be between zero and 120 seconds"
+            )
+        return self._request_result(
+            {
+                "operation": "reconcile_mutation",
+                "input": {"request_id": request_id, "wait_ms": int(wait * 1000)},
+            },
+            timeout,
+            "mutation_reconciled",
+            MutationReconciliation.from_wire,
         )
 
     def perform_action(
@@ -317,6 +494,86 @@ class Client:
                 raise MutationIndeterminateError(request, error) from error
             except Exception as error:
                 raise MutationIndeterminateError(request, error) from error
+            request._completed = True
+            request._command.clear()
+            return result
+
+    def _wait_for_clipboard(
+        self, request: ClipboardRequest, timeout: float
+    ) -> ClipboardWriteOutput:
+        with request._lock:
+            if request._completed:
+                raise ValueError("clipboard mutation request is already complete")
+            if (
+                request._invalidated
+                or self._clock() - request._created_at > self._reconciliation_horizon
+            ):
+                request._invalidated = True
+                request._command.clear()
+                raise ClipboardIndeterminateError(
+                    request, RuntimeError("reconciliation horizon elapsed")
+                )
+            if request._last_timeout and timeout < request._last_timeout:
+                raise ValueError(
+                    "reconciliation may only extend the prior wait deadline"
+                )
+            _timeout_milliseconds(timeout)
+            request._last_timeout = timeout
+            try:
+                response = self._request_with_id(
+                    request.request_id, request._command, timeout
+                )
+                result = self._decode_result(
+                    response, "clipboard_written", ClipboardWriteOutput.from_wire
+                )
+            except CUAError as error:
+                if error.mutation_status is MutationStatus.NOT_DISPATCHED:
+                    request._completed = True
+                    request._command.clear()
+                    raise
+                raise ClipboardIndeterminateError(request, error) from error
+            except Exception as error:
+                raise ClipboardIndeterminateError(request, error) from error
+            request._completed = True
+            request._command.clear()
+            return result
+
+    def _wait_for_launch(
+        self, request: LaunchRequest, timeout: float
+    ) -> ApplicationLaunchOutput:
+        with request._lock:
+            if request._completed:
+                raise ValueError("mutation request is already complete")
+            if (
+                request._invalidated
+                or self._clock() - request._created_at > self._reconciliation_horizon
+            ):
+                request._invalidated = True
+                request._command.clear()
+                raise LaunchIndeterminateError(
+                    request, RuntimeError("reconciliation horizon elapsed")
+                )
+            if request._last_timeout and timeout < request._last_timeout:
+                raise ValueError(
+                    "reconciliation may only extend the prior wait deadline"
+                )
+            _timeout_milliseconds(timeout)
+            request._last_timeout = timeout
+            try:
+                response = self._request_with_id(
+                    request.request_id, request._command, timeout
+                )
+                result = self._decode_result(
+                    response, "application_launched", ApplicationLaunchOutput.from_wire
+                )
+            except CUAError as error:
+                if error.mutation_status is MutationStatus.NOT_DISPATCHED:
+                    request._completed = True
+                    request._command.clear()
+                    raise
+                raise LaunchIndeterminateError(request, error) from error
+            except Exception as error:
+                raise LaunchIndeterminateError(request, error) from error
             request._completed = True
             request._command.clear()
             return result

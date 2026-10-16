@@ -22,6 +22,26 @@
   },
   {
     "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-launch-discovery",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": { "operation": "discover_launchable_applications" }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-launch",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "launch_application",
+      "input": {
+        "launch_ref": "launch_fixture",
+        "allow_foreground_activation": true
+      }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
     "request_id": "fixture-open-session",
     "timeout_ms": 30000,
     "authorization": "fixture-transport-token",
@@ -31,8 +51,12 @@
         "manifest": {
           "mode": "bounded",
           "application_refs": ["discovery_fixture"],
-          "allowed_actions": ["focus_window", "invoke_element", "click_point"],
+          "allowed_actions": ["focus_window", "invoke_element", "set_range_value", "click_point"],
           "allow_foreground_input": true,
+          "restore_foreground_after_input": true,
+          "allow_display_capture": true,
+          "allow_clipboard_read": true,
+          "allow_clipboard_write": true,
           "ttl_seconds": 300
         }
       }
@@ -70,6 +94,29 @@
   },
   {
     "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-list-displays",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "list_displays",
+      "input": { "session_id": "session_fixture" }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-observe-display",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "observe_display",
+      "input": {
+        "session_id": "session_fixture",
+        "display_ref": "display_fixture"
+      }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
     "request_id": "fixture-observe",
     "timeout_ms": 30000,
     "authorization": "fixture-transport-token",
@@ -80,6 +127,30 @@
         "window_ref": "window_fixture",
         "include_screenshot": true,
         "accessibility": "interactive"
+      }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-read-clipboard",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "read_clipboard",
+      "input": { "session_id": "session_fixture" }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-write-clipboard",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "write_clipboard",
+      "input": {
+        "session_id": "session_fixture",
+        "clipboard_ref": "clipboard_fixture",
+        "text": "replacement fixture"
       }
     }
   },
@@ -108,7 +179,26 @@
       "input": {
         "session_id": "session_fixture",
         "window_ref": "window_fixture",
-        "predicate": { "kind": "window_title_contains", "text": "Fixture" }
+        "predicate": {
+          "kind": "element_state",
+          "role": "checkbox",
+          "name": "Remember me",
+          "state": "checked",
+          "value": true
+        }
+      }
+    }
+  },
+  {
+    "protocol_version": "nexus.cua.v1",
+    "request_id": "fixture-reconcile-call",
+    "timeout_ms": 30000,
+    "authorization": "fixture-transport-token",
+    "command": {
+      "operation": "reconcile_mutation",
+      "input": {
+        "request_id": "fixture-action",
+        "wait_ms": 0
       }
     }
   }

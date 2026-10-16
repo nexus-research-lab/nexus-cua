@@ -18,3 +18,8 @@ silently selecting the first process or platform helper window.
 If `perform_action` raises `MutationIndeterminateError`, retain
 `error.request` and pass it to `reconcile_action` with a longer timeout. Do not
 construct a new mutation to recover from an indeterminate result.
+
+Clipboard access is separately authorized. `read_clipboard` returns a
+redacted `SensitiveText` value and a fresh opaque guard. `write_clipboard`
+requires that guard and another `SensitiveText`; retain the resulting request
+for `reconcile_clipboard` after an indeterminate wait.

@@ -16,6 +16,7 @@ pub enum PermissionMode {
 }
 
 /// Exact, host-reviewed session authority.
+#[allow(clippy::struct_excessive_bools)] // Closed wire grants remain independently reviewable.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityManifest {
@@ -27,6 +28,17 @@ pub struct CapabilityManifest {
     pub allowed_actions: Vec<ActionKind>,
     /// Whether any foreground input route is allowed.
     pub allow_foreground_input: bool,
+    /// Whether temporary foreground input should restore the exact prior owner.
+    pub restore_foreground_after_input: bool,
+    /// Whether read-only capture of an exact physical display is allowed.
+    #[serde(default)]
+    pub allow_display_capture: bool,
+    /// Whether bounded plain-text clipboard reads are allowed.
+    #[serde(default)]
+    pub allow_clipboard_read: bool,
+    /// Whether guarded plain-text clipboard replacement is allowed.
+    #[serde(default)]
+    pub allow_clipboard_write: bool,
     /// Finite lifetime in seconds.
     pub ttl_seconds: u32,
 }

@@ -3,6 +3,7 @@
 CARGO ?= cargo
 GO ?= go
 GOFMT ?= gofmt
+NPM ?= npm
 PYTHON ?= python3
 PACKAGE_FLAGS ?=
 PYTHON_PACKAGE_FLAGS ?=
@@ -14,6 +15,7 @@ RUNTIME_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-runtime-0.1.0
 PLATFORM_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-platform-0.1.0
 TRANSPORT_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-transport-0.1.0
 CLI_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-0.1.0
+MCP_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-mcp-0.1.0
 NATIVE_HARNESS_MANIFEST := tools/native-harness/Cargo.toml
 NATIVE_ENDPOINT ?=
 NATIVE_TOKEN_FILE ?=
@@ -29,10 +31,25 @@ NATIVE_PERMISSION_FLAGS ?=
 NATIVE_EVIDENCE_DIR ?= target/native-evidence
 NATIVE_SOURCE_REVISION ?=
 NATIVE_RUNTIME_SHA256 ?=
+NATIVE_EVIDENCE_CLASS ?= diagnostic
 NATIVE_EVIDENCE_FLAGS ?=
+CODEX_RUNTIME ?=
+CODEX_SOURCE_REVISION ?=
+CODEX_RUNNER_MANIFEST ?= benchmarks/runners/macos-apple-silicon.json
+CODEX_OUTPUT ?= target/codex-evidence/macos/codex-acceptance-summary.json
+CODEX_TOOL_SCHEMA ?=
+CODEX_SKILL ?=
+CODEX_PROVIDER_IDENTITY ?=
+CODEX_AUTHORITY_SCOPE ?=
+CODEX_COMMAND ?=
+CODEX_PRODUCT_VERSION ?= 0.1.0
+CODEX_TIMEOUT_SECONDS ?= 900
 FIXTURE_CONFIGURATION ?= debug
+REMOTE_SOURCE_REVISION ?=
+REMOTE_EVIDENCE_FILE ?= target/remote-evidence/summary.json
+REMOTE_FRAME_BYTES ?= 65536
 
-.PHONY: help install dev run doctor build release package package-verify check fmt format lint test smoke schema schema-write schema-check docs sdk-check go-check python-check python-package-verify native-harness-check native-fixture-macos native-validate native-benchmark native-soak native-fault native-permission native-evidence native-restart-prepare native-restart-verify clean
+.PHONY: help install dev run doctor build release mcp-build package package-verify check fmt format lint test smoke schema schema-write schema-check skill-write skill-check docs workflow-check sdk-check go-check python-check typescript-check python-package-verify release-tools-check remote-validate native-harness-check native-fixture-macos native-validate native-benchmark native-soak native-fault native-permission native-evidence codex-acceptance native-restart-prepare native-restart-verify clean
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -57,17 +74,21 @@ build: ## Build the complete workspace
 release: ## Build an optimized service binary
 	$(CARGO) build --workspace --release
 
+mcp-build: ## Build the optimized local MCP adapter
+	$(CARGO) build --release --locked --package nexus-cua --bin nexuscua
+
 package: ## Build publishable crate source archives
 	$(CARGO) package --workspace --no-verify --locked $(PACKAGE_FLAGS)
 
 package-verify: package ## Compile each archive against this workspace's packaged dependencies
 	rm -rf "$(PROTOCOL_PACKAGE)" "$(RUNTIME_PACKAGE)" "$(PLATFORM_PACKAGE)" \
-		"$(TRANSPORT_PACKAGE)" "$(CLI_PACKAGE)"
+		"$(TRANSPORT_PACKAGE)" "$(CLI_PACKAGE)" "$(MCP_PACKAGE)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-protocol-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-runtime-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-platform-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-transport-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-0.1.0.crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-mcp-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	cp Cargo.lock "$(PROTOCOL_PACKAGE)/Cargo.lock"
 	$(CARGO) check --manifest-path "$(PROTOCOL_PACKAGE)/Cargo.toml" --offline
 	$(CARGO) check --manifest-path "$(PROTOCOL_PACKAGE)/Cargo.toml" --locked --offline
@@ -90,19 +111,32 @@ package-verify: package ## Compile each archive against this workspace's package
 	$(CARGO) check --manifest-path "$(TRANSPORT_PACKAGE)/Cargo.toml" --locked --offline \
 		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"'
+	cp Cargo.lock "$(MCP_PACKAGE)/Cargo.lock"
+	$(CARGO) check --manifest-path "$(MCP_PACKAGE)/Cargo.toml" --offline \
+		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
+	$(CARGO) check --manifest-path "$(MCP_PACKAGE)/Cargo.toml" --locked --offline \
+		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
 	cp Cargo.lock "$(CLI_PACKAGE)/Cargo.lock"
 	$(CARGO) check --manifest-path "$(CLI_PACKAGE)/Cargo.toml" --offline \
+		--config 'patch.crates-io.nexus-cua-mcp.path="$(MCP_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
 	$(CARGO) check --manifest-path "$(CLI_PACKAGE)/Cargo.toml" --locked --offline \
+		--config 'patch.crates-io.nexus-cua-mcp.path="$(MCP_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
 
-check: fmt lint test schema-check docs native-harness-check sdk-check ## Run the local quality gate
+check: fmt lint test schema-check skill-check docs workflow-check release-tools-check native-harness-check sdk-check ## Run the local quality gate
 
 fmt: ## Check Rust formatting without changing files
 	$(CARGO) fmt --all -- --check
@@ -131,10 +165,19 @@ schema-check: ## Fail when committed protocol schemas drift
 	$(CARGO) run --quiet --package nexus-cua -- schema --output-dir "$$schema_tmp"; \
 	diff -ru "$(SCHEMA_DIR)" "$$schema_tmp"
 
-docs: ## Validate local Markdown paths and anchors
-	ruby scripts/check_markdown_links.rb
+skill-write: ## Regenerate host-specific Skills from the canonical catalogue
+	$(PYTHON) scripts/generate_skills.py
 
-sdk-check: go-check python-check ## Validate official Go and Python clients
+skill-check: ## Fail when the catalogue or generated CLI/MCP Skills drift
+	$(PYTHON) scripts/generate_skills.py --check
+
+docs: ## Validate local Markdown paths and anchors
+	$(PYTHON) scripts/check_markdown_links.py
+
+workflow-check: ## Require every external GitHub Action to use an exact commit
+	$(PYTHON) scripts/check_workflow_actions.py
+
+sdk-check: go-check python-check typescript-check ## Validate official Go, Python, and TypeScript clients
 
 go-check: ## Format, vet, and test the official Go client
 	@test -z "$$($(GOFMT) -l sdk/go)" || ($(GOFMT) -l sdk/go >&2; exit 1)
@@ -146,6 +189,25 @@ python-check: ## Compile and test the official Python client
 	PYTHONPATH=sdk/python/src $(PYTHON) -m compileall -q \
 		sdk/python/src sdk/python/tests sdk/python/examples
 	PYTHONPATH=sdk/python/src $(PYTHON) -m unittest discover -s sdk/python/tests -v
+
+typescript-check: ## Type-check and test the official zero-runtime-dependency Node client
+	cd sdk/typescript && $(NPM) ci --ignore-scripts
+	cd sdk/typescript && $(NPM) run check
+
+release-tools-check: ## Test fail-closed release-candidate helpers
+	$(PYTHON) -m compileall -q \
+		scripts/release_candidate.py scripts/test_release_candidate.py \
+		scripts/run_codex_acceptance scripts/test_codex_acceptance.py \
+		scripts/package_channels.py scripts/test_package_channels.py \
+		scripts/check_workflow_actions.py scripts/test_workflow_actions.py
+	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py' -v
+
+remote-validate: ## Run two-process mTLS gateway conformance and write sanitized evidence
+	@test -n "$(REMOTE_SOURCE_REVISION)" || (echo "REMOTE_SOURCE_REVISION is required" >&2; exit 2)
+	mkdir -p "$(dir $(REMOTE_EVIDENCE_FILE))"
+	$(CARGO) run --quiet --locked --package nexus-cua-remote-harness -- \
+		run --source-revision "$(REMOTE_SOURCE_REVISION)" \
+		--output "$(REMOTE_EVIDENCE_FILE)" --max-frame-bytes "$(REMOTE_FRAME_BYTES)"
 
 python-package-verify: ## Build the Python wheel from the declared package metadata
 	rm -rf target/python-package
@@ -207,7 +269,29 @@ native-evidence: ## Aggregate raw native reports into one release-gate summary
 		evidence --evidence-dir "$(NATIVE_EVIDENCE_DIR)" \
 		--runner-manifest "$(NATIVE_RUNNER_MANIFEST)" \
 		--source-revision "$(NATIVE_SOURCE_REVISION)" \
-		--runtime-sha256 "$(NATIVE_RUNTIME_SHA256)" $(NATIVE_EVIDENCE_FLAGS)
+		--runtime-sha256 "$(NATIVE_RUNTIME_SHA256)" \
+		--required-class "$(NATIVE_EVIDENCE_CLASS)" $(NATIVE_EVIDENCE_FLAGS)
+
+codex-acceptance: ## Run the single fail-closed macOS Codex acceptance harness
+	@test -n "$(CODEX_RUNTIME)" || (echo "CODEX_RUNTIME is required" >&2; exit 2)
+	@test -n "$(CODEX_SOURCE_REVISION)" || (echo "CODEX_SOURCE_REVISION is required" >&2; exit 2)
+	@test -n "$(CODEX_TOOL_SCHEMA)" || (echo "CODEX_TOOL_SCHEMA is required" >&2; exit 2)
+	@test -n "$(CODEX_SKILL)" || (echo "CODEX_SKILL is required" >&2; exit 2)
+	@test -n "$(CODEX_PROVIDER_IDENTITY)" || (echo "CODEX_PROVIDER_IDENTITY is required" >&2; exit 2)
+	@test -n "$(CODEX_AUTHORITY_SCOPE)" || (echo "CODEX_AUTHORITY_SCOPE is required" >&2; exit 2)
+	@test -n "$(CODEX_COMMAND)" || (echo "CODEX_COMMAND is required" >&2; exit 2)
+	$(PYTHON) scripts/run_codex_acceptance \
+		--runtime "$(CODEX_RUNTIME)" \
+		--runner-manifest "$(CODEX_RUNNER_MANIFEST)" \
+		--source-revision "$(CODEX_SOURCE_REVISION)" \
+		--output "$(CODEX_OUTPUT)" \
+		--tool-schema "$(CODEX_TOOL_SCHEMA)" \
+		--skill "$(CODEX_SKILL)" \
+		--provider-identity "$(CODEX_PROVIDER_IDENTITY)" \
+		--authority-scope "$(CODEX_AUTHORITY_SCOPE)" \
+		--product-version "$(CODEX_PRODUCT_VERSION)" \
+		--timeout-seconds "$(CODEX_TIMEOUT_SECONDS)" \
+		--codex-command "$(CODEX_COMMAND)"
 
 native-restart-prepare: ## Prepare a live session/artifact before an orchestrated sidecar restart
 	@test -n "$(NATIVE_ENDPOINT)" || (echo "NATIVE_ENDPOINT is required" >&2; exit 2)

@@ -35,10 +35,11 @@ it does not turn an untrusted process into a policy host. Any process that can
 read the token file is trusted to request discovery and bounded sessions.
 
 Do not pass the endpoint, token-file path, sidecar process handle, generic
-request command, or artifact root to an agent. Nexus should expose its own
-round-scoped `nexus computer` broker and Skill. An independent product should
-expose an equivalently narrow tool whose host code selects the application,
-session manifest, and allowed actions.
+request command, or artifact root to an agent. Nexus should expose the unified
+`nexuscua` CLI through its own round-scoped broker and install only the
+CLI-bound Skill. An independent product should expose an equivalently narrow
+tool whose host code selects the application, session manifest, and allowed
+actions.
 
 ## Cancellation and reconciliation
 

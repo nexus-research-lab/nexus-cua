@@ -2,12 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use clap::Args;
+use clap::{Args, ValueEnum};
+use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
-const CONTRACT_VERSION: &str = "nexus.cua.native-evidence.v1";
+const CONTRACT_VERSION: &str = "nexus.cua.native-evidence.v2";
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 const PERMISSIONS: [&str; 3] = ["screen_capture", "accessibility", "input_control"];
 const COMMON_SCENARIOS: [&str; 18] = [
@@ -31,6 +34,32 @@ const COMMON_SCENARIOS: [&str; 18] = [
     "hung_accessibility_after_dispatch",
 ];
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, ValueEnum)]
+#[value(rename_all = "snake_case")]
+enum EvidenceClass {
+    Diagnostic,
+    EngineeringAccepted,
+    ReleaseAccepted,
+}
+
+impl EvidenceClass {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Diagnostic => "diagnostic",
+            Self::EngineeringAccepted => "engineering_accepted",
+            Self::ReleaseAccepted => "release_accepted",
+        }
+    }
+
+    const fn required_soak_profile(self) -> Option<&'static str> {
+        match self {
+            Self::Diagnostic => None,
+            Self::EngineeringAccepted => Some("engineering"),
+            Self::ReleaseAccepted => Some("release"),
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub(super) struct EvidenceArgs {
     /// Directory containing the raw JSON reports from one native runner.
@@ -45,17 +74,32 @@ pub(super) struct EvidenceArgs {
     /// SHA-256 of the tested release runtime executable.
     #[arg(long)]
     runtime_sha256: String,
-    /// Fail unless all correctness, performance, soak, and provenance gates pass.
+    /// Evidence class that enforcement must validate without downgrade.
+    #[arg(long, value_enum, default_value_t = EvidenceClass::Diagnostic)]
+    required_class: EvidenceClass,
+    /// Fail unless the requested evidence class is satisfied.
     #[arg(long)]
     enforce: bool,
 }
 
 struct RawReport {
     name: String,
+    digest: FileDigest,
     value: Value,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct FileDigest {
+    sha256: String,
+    size_bytes: u64,
+}
+
 pub(super) fn summarize(args: &EvidenceArgs) -> Result<(), Box<dyn Error>> {
+    if args.enforce && args.required_class == EvidenceClass::Diagnostic {
+        return Err(
+            "--enforce requires --required-class engineering_accepted or release_accepted".into(),
+        );
+    }
     let reports = read_reports(&args.evidence_dir)?;
     let validation = reports
         .iter()
@@ -68,51 +112,106 @@ pub(super) fn summarize(args: &EvidenceArgs) -> Result<(), Box<dyn Error>> {
         .as_str()
         .ok_or("validation.json is missing an architecture")?;
 
-    let mut issues = Vec::new();
-    validate_report_context(&reports, platform, architecture, &mut issues);
+    let mut base_issues = Vec::new();
+    validate_report_context(&reports, platform, architecture, &mut base_issues);
     validate_hex(
         &args.source_revision,
         &[40, 64],
         "source revision",
-        &mut issues,
+        &mut base_issues,
     );
-    validate_hex(&args.runtime_sha256, &[64], "runtime SHA-256", &mut issues);
-    let scenarios = merge_scenarios(&reports, &mut issues);
-    require_common_scenarios(&scenarios, &mut issues);
+    validate_hex(
+        &args.runtime_sha256,
+        &[64],
+        "runtime SHA-256",
+        &mut base_issues,
+    );
+    let scenarios = merge_scenarios(&reports, &mut base_issues);
+    require_common_scenarios(&scenarios, &mut base_issues);
     require_scenario(
         &scenarios,
         "same_request_mutation_reconciliation",
         "passed",
-        &mut issues,
+        &mut base_issues,
     );
-    require_scenario(&scenarios, "sidecar_restart", "passed", &mut issues);
-    require_platform_failures(platform, &reports, &scenarios, &mut issues);
+    require_scenario(&scenarios, "sidecar_restart", "passed", &mut base_issues);
 
-    let runner = load_runner_manifest(
+    let (runner, runner_manifest_sha256) = load_runner_manifest(
         args.runner_manifest.as_deref(),
         platform,
         architecture,
-        &mut issues,
+        &mut base_issues,
     )?;
-    validate_performance(&reports, runner.as_ref(), &mut issues);
+    let mut engineering_issues = base_issues.clone();
+    validate_performance(
+        &reports,
+        runner.as_ref(),
+        "engineering",
+        &mut engineering_issues,
+    );
+    let mut release_issues = engineering_issues.clone();
+    require_accepted_report(
+        &reports,
+        "native_resource_soak",
+        Some("release"),
+        runner.as_ref(),
+        &mut release_issues,
+    );
+    require_release_operator_probes(platform, &reports, &scenarios, &mut release_issues);
 
-    let accepted = issues.is_empty();
+    let evidence_class = if release_issues.is_empty() {
+        EvidenceClass::ReleaseAccepted
+    } else if engineering_issues.is_empty() {
+        EvidenceClass::EngineeringAccepted
+    } else {
+        EvidenceClass::Diagnostic
+    };
+    let class_requirement_satisfied = evidence_class >= args.required_class;
+    let issues = match args.required_class {
+        EvidenceClass::Diagnostic => base_issues.clone(),
+        EvidenceClass::EngineeringAccepted => engineering_issues.clone(),
+        EvidenceClass::ReleaseAccepted => release_issues.clone(),
+    };
+    let report_digests = reports
+        .iter()
+        .map(|report| (report.name.clone(), report.digest.clone()))
+        .collect::<BTreeMap<_, _>>();
     let report = json!({
         "evidence_contract": CONTRACT_VERSION,
-        "classification": if accepted { "accepted" } else { "incomplete" },
-        "accepted_release_evidence": accepted,
+        "requested_evidence_class": args.required_class.as_str(),
+        "evidence_class": evidence_class.as_str(),
+        "class_requirement_satisfied": class_requirement_satisfied,
+        "required_soak_profile": args.required_class.required_soak_profile(),
         "source_revision": args.source_revision,
         "runtime_sha256": args.runtime_sha256,
+        "tested_payload_digests": {
+            "runtime_sha256": args.runtime_sha256,
+        },
         "platform": platform,
         "architecture": architecture,
         "runner": runner,
+        "runner_manifest_sha256": runner_manifest_sha256,
         "scenario_groups": scenarios,
-        "source_reports": reports.iter().map(|report| report.name.as_str()).collect::<Vec<_>>(),
+        "required_report_digests": report_digests,
+        "class_evaluations": {
+            "engineering_accepted": {
+                "accepted": engineering_issues.is_empty(),
+                "issues": engineering_issues,
+            },
+            "release_accepted": {
+                "accepted": release_issues.is_empty(),
+                "issues": release_issues,
+            },
+        },
         "issues": issues,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if args.enforce && !accepted {
-        return Err("native evidence did not satisfy every release gate".into());
+    if args.enforce && !class_requirement_satisfied {
+        return Err(format!(
+            "native evidence did not satisfy requested class {}",
+            args.required_class.as_str()
+        )
+        .into());
     }
     Ok(())
 }
@@ -136,8 +235,12 @@ fn read_reports(directory: &Path) -> Result<Vec<RawReport>, Box<dyn Error>> {
                 .ok_or("evidence report has no file name")?
                 .to_string_lossy()
                 .into_owned();
-            let value = read_json(&path)?;
-            Ok(RawReport { name, value })
+            let (value, digest) = read_json_with_digest(&path)?;
+            Ok(RawReport {
+                name,
+                digest,
+                value,
+            })
         })
         .collect()
 }
@@ -215,7 +318,7 @@ fn require_scenario(
     }
 }
 
-fn require_platform_failures(
+fn require_release_operator_probes(
     platform: &str,
     reports: &[RawReport],
     scenarios: &BTreeMap<String, String>,
@@ -270,12 +373,13 @@ fn load_runner_manifest(
     platform: &str,
     architecture: &str,
     issues: &mut Vec<String>,
-) -> Result<Option<Value>, Box<dyn Error>> {
+) -> Result<(Option<Value>, Option<String>), Box<dyn Error>> {
     let Some(path) = path else {
         issues.push("maintained-runner manifest is missing".to_owned());
-        return Ok(None);
+        return Ok((None, None));
     };
-    let value = read_json(path)?;
+    let (value, manifest_digest) = read_json_with_digest(path)?;
+    let digest = manifest_digest.sha256;
     for field in [
         "runner_id",
         "status",
@@ -302,10 +406,15 @@ fn load_runner_manifest(
     if value["architecture"] != architecture {
         issues.push("runner manifest architecture does not match validation".to_owned());
     }
-    Ok(Some(value))
+    Ok((Some(value), Some(digest)))
 }
 
-fn validate_performance(reports: &[RawReport], runner: Option<&Value>, issues: &mut Vec<String>) {
+fn validate_performance(
+    reports: &[RawReport],
+    runner: Option<&Value>,
+    active_profile: &str,
+    issues: &mut Vec<String>,
+) {
     require_accepted_report(reports, "native_performance", None, runner, issues);
     require_accepted_report(
         reports,
@@ -317,7 +426,7 @@ fn validate_performance(reports: &[RawReport], runner: Option<&Value>, issues: &
     require_accepted_report(
         reports,
         "native_resource_soak",
-        Some("release"),
+        Some(active_profile),
         runner,
         issues,
     );
@@ -330,16 +439,26 @@ fn require_accepted_report(
     runner: Option<&Value>,
     issues: &mut Vec<String>,
 ) {
-    let report = reports.iter().find(|report| {
-        report.value["evidence_kind"] == kind
-            && profile.is_none_or(|profile| report.value["profile"] == profile)
-            && report.value["accepted_release_evidence"] == true
-    });
     let label = profile.map_or_else(|| kind.to_owned(), |profile| format!("{kind}/{profile}"));
-    let Some(report) = report else {
-        issues.push(format!("accepted {label} report is missing"));
+    let matching = reports
+        .iter()
+        .filter(|report| {
+            report.value["evidence_kind"] == kind
+                && profile.is_none_or(|profile| report.value["profile"] == profile)
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        issues.push(format!(
+            "{label} must have exactly one report; found {}",
+            matching.len()
+        ));
         return;
-    };
+    }
+    let report = matching[0];
+    if report.value["evidence_accepted"] != true {
+        issues.push(format!("{label} report is not accepted"));
+        return;
+    }
     if let Some(runner) = runner {
         if report.value["runner"]["runner_id"] != runner["runner_id"] {
             issues.push(format!("{label} report used a different maintained runner"));
@@ -359,19 +478,36 @@ fn validate_hex(value: &str, lengths: &[usize], label: &str, issues: &mut Vec<St
     }
 }
 
-fn read_json(path: &Path) -> Result<Value, Box<dyn Error>> {
+fn read_json_with_digest(path: &Path) -> Result<(Value, FileDigest), Box<dyn Error>> {
     let metadata = std::fs::metadata(path)?;
-    if metadata.len() > MAX_REPORT_BYTES {
-        return Err(format!("evidence JSON exceeds {MAX_REPORT_BYTES} bytes").into());
+    if !metadata.is_file() {
+        return Err(format!("evidence input is not a regular file: {}", path.display()).into());
     }
-    let bytes = std::fs::read(path)?;
+    if metadata.len() > MAX_REPORT_BYTES {
+        return Err(format!("evidence input exceeds {MAX_REPORT_BYTES} bytes").into());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    std::fs::File::open(path)?
+        .take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_REPORT_BYTES {
+        return Err(format!("evidence input exceeds {MAX_REPORT_BYTES} bytes").into());
+    }
+    let digest = FileDigest {
+        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        size_bytes: bytes.len() as u64,
+    };
+    Ok((parse_json_bytes(&bytes)?, digest))
+}
+
+fn parse_json_bytes(bytes: &[u8]) -> Result<Value, Box<dyn Error>> {
     if let Some(bytes) = bytes.strip_prefix(&[0xff, 0xfe]) {
         return parse_utf16(bytes, u16::from_le_bytes);
     }
     if let Some(bytes) = bytes.strip_prefix(&[0xfe, 0xff]) {
         return parse_utf16(bytes, u16::from_be_bytes);
     }
-    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
+    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
     Ok(serde_json::from_slice(bytes)?)
 }
 
@@ -380,8 +516,10 @@ fn parse_utf16(bytes: &[u8], decode: fn([u8; 2]) -> u16) -> Result<Value, Box<dy
         return Err("UTF-16 evidence JSON has an odd byte length".into());
     }
     let words = bytes
-        .chunks_exact(2)
-        .map(|pair| decode([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| decode(*pair))
         .collect::<Vec<_>>();
     let text = String::from_utf16(&words)?;
     Ok(serde_json::from_str(&text)?)
@@ -391,17 +529,28 @@ fn parse_utf16(bytes: &[u8], decode: fn([u8; 2]) -> u16) -> Result<Value, Box<dy
 mod tests {
     use super::*;
 
+    fn raw_report(name: &str, value: Value) -> RawReport {
+        RawReport {
+            name: name.to_owned(),
+            digest: FileDigest {
+                sha256: "0".repeat(64),
+                size_bytes: 0,
+            },
+            value,
+        }
+    }
+
     #[test]
     fn conflicting_scenario_evidence_is_rejected() {
         let reports = vec![
-            RawReport {
-                name: "first.json".to_owned(),
-                value: json!({"scenario_groups": {"observation": "passed"}}),
-            },
-            RawReport {
-                name: "second.json".to_owned(),
-                value: json!({"scenario_groups": {"observation": "failed"}}),
-            },
+            raw_report(
+                "first.json",
+                json!({"scenario_groups": {"observation": "passed"}}),
+            ),
+            raw_report(
+                "second.json",
+                json!({"scenario_groups": {"observation": "failed"}}),
+            ),
         ];
         let mut issues = Vec::new();
 
@@ -413,14 +562,14 @@ mod tests {
 
     #[test]
     fn permission_coverage_requires_each_os_boundary() {
-        let reports = vec![RawReport {
-            name: "screen.json".to_owned(),
-            value: json!({
+        let reports = vec![raw_report(
+            "screen.json",
+            json!({
                 "mode": "denied",
                 "status": "passed",
                 "permission": "screen_capture"
             }),
-        }];
+        )];
         let mut issues = Vec::new();
 
         require_permission_coverage(&reports, "denied", "passed", &mut issues);
@@ -430,15 +579,68 @@ mod tests {
 
     #[test]
     fn report_context_rejects_mixed_platform_evidence() {
-        let reports = vec![RawReport {
-            name: "benchmark.json".to_owned(),
-            value: json!({"platform": "windows", "architecture": "aarch64"}),
-        }];
+        let reports = vec![raw_report(
+            "benchmark.json",
+            json!({"platform": "windows", "architecture": "aarch64"}),
+        )];
         let mut issues = Vec::new();
 
         validate_report_context(&reports, "macos", "aarch64", &mut issues);
 
         assert_eq!(issues.len(), 1);
+    }
+
+    #[test]
+    fn accepted_performance_requires_one_report_per_engineering_gate() {
+        let runner = json!({"runner_id": "maintained-runner"});
+        let mut reports = vec![
+            raw_report(
+                "benchmark.json",
+                json!({
+                    "evidence_kind": "native_performance",
+                    "evidence_accepted": true,
+                    "runner": runner,
+                }),
+            ),
+            raw_report(
+                "soak-idle.json",
+                json!({
+                    "evidence_kind": "native_resource_soak",
+                    "profile": "idle",
+                    "evidence_accepted": true,
+                    "runner": runner,
+                }),
+            ),
+            raw_report(
+                "soak-engineering.json",
+                json!({
+                    "evidence_kind": "native_resource_soak",
+                    "profile": "engineering",
+                    "evidence_accepted": true,
+                    "runner": runner,
+                }),
+            ),
+        ];
+        let mut issues = Vec::new();
+
+        validate_performance(&reports, Some(&runner), "engineering", &mut issues);
+        assert!(issues.is_empty());
+
+        reports.push(raw_report(
+            "stale-engineering.json",
+            json!({
+                "evidence_kind": "native_resource_soak",
+                "profile": "engineering",
+                "evidence_accepted": true,
+                "runner": runner,
+            }),
+        ));
+        validate_performance(&reports, Some(&runner), "engineering", &mut issues);
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("must have exactly one report"))
+        );
     }
 
     #[test]
@@ -453,7 +655,7 @@ mod tests {
         }
         std::fs::write(&path, bytes).unwrap();
 
-        let value = read_json(&path).unwrap();
+        let (value, _) = read_json_with_digest(&path).unwrap();
 
         assert_eq!(value["status"], "passed");
         std::fs::remove_file(path).unwrap();

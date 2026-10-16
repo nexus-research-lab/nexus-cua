@@ -1,0 +1,34 @@
+{
+  "runner_id": "replace-with-maintained-runner-id",
+  "status": "unassigned",
+  "platform": "windows",
+  "architecture": "x86_64",
+  "cpu": {
+    "model": "replace-with-exact-cpu-model",
+    "physical_cores": 0,
+    "logical_cores": 0
+  },
+  "memory_bytes": 0,
+  "gpu": {
+    "model": "replace-with-exact-gpu-model"
+  },
+  "display_topology": {
+    "coordinate_space": "physical pixels",
+    "displays": []
+  },
+  "power_mode": {
+    "source": "replace-with-power-source",
+    "plan": "replace-with-active-power-plan"
+  },
+  "os_build": {
+    "product": "Windows 11",
+    "version": "replace-with-version",
+    "build": "replace-with-build"
+  },
+  "toolchain": {
+    "rustc": "replace-with-rustc-version",
+    "cargo": "replace-with-cargo-version",
+    "msvc": "replace-with-msvc-version",
+    "windows_sdk": "replace-with-sdk-version"
+  }
+}

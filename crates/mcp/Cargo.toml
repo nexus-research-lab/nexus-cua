@@ -1,0 +1,39 @@
+[package]
+name = "nexus-cua-mcp"
+autobins = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded local MCP adapter for Nexus Computer Use Runtime"
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+hex.workspace = true
+nexus-cua-platform = { version = "0.1.0", path = "../platform" }
+nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
+nexus-cua-runtime = { version = "0.1.0", path = "../runtime" }
+nexus-cua-transport = { version = "0.1.0", path = "../transport" }
+png.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client"] }
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

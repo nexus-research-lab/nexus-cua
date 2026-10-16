@@ -5,6 +5,7 @@
 
 mod action;
 mod capability;
+mod clipboard;
 mod command;
 mod discovery;
 mod error;
@@ -15,6 +16,7 @@ mod session;
 
 pub use action::*;
 pub use capability::*;
+pub use clipboard::*;
 pub use command::*;
 pub use discovery::*;
 pub use error::*;

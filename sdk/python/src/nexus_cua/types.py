@@ -12,10 +12,13 @@ RequestID = NewType("RequestID", str)
 SessionID = NewType("SessionID", str)
 AppRef = NewType("AppRef", str)
 DiscoveryRef = NewType("DiscoveryRef", str)
+LaunchRef = NewType("LaunchRef", str)
 WindowRef = NewType("WindowRef", str)
+DisplayRef = NewType("DisplayRef", str)
 ObservationID = NewType("ObservationID", str)
 ElementRef = NewType("ElementRef", str)
 ArtifactRef = NewType("ArtifactRef", str)
+ClipboardRef = NewType("ClipboardRef", str)
 
 
 class ClosedString(str, Enum):
@@ -31,19 +34,41 @@ class Platform(ClosedString):
 
 class CaptureMode(ClosedString):
     WINDOW = "window"
+    DISPLAY = "display"
 
 
 class InputRoute(ClosedString):
     SEMANTIC = "semantic"
+    SYSTEM = "system"
+    BACKGROUND = "background"
+    FOREGROUND = "foreground"
+
+
+class ApplicationLifecycleOperation(ClosedString):
+    LAUNCH = "launch"
+
+
+class ClipboardOperation(ClosedString):
+    READ_TEXT = "read_text"
+    WRITE_TEXT = "write_text"
+
+
+class DeliveryPreference(ClosedString):
+    BACKGROUND = "background"
     FOREGROUND = "foreground"
 
 
 class ActionKind(ClosedString):
     FOCUS_WINDOW = "focus_window"
+    SET_WINDOW_BOUNDS = "set_window_bounds"
+    SET_WINDOW_MINIMIZED = "set_window_minimized"
+    TERMINATE_APPLICATION = "terminate_application"
     FOCUS_ELEMENT = "focus_element"
     INVOKE_ELEMENT = "invoke_element"
     CLICK_POINT = "click_point"
+    PRESS_POINT = "press_point"
     SET_VALUE = "set_value"
+    SET_RANGE_VALUE = "set_range_value"
     TOGGLE_ELEMENT = "toggle_element"
     SELECT_ELEMENT = "select_element"
     SET_EXPANDED = "set_expanded"
@@ -52,6 +77,14 @@ class ActionKind(ClosedString):
     PRESS_KEYS = "press_keys"
     SCROLL = "scroll"
     DRAG = "drag"
+
+
+class ElementState(ClosedString):
+    ENABLED = "enabled"
+    FOCUSED = "focused"
+    SELECTED = "selected"
+    CHECKED = "checked"
+    EXPANDED = "expanded"
 
 
 class PermissionState(ClosedString):
@@ -81,7 +114,28 @@ class PointerButton(ClosedString):
 
 class DeliveryMode(ClosedString):
     SEMANTIC = "semantic"
+    SYSTEM = "system"
+    BACKGROUND = "background"
     FOREGROUND = "foreground"
+
+
+class ActionEffectStatus(ClosedString):
+    CONFIRMED = "confirmed"
+    UNVERIFIED = "unverified"
+
+
+class ActionEvidenceKind(ClosedString):
+    NATIVE_READBACK = "native_readback"
+    DISPATCH_ACCEPTANCE = "dispatch_acceptance"
+
+
+class ForegroundRestorationStatus(ClosedString):
+    NOT_REQUESTED = "not_requested"
+    NOT_NEEDED = "not_needed"
+    RESTORED = "restored"
+    SKIPPED_OWNER_CHANGED = "skipped_owner_changed"
+    TARGET_UNAVAILABLE = "target_unavailable"
+    FAILED = "failed"
 
 
 class SignatureStatus(ClosedString):
@@ -97,6 +151,20 @@ class MutationStatus(ClosedString):
     INDETERMINATE = "indeterminate"
 
 
+class MutationAdmission(ClosedString):
+    UNKNOWN = "unknown"
+    ADMITTED = "admitted"
+
+
+class MutationDisposition(ClosedString):
+    UNKNOWN = "unknown"
+    NOT_MUTATION = "not_mutation"
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    NOT_DISPATCHED = "not_dispatched"
+    INDETERMINATE = "indeterminate"
+
+
 class ErrorCode(ClosedString):
     PROTOCOL_MISMATCH = "protocol_mismatch"
     UNAUTHORIZED = "unauthorized"
@@ -108,6 +176,7 @@ class ErrorCode(ClosedString):
     CAPABILITY_DENIED = "capability_denied"
     REFERENCE_NOT_FOUND = "reference_not_found"
     STALE_OBSERVATION = "stale_observation"
+    STALE_CLIPBOARD = "stale_clipboard"
     PERMISSION_REQUIRED = "permission_required"
     UNSUPPORTED = "unsupported"
     FOREGROUND_REQUIRED = "foreground_required"
@@ -164,6 +233,8 @@ class DriverCapabilities:
     capture_modes: tuple[CaptureMode, ...]
     accessibility_tree: bool
     input_routes: tuple[InputRoute, ...]
+    application_lifecycle: tuple[ApplicationLifecycleOperation, ...]
+    clipboard: tuple[ClipboardOperation, ...]
     actions: tuple[ActionKind, ...]
 
     @classmethod
@@ -177,6 +248,8 @@ class DriverCapabilities:
                 "capture_modes",
                 "accessibility_tree",
                 "input_routes",
+                "application_lifecycle",
+                "clipboard",
                 "actions",
             },
         )
@@ -187,6 +260,10 @@ class DriverCapabilities:
             enum_tuple(CaptureMode, data["capture_modes"]),
             bool_value(data["accessibility_tree"]),
             enum_tuple(InputRoute, data["input_routes"]),
+            enum_tuple(
+                ApplicationLifecycleOperation, data["application_lifecycle"]
+            ),
+            enum_tuple(ClipboardOperation, data["clipboard"]),
             enum_tuple(ActionKind, data["actions"]),
         )
 
@@ -307,27 +384,107 @@ class DiscoverApplicationsOutput:
 
 
 @dataclass(frozen=True)
+class LaunchableApplication:
+    launch_ref: LaunchRef
+    name: str
+    application_id: str
+    provenance: ApplicationProvenance
+    expires_at: str
+
+    @classmethod
+    def from_wire(cls, value: Any) -> LaunchableApplication:
+        data = closed_object(
+            value,
+            {"launch_ref", "name", "application_id", "provenance", "expires_at"},
+        )
+        return cls(
+            LaunchRef(string_value(data["launch_ref"])),
+            string_value(data["name"]),
+            string_value(data["application_id"]),
+            ApplicationProvenance.from_wire(data["provenance"]),
+            string_value(data["expires_at"]),
+        )
+
+
+@dataclass(frozen=True)
+class DiscoverLaunchableApplicationsOutput:
+    applications: tuple[LaunchableApplication, ...]
+    complete: bool
+
+    @classmethod
+    def from_wire(cls, value: Any) -> DiscoverLaunchableApplicationsOutput:
+        data = closed_object(value, {"applications", "complete"})
+        return cls(
+            tuple(
+                LaunchableApplication.from_wire(item)
+                for item in list_value(data["applications"])
+            ),
+            bool_value(data["complete"]),
+        )
+
+
+@dataclass(frozen=True)
+class ApplicationLaunchOutput:
+    application: DiscoveredApplication
+    delivery_mode: DeliveryMode
+    dispatched: bool
+
+    @classmethod
+    def from_wire(cls, value: Any) -> ApplicationLaunchOutput:
+        data = closed_object(value, {"application", "delivery_mode", "dispatched"})
+        return cls(
+            DiscoveredApplication.from_wire(data["application"]),
+            enum_value(DeliveryMode, data["delivery_mode"]),
+            bool_value(data["dispatched"]),
+        )
+
+
+@dataclass(frozen=True)
 class CapabilityManifest:
     mode: PermissionMode
     application_refs: tuple[DiscoveryRef, ...]
     allowed_actions: tuple[ActionKind, ...] = ()
     allow_foreground_input: bool = False
     ttl_seconds: int = 60
+    restore_foreground_after_input: bool = False
+    allow_display_capture: bool = False
+    allow_clipboard_read: bool = False
+    allow_clipboard_write: bool = False
 
     def to_wire(self) -> dict[str, Any]:
-        if not self.application_refs:
-            raise ValueError("at least one discovery reference is required")
+        if (
+            not self.application_refs
+            and not self.allow_display_capture
+            and not self.allow_clipboard_read
+            and not self.allow_clipboard_write
+        ):
+            raise ValueError(
+                "at least one discovery reference, display-capture authority, or clipboard authority is required"
+            )
         if self.ttl_seconds <= 0 or self.ttl_seconds > 2**32 - 1:
             raise ValueError("session TTL must be finite and fit u32")
         if self.mode is PermissionMode.READ_ONLY and (
-            self.allowed_actions or self.allow_foreground_input
+            self.allowed_actions
+            or self.allow_foreground_input
+            or self.restore_foreground_after_input
+            or self.allow_clipboard_write
         ):
             raise ValueError("read-only sessions cannot grant mutation authority")
+        if self.restore_foreground_after_input and not self.allow_foreground_input:
+            raise ValueError(
+                "foreground restoration requires foreground input authority"
+            )
+        if self.allow_clipboard_write and not self.allow_clipboard_read:
+            raise ValueError("clipboard writes require clipboard-read authority")
         return {
             "mode": self.mode.value,
             "application_refs": list(self.application_refs),
             "allowed_actions": [action.value for action in self.allowed_actions],
             "allow_foreground_input": self.allow_foreground_input,
+            "restore_foreground_after_input": self.restore_foreground_after_input,
+            "allow_display_capture": self.allow_display_capture,
+            "allow_clipboard_read": self.allow_clipboard_read,
+            "allow_clipboard_write": self.allow_clipboard_write,
             "ttl_seconds": self.ttl_seconds,
         }
 
@@ -458,6 +615,22 @@ class WindowSummary:
 
 
 @dataclass(frozen=True)
+class DisplaySummary:
+    display_ref: DisplayRef
+    screen_bounds: ScreenRect
+    primary: bool
+
+    @classmethod
+    def from_wire(cls, value: Any) -> DisplaySummary:
+        data = closed_object(value, {"display_ref", "screen_bounds", "primary"})
+        return cls(
+            DisplayRef(string_value(data["display_ref"])),
+            ScreenRect.from_wire(data["screen_bounds"]),
+            bool_value(data["primary"]),
+        )
+
+
+@dataclass(frozen=True)
 class ScreenshotArtifact:
     artifact_ref: ArtifactRef
     path: str
@@ -483,15 +656,58 @@ class ScreenshotArtifact:
 
 
 @dataclass(frozen=True)
+class AccessibilityRangeValue:
+    value: float
+    minimum: float
+    maximum: float
+    small_change: float | None
+    large_change: float | None
+    read_only: bool
+
+    @classmethod
+    def from_wire(cls, value: Any) -> AccessibilityRangeValue:
+        data = closed_object(
+            value,
+            {
+                "value",
+                "minimum",
+                "maximum",
+                "small_change",
+                "large_change",
+                "read_only",
+            },
+        )
+        current = finite_number(data["value"])
+        minimum = finite_number(data["minimum"])
+        maximum = finite_number(data["maximum"])
+        if minimum > maximum or not minimum <= current <= maximum:
+            raise ValueError("numeric range metadata is incoherent")
+        small_change = optional_positive_number(data["small_change"])
+        large_change = optional_positive_number(data["large_change"])
+        return cls(
+            current,
+            minimum,
+            maximum,
+            small_change,
+            large_change,
+            bool_value(data["read_only"]),
+        )
+
+
+@dataclass(frozen=True)
 class AccessibilityElement:
     element_ref: ElementRef
     parent_ref: ElementRef | None
     role: str
     name: str
     value: str | None
+    range_value: AccessibilityRangeValue | None
     screen_bounds: ScreenRect | None
     enabled: bool
     focused: bool
+    selected: bool | None
+    checked: bool | None
+    expanded: bool | None
     actions: tuple[str, ...]
 
     @classmethod
@@ -504,9 +720,13 @@ class AccessibilityElement:
                 "role",
                 "name",
                 "value",
+                "range_value",
                 "screen_bounds",
                 "enabled",
                 "focused",
+                "selected",
+                "checked",
+                "expanded",
                 "actions",
             },
         )
@@ -521,9 +741,15 @@ class AccessibilityElement:
             string_value(data["role"]),
             string_value(data["name"]),
             optional_string(data["value"]),
+            None
+            if data["range_value"] is None
+            else AccessibilityRangeValue.from_wire(data["range_value"]),
             bounds,
             bool_value(data["enabled"]),
             bool_value(data["focused"]),
+            optional_bool(data["selected"]),
+            optional_bool(data["checked"]),
+            optional_bool(data["expanded"]),
             tuple(string_value(item) for item in list_value(data["actions"])),
         )
 
@@ -594,20 +820,208 @@ class WindowObservation:
 
 
 @dataclass(frozen=True)
+class DisplayObservation:
+    observation_id: ObservationID
+    display_ref: DisplayRef
+    captured_at: str
+    display_screen_bounds: ScreenRect
+    screenshot: ScreenshotArtifact
+
+    @classmethod
+    def from_wire(cls, value: Any) -> DisplayObservation:
+        data = closed_object(
+            value,
+            {
+                "observation_id",
+                "display_ref",
+                "captured_at",
+                "display_screen_bounds",
+                "screenshot",
+            },
+        )
+        return cls(
+            ObservationID(string_value(data["observation_id"])),
+            DisplayRef(string_value(data["display_ref"])),
+            string_value(data["captured_at"]),
+            ScreenRect.from_wire(data["display_screen_bounds"]),
+            ScreenshotArtifact.from_wire(data["screenshot"]),
+        )
+
+
+@dataclass(frozen=True)
+class ClipboardSnapshot:
+    clipboard_ref: ClipboardRef
+    text: SensitiveText | None
+    byte_length: int
+
+    @classmethod
+    def from_wire(cls, value: Any) -> ClipboardSnapshot:
+        data = closed_object(value, {"clipboard_ref", "text", "byte_length"})
+        text = (
+            None
+            if data["text"] is None
+            else SensitiveText(string_value(data["text"]))
+        )
+        byte_length = integer_value(data["byte_length"])
+        expected = 0 if text is None else len(text.expose().encode("utf-8"))
+        if byte_length < 0 or byte_length > 2**32 - 1 or byte_length != expected:
+            raise ValueError("clipboard byte length is invalid")
+        return cls(
+            ClipboardRef(string_value(data["clipboard_ref"])), text, byte_length
+        )
+
+
+@dataclass(frozen=True)
+class ClipboardWriteOutput:
+    clipboard_ref: ClipboardRef
+    delivery_mode: DeliveryMode
+    dispatched: bool
+    effect_status: ActionEffectStatus
+    evidence_kind: ActionEvidenceKind
+
+    @classmethod
+    def from_wire(cls, value: Any) -> ClipboardWriteOutput:
+        data = closed_object(
+            value,
+            {
+                "clipboard_ref",
+                "delivery_mode",
+                "dispatched",
+                "effect_status",
+                "evidence_kind",
+            },
+        )
+        effect_status = enum_value(ActionEffectStatus, data["effect_status"])
+        evidence_kind = enum_value(ActionEvidenceKind, data["evidence_kind"])
+        if (effect_status, evidence_kind) not in {
+            (ActionEffectStatus.CONFIRMED, ActionEvidenceKind.NATIVE_READBACK),
+            (
+                ActionEffectStatus.UNVERIFIED,
+                ActionEvidenceKind.DISPATCH_ACCEPTANCE,
+            ),
+        }:
+            raise ValueError(
+                "incoherent clipboard effect evidence "
+                f"{effect_status.value!r}/{evidence_kind.value!r}"
+            )
+        return cls(
+            ClipboardRef(string_value(data["clipboard_ref"])),
+            enum_value(DeliveryMode, data["delivery_mode"]),
+            bool_value(data["dispatched"]),
+            effect_status,
+            evidence_kind,
+        )
+
+
+@dataclass(frozen=True)
 class ActionOutput:
     delivery_mode: DeliveryMode
     dispatched: bool
+    effect_status: ActionEffectStatus
+    evidence_kind: ActionEvidenceKind
+    foreground_restoration: ForegroundRestorationStatus
     observation_invalidated: bool
 
     @classmethod
     def from_wire(cls, value: Any) -> ActionOutput:
         data = closed_object(
-            value, {"delivery_mode", "dispatched", "observation_invalidated"}
+            value,
+            {
+                "delivery_mode",
+                "dispatched",
+                "effect_status",
+                "evidence_kind",
+                "foreground_restoration",
+                "observation_invalidated",
+            },
         )
+        effect_status = enum_value(ActionEffectStatus, data["effect_status"])
+        evidence_kind = enum_value(ActionEvidenceKind, data["evidence_kind"])
+        if (effect_status, evidence_kind) not in {
+            (ActionEffectStatus.CONFIRMED, ActionEvidenceKind.NATIVE_READBACK),
+            (
+                ActionEffectStatus.UNVERIFIED,
+                ActionEvidenceKind.DISPATCH_ACCEPTANCE,
+            ),
+        }:
+            raise ValueError(
+                "incoherent action effect evidence "
+                f"{effect_status.value!r}/{evidence_kind.value!r}"
+            )
         return cls(
             enum_value(DeliveryMode, data["delivery_mode"]),
             bool_value(data["dispatched"]),
+            effect_status,
+            evidence_kind,
+            enum_value(
+                ForegroundRestorationStatus, data["foreground_restoration"]
+            ),
             bool_value(data["observation_invalidated"]),
+        )
+
+
+@dataclass(frozen=True)
+class MutationReconciliation:
+    request_id: RequestID
+    runtime_epoch: str
+    worker_epoch: str | None
+    admission: MutationAdmission
+    disposition: MutationDisposition
+    dispatched: bool | None
+    effect_status: ActionEffectStatus | None
+    evidence_kind: ActionEvidenceKind | None
+    error_code: ErrorCode | None
+    fresh_observation_required: bool
+
+    @classmethod
+    def from_wire(cls, value: Any) -> MutationReconciliation:
+        data = closed_object(
+            value,
+            {
+                "request_id",
+                "runtime_epoch",
+                "worker_epoch",
+                "admission",
+                "disposition",
+                "dispatched",
+                "effect_status",
+                "evidence_kind",
+                "error_code",
+                "fresh_observation_required",
+            },
+        )
+        effect_status = (
+            None
+            if data["effect_status"] is None
+            else enum_value(ActionEffectStatus, data["effect_status"])
+        )
+        evidence_kind = (
+            None
+            if data["evidence_kind"] is None
+            else enum_value(ActionEvidenceKind, data["evidence_kind"])
+        )
+        if (effect_status is None) != (evidence_kind is None):
+            raise ValueError(
+                "mutation effect status and evidence must both be present or absent"
+            )
+        if effect_status is not None and (effect_status, evidence_kind) not in {
+            (ActionEffectStatus.CONFIRMED, ActionEvidenceKind.NATIVE_READBACK),
+            (ActionEffectStatus.UNVERIFIED, ActionEvidenceKind.DISPATCH_ACCEPTANCE),
+        }:
+            raise ValueError("incoherent mutation reconciliation effect evidence")
+        return cls(
+            RequestID(string_value(data["request_id"])),
+            string_value(data["runtime_epoch"]),
+            optional_string(data["worker_epoch"]),
+            enum_value(MutationAdmission, data["admission"]),
+            enum_value(MutationDisposition, data["disposition"]),
+            optional_bool(data["dispatched"]),
+            effect_status,
+            evidence_kind,
+            None
+            if data["error_code"] is None
+            else enum_value(ErrorCode, data["error_code"]),
+            bool_value(data["fresh_observation_required"]),
         )
 
 
@@ -637,6 +1051,9 @@ class SensitiveText:
     def _wire_value(self) -> str:
         return self._value
 
+    def expose(self) -> str:
+        return self._value
+
 
 class Action:
     def to_wire(self) -> dict[str, Any]:
@@ -647,6 +1064,32 @@ class Action:
 class FocusWindow(Action):
     def to_wire(self) -> dict[str, Any]:
         return {"kind": "focus_window"}
+
+
+@dataclass(frozen=True)
+class SetWindowBounds(Action):
+    bounds: ScreenRect
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"kind": "set_window_bounds", "bounds": self.bounds.to_wire()}
+
+
+@dataclass(frozen=True)
+class SetWindowMinimized(Action):
+    minimized: bool
+
+    def to_wire(self) -> dict[str, Any]:
+        if not isinstance(self.minimized, bool):
+            raise TypeError("minimized must be a boolean")
+        return {"kind": "set_window_minimized", "minimized": self.minimized}
+
+
+@dataclass(frozen=True)
+class TerminateApplication(Action):
+    """Cooperatively exit the observed window's exact application generation."""
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"kind": "terminate_application"}
 
 
 @dataclass(frozen=True)
@@ -670,6 +1113,7 @@ class ClickPoint(Action):
     point: ScreenshotPoint
     button: PointerButton = PointerButton.LEFT
     count: int = 1
+    delivery: DeliveryPreference = DeliveryPreference.FOREGROUND
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -677,6 +1121,22 @@ class ClickPoint(Action):
             "point": self.point.to_wire(),
             "button": self.button.value,
             "count": self.count,
+            "delivery": self.delivery.value,
+        }
+
+
+@dataclass(frozen=True)
+class PressPoint(Action):
+    point: ScreenshotPoint
+    duration_ms: int
+    button: PointerButton = PointerButton.LEFT
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "kind": "press_point",
+            "point": self.point.to_wire(),
+            "button": self.button.value,
+            "duration_ms": self.duration_ms,
         }
 
 
@@ -690,6 +1150,19 @@ class SetValue(Action):
             "kind": "set_value",
             "element_ref": self.element_ref,
             "value": self.value._wire_value(),
+        }
+
+
+@dataclass(frozen=True)
+class SetRangeValue(Action):
+    element_ref: ElementRef
+    value: float
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "kind": "set_range_value",
+            "element_ref": self.element_ref,
+            "value": self.value,
         }
 
 
@@ -804,6 +1277,25 @@ class ElementExists(StatePredicate):
 
 
 @dataclass(frozen=True)
+class ElementStateMatches(StatePredicate):
+    state: ElementState
+    value: bool
+    role: str | None = None
+    name: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        if not isinstance(self.state, ElementState) or not isinstance(self.value, bool):
+            raise TypeError("element state and value must use closed protocol types")
+        return {
+            "kind": "element_state",
+            "role": self.role,
+            "name": self.name,
+            "state": self.state.value,
+            "value": self.value,
+        }
+
+
+@dataclass(frozen=True)
 class BoundsContained(StatePredicate):
     inner: ScreenRect
     outer: ScreenRect
@@ -818,10 +1310,15 @@ class BoundsContained(StatePredicate):
 
 _ACTION_TYPES = (
     FocusWindow,
+    SetWindowBounds,
+    SetWindowMinimized,
+    TerminateApplication,
     FocusElement,
     InvokeElement,
     ClickPoint,
+    PressPoint,
     SetValue,
+    SetRangeValue,
     ToggleElement,
     SelectElement,
     SetExpanded,
@@ -831,7 +1328,12 @@ _ACTION_TYPES = (
     Scroll,
     Drag,
 )
-_PREDICATE_TYPES = (WindowTitleContains, ElementExists, BoundsContained)
+_PREDICATE_TYPES = (
+    WindowTitleContains,
+    ElementExists,
+    ElementStateMatches,
+    BoundsContained,
+)
 
 
 def action_wire(value: Action) -> dict[str, Any]:
@@ -839,8 +1341,12 @@ def action_wire(value: Action) -> dict[str, Any]:
         raise TypeError(f"unsupported action type {type(value).__name__}")
     if isinstance(value, ClickPoint) and not 1 <= value.count <= 255:
         raise ValueError("click count must fit a non-zero u8")
+    if isinstance(value, ClickPoint) and not isinstance(
+        value.delivery, DeliveryPreference
+    ):
+        raise TypeError("click delivery must use DeliveryPreference")
     if (
-        isinstance(value, (MovePointer, Drag))
+        isinstance(value, (MovePointer, PressPoint, Drag))
         and not 0 <= value.duration_ms <= 2**32 - 1
     ):
         raise ValueError("action duration must fit u32")
@@ -852,6 +1358,14 @@ def action_wire(value: Action) -> dict[str, Any]:
         math.isfinite(item) for item in (value.delta_x, value.delta_y)
     ):
         raise ValueError("scroll deltas must be finite")
+    if isinstance(value, SetRangeValue) and (
+        not math.isfinite(value.value) or abs(value.value) > 1_000_000_000_000
+    ):
+        raise ValueError("numeric range value is outside the supported range")
+    if isinstance(value, SetWindowBounds) and (
+        value.bounds.width <= 0 or value.bounds.height <= 0
+    ):
+        raise ValueError("window dimensions must be positive")
     if isinstance(value, (SetValue, TypeText)):
         secret = value.value if isinstance(value, SetValue) else value.text
         if not isinstance(secret, SensitiveText):
@@ -920,6 +1434,10 @@ def bool_value(value: Any) -> bool:
     return value
 
 
+def optional_bool(value: Any) -> bool | None:
+    return None if value is None else bool_value(value)
+
+
 def integer_value(value: Any) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError("expected an integer")
@@ -930,3 +1448,19 @@ def number_value(value: Any) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ValueError("expected a number")
     return float(value)
+
+
+def finite_number(value: Any) -> float:
+    result = number_value(value)
+    if not math.isfinite(result):
+        raise ValueError("expected a finite number")
+    return result
+
+
+def optional_positive_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    result = finite_number(value)
+    if result <= 0:
+        raise ValueError("expected a positive number")
+    return result

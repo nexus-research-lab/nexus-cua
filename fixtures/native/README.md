@@ -19,11 +19,12 @@ on macOS or a `960 × 720` top-level frame on Windows, titled
 and logical state on both platforms:
 
 - an increment button and deterministic counter;
-- a writable text field and a secure text field;
+- a writable text field, a secure text field, and a native numeric range;
 - a checkbox or toggle;
 - a single-select list;
 - an expandable section;
 - a bounded scroll region with a marker initially outside the viewport;
+- a long-press target that changes state only after a 250 ms pointer hold;
 - a draggable token and drop target;
 - a state text element describing all non-sensitive state;
 - a window-replacement action that destroys the current native top-level
@@ -43,7 +44,7 @@ and logical state on both platforms:
 The state text format is stable and ordered:
 
 ```text
-Fixture State: generation=1; counter=0; text=ready; checked=false; selection=none; expanded=false; dropped=false
+Fixture State: generation=1; counter=0; text=ready; checked=false; selection=none; level=50; expanded=false; pressed=false; dropped=false
 ```
 
 The secure field is initialized with `fixture-secret`. Its value must never
@@ -58,12 +59,14 @@ driver capability, display topology, or protected target into a pass.
 
 1. **Discovery and identity** — discover by the published application name,
    open a session from its short-lived discovery ref, and list the exact window.
-2. **Observation** — capture pixels, validate screenshot mapping, compare
-   interactive and full semantic views, and confirm truthful partial metadata.
-3. **Semantic mutation** — focus, invoke, set value, toggle, select, and expand,
-   observing again after every successful mutation.
-4. **Foreground mutation** — focus the window, click, move, type, press keys,
-   scroll, and drag through fresh screenshot coordinates.
+2. **Observation** — enumerate physical displays, capture one exact display as
+   a read-only overview, then capture exact-window pixels, validate screenshot
+   mappings, compare interactive and full semantic views, and confirm truthful
+   partial metadata. The display observation must never authorize an action.
+3. **Semantic mutation** — focus, invoke, set text and numeric range values,
+   toggle, select, and expand, observing again after every successful mutation.
+4. **Foreground mutation** — focus the window, click, bounded pointer hold, move,
+   type, press keys, scroll, and drag through fresh screenshot coordinates.
 5. **Staleness** — reject reuse of an invalidated observation, reject the old
    window after replacement, and rediscover after process restart.
 6. **Lifecycle** — expire and close sessions, remove transient artifacts, and
@@ -82,6 +85,11 @@ driver capability, display topology, or protected target into a pass.
 - `windows/` is a self-contained .NET 8 WPF application using controls with
   native UI Automation patterns. Run `build.ps1 Release win-x64` on the
   maintained release runner, or select `win-arm64` for engineering validation.
+  `install-shortcut.ps1` creates and verifies one current-user Start Menu
+  registration for the exact built fixture; pass `-Remove` during cleanup. The
+  `lifecycle` harness command requires the fixture to be stopped, cold-launches
+  it through the public protocol, opens a session from the returned generation,
+  observes, cooperatively terminates, and requires final empty listings.
 
 Fixture build products and reports belong under ignored `target/` directories.
 No generated binary is committed.

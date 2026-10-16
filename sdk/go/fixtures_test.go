@@ -46,7 +46,7 @@ func (transport *fixtureTransport) RoundTrip(_ context.Context, payload []byte, 
 func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 	requests := loadRawArray(t, "requests.json")
 	results := loadRawArray(t, "results.json")
-	if len(requests) != 10 || len(results) != 10 {
+	if len(requests) != 17 || len(results) != 17 {
 		t.Fatalf("unexpected fixture inventory: requests=%d results=%d", len(requests), len(results))
 	}
 	resultByOperation := make(map[string]json.RawMessage)
@@ -85,10 +85,20 @@ func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 	if _, err := client.DiscoverApplications(ctx, timeout); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.DiscoverLaunchableApplications(ctx, timeout); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.LaunchApplication(ctx, LaunchApplicationInput{
+		LaunchRef: "launch_fixture", AllowForegroundActivation: true,
+	}, timeout); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.OpenSession(ctx, OpenSessionInput{Manifest: CapabilityManifest{
 		Mode: PermissionBounded, ApplicationRefs: []DiscoveryRef{"discovery_fixture"},
-		AllowedActions:       []ActionKind{ActionFocusWindow, ActionInvokeElement, ActionClickPoint},
-		AllowForegroundInput: true, TTLSeconds: 300,
+		AllowedActions:       []ActionKind{ActionFocusWindow, ActionInvokeElement, ActionSetRangeValue, ActionClickPoint},
+		AllowForegroundInput: true, RestoreForegroundAfterInput: true,
+		AllowDisplayCapture: true, AllowClipboardRead: true, AllowClipboardWrite: true,
+		TTLSeconds: 300,
 	}}, timeout); err != nil {
 		t.Fatal(err)
 	}
@@ -102,9 +112,26 @@ func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 	if _, err := client.ListWindows(ctx, "session_fixture", &appRef, timeout); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.ListDisplays(ctx, "session_fixture", timeout); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ObserveDisplay(ctx, ObserveDisplayInput{
+		SessionID: "session_fixture", DisplayRef: "display_fixture",
+	}, timeout); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.ObserveWindow(ctx, ObserveWindowInput{
 		SessionID: "session_fixture", WindowRef: "window_fixture", IncludeScreenshot: true,
 		Accessibility: AccessibilityInteractive,
+	}, timeout); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ReadClipboard(ctx, "session_fixture", timeout); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.WriteClipboard(ctx, ClipboardWriteInput{
+		SessionID: "session_fixture", ClipboardRef: "clipboard_fixture",
+		Text: NewSensitiveText("replacement fixture"),
 	}, timeout); err != nil {
 		t.Fatal(err)
 	}
@@ -116,8 +143,14 @@ func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 	}
 	if _, err := client.VerifyState(ctx, VerifyStateInput{
 		SessionID: "session_fixture", WindowRef: "window_fixture",
-		Predicate: WindowTitleContains{Text: "Fixture"},
+		Predicate: ElementStateMatches{
+			Role: stringPointer("checkbox"), Name: stringPointer("Remember me"),
+			State: ElementStateChecked, Value: true,
+		},
 	}, timeout); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ReconcileMutation(ctx, "fixture-action", 0, timeout); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,6 +161,8 @@ func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 		assertEquivalentJSON(t, transport.requests[index], requests[index])
 	}
 }
+
+func stringPointer(value string) *string { return &value }
 
 func TestEveryStableErrorFixtureDecodes(t *testing.T) {
 	for _, raw := range loadRawArray(t, "errors.json") {
@@ -150,6 +185,20 @@ func TestClosedEnumsAndUnknownFieldsFail(t *testing.T) {
 	if err := decodeStrict([]byte(`{"protocol_version":"nexus.cua.v1","runtime_version":"x","platform":"macos","capture_modes":[],"accessibility_tree":false,"input_routes":[],"actions":[],"extra":true}`), &capabilities); err == nil {
 		t.Fatal("unknown field decoded")
 	}
+	var output ActionOutput
+	if err := decodeStrict([]byte(`{"delivery_mode":"system","dispatched":true,"effect_status":"confirmed","evidence_kind":"dispatch_acceptance","foreground_restoration":"not_requested","observation_invalidated":true}`), &output); err == nil {
+		t.Fatal("incoherent action effect evidence decoded")
+	}
+	var restoration ForegroundRestorationStatus
+	if err := json.Unmarshal([]byte(`"future_status"`), &restoration); err == nil {
+		t.Fatal("unknown foreground restoration status decoded")
+	}
+	if err := validateManifest(CapabilityManifest{
+		Mode: PermissionBounded, ApplicationRefs: []DiscoveryRef{"discovery_fixture"},
+		RestoreForegroundAfterInput: true, TTLSeconds: 60,
+	}); err == nil {
+		t.Fatal("foreground restoration decoded without foreground authority")
+	}
 }
 
 func TestSensitiveTextAlwaysFormatsRedacted(t *testing.T) {
@@ -163,6 +212,10 @@ func TestSensitiveTextAlwaysFormatsRedacted(t *testing.T) {
 	}
 	if string(payload) != `"do-not-print"` {
 		t.Fatalf("unexpected wire text %s", payload)
+	}
+	var decoded SensitiveText
+	if err := json.Unmarshal(payload, &decoded); err != nil || decoded.Expose() != "do-not-print" {
+		t.Fatalf("sensitive text did not round-trip: %v", err)
 	}
 }
 
@@ -262,13 +315,34 @@ func (transport *reconcileTransport) RoundTrip(_ context.Context, payload []byte
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return nil, err
 	}
+	result := map[string]any{
+		"result_type": "action_performed", "data": map[string]any{
+			"delivery_mode": "semantic", "dispatched": true,
+			"effect_status": "unverified", "evidence_kind": "dispatch_acceptance",
+			"foreground_restoration":  "not_requested",
+			"observation_invalidated": true,
+		},
+	}
+	if request.Command.Operation == "launch_application" {
+		result = map[string]any{
+			"result_type": "application_launched", "data": map[string]any{
+				"application": map[string]any{
+					"discovery_ref": "discovery_launched", "name": "Fixture",
+					"application_id": "dev.nexus.fixture", "foreground": true,
+					"provenance": map[string]any{
+						"platform": "macos", "bundle_id": "dev.nexus.fixture",
+						"executable_path": "/Applications/Fixture.app/Contents/MacOS/Fixture",
+						"signing_team_id": nil, "designated_requirement": nil,
+					},
+					"expires_at": "2026-08-25T12:00:30Z",
+				},
+				"delivery_mode": "foreground", "dispatched": true,
+			},
+		}
+	}
 	return json.Marshal(map[string]any{
 		"protocol_version": ProtocolVersion, "request_id": request.RequestID,
-		"outcome": map[string]any{"status": "success", "result": map[string]any{
-			"result_type": "action_performed", "data": map[string]any{
-				"delivery_mode": "semantic", "dispatched": true, "observation_invalidated": true,
-			},
-		}},
+		"outcome": map[string]any{"status": "success", "result": result},
 	})
 }
 
@@ -311,6 +385,48 @@ func TestMutationReconciliationReusesIdentityAndOnlyExtendsWait(t *testing.T) {
 	}
 	if first.TimeoutMS >= second.TimeoutMS {
 		t.Fatal("reconciliation did not extend wire wait")
+	}
+}
+
+func TestLaunchReconciliationReusesIdentityAndOnlyExtendsWait(t *testing.T) {
+	transport := &reconcileTransport{failOnce: true}
+	client := &Client{
+		transport: transport, token: "x", maxFrameBytes: defaultMaxFrameBytes,
+		reconciliationHorizon: defaultReconcileHorizon, now: time.Now,
+		newRequestID: func() (RequestID, error) { return "request_launch_reconcile", nil },
+	}
+	_, request, err := client.LaunchApplication(context.Background(), LaunchApplicationInput{
+		LaunchRef: "launch_fixture", AllowForegroundActivation: true,
+	}, time.Second)
+	var indeterminate *LaunchIndeterminateError
+	if !errors.As(err, &indeterminate) {
+		t.Fatalf("expected launch indeterminate error, got %v", err)
+	}
+	if _, err := client.ReconcileLaunch(context.Background(), request, 500*time.Millisecond); err == nil {
+		t.Fatal("shorter launch reconciliation wait accepted")
+	}
+	result, err := client.ReconcileLaunch(context.Background(), request, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Dispatched || result.Application.ApplicationID != "dev.nexus.fixture" {
+		t.Fatal("reconciled launch result is incomplete")
+	}
+	if len(transport.requests) != 2 {
+		t.Fatalf("got %d transport attempts", len(transport.requests))
+	}
+	var first, second requestEnvelope
+	if err := json.Unmarshal(transport.requests[0], &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(transport.requests[1], &second); err != nil {
+		t.Fatal(err)
+	}
+	if first.RequestID != second.RequestID || !reflect.DeepEqual(first.Command, second.Command) {
+		t.Fatal("launch reconciliation changed request identity or command")
+	}
+	if first.TimeoutMS >= second.TimeoutMS {
+		t.Fatal("launch reconciliation did not extend wire wait")
 	}
 }
 

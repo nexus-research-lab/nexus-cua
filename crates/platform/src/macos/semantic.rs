@@ -8,25 +8,29 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use accessibility_sys::{
-    AXUIElementCopyAttributeValue, AXUIElementCopyElementAtPosition,
+    AXUIElementCopyActionNames, AXUIElementCopyAttributeValue, AXUIElementCopyElementAtPosition,
     AXUIElementCopyMultipleAttributeValues, AXUIElementCreateApplication, AXUIElementGetTypeID,
-    AXUIElementPerformAction, AXUIElementRef, AXUIElementSetAttributeValue,
-    AXUIElementSetMessagingTimeout, AXValueGetType, AXValueGetValue, AXValueRef,
-    kAXChildrenAttribute, kAXDescriptionAttribute, kAXEnabledAttribute, kAXErrorCannotComplete,
-    kAXErrorSuccess, kAXExpandedAttribute, kAXFocusedAttribute, kAXFrontmostAttribute,
-    kAXMainAttribute, kAXPickAction, kAXPositionAttribute, kAXPressAction, kAXRaiseAction,
-    kAXRoleAttribute, kAXSecureTextFieldSubrole, kAXSelectedAttribute, kAXSizeAttribute,
-    kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute, kAXValueTypeCGPoint,
+    AXUIElementIsAttributeSettable, AXUIElementPerformAction, AXUIElementRef,
+    AXUIElementSetAttributeValue, AXUIElementSetMessagingTimeout, AXValueCreate, AXValueGetType,
+    AXValueGetValue, AXValueRef, kAXChildrenAttribute, kAXDescriptionAttribute,
+    kAXEnabledAttribute, kAXErrorCannotComplete, kAXErrorSuccess, kAXExpandedAttribute,
+    kAXFocusedAttribute, kAXFrontmostAttribute, kAXMainAttribute, kAXMaxValueAttribute,
+    kAXMinValueAttribute, kAXMinimizedAttribute, kAXParentAttribute, kAXPickAction,
+    kAXPositionAttribute, kAXPressAction, kAXRaiseAction, kAXRoleAttribute,
+    kAXSecureTextFieldSubrole, kAXSelectedAttribute, kAXSizeAttribute, kAXSubroleAttribute,
+    kAXTitleAttribute, kAXValueAttribute, kAXValueIncrementAttribute, kAXValueTypeCGPoint,
     kAXValueTypeCGSize, kAXWindowAttribute, kAXWindowsAttribute,
 };
 use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFGetTypeID, CFType, CFTypeRef, TCFType, TCFTypeRef};
 use core_foundation::boolean::CFBoolean;
+use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_foundation::{declare_TCFType, impl_CFTypeDescription, impl_TCFType};
 use core_graphics::geometry::{CGPoint, CGSize};
 use nexus_cua_protocol::{
-    AccessibilityMode, ObservationTruncation, ScreenRect, SensitiveText, TruncationReason,
+    AccessibilityMode, AccessibilityRangeValue, ObservationTruncation, ScreenPoint, ScreenRect,
+    SensitiveText, TruncationReason,
 };
 use nexus_cua_runtime::{DriverElement, DriverError, DriverErrorKind};
 use sha2::{Digest, Sha256};
@@ -36,6 +40,8 @@ const COMMAND_CAPACITY: usize = 32;
 const SNAPSHOT_CACHE_LIMIT: usize = 32;
 const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.2;
 const MAX_FIELD_BYTES: usize = 512;
+const WINDOW_CONFIRM_TIMEOUT: Duration = Duration::from_millis(200);
+const WINDOW_CONFIRM_INTERVAL: Duration = Duration::from_millis(10);
 
 declare_TCFType!(AxElement, AXUIElementRef);
 impl_TCFType!(AxElement, AXUIElementRef, AXUIElementGetTypeID);
@@ -75,6 +81,7 @@ pub(super) enum SemanticAction {
     Focus,
     Invoke,
     SetValue(SensitiveText),
+    SetRangeValue(f64),
     Toggle,
     Select,
     SetExpanded(bool),
@@ -123,6 +130,25 @@ impl SemanticActor {
         receiver.await.map_err(actor_stopped)?
     }
 
+    pub(super) async fn invoke_at_point(
+        &self,
+        pid: i32,
+        window_bounds: ScreenRect,
+        window_title: String,
+        point: ScreenPoint,
+    ) -> Result<bool, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(SemanticCommand::InvokeAtPoint {
+            pid,
+            window_bounds,
+            window_title,
+            point,
+            reply,
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
     pub(super) async fn raise_window(
         &self,
         pid: i32,
@@ -136,6 +162,44 @@ impl SemanticActor {
             window_title,
             reply,
         })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn set_window_bounds(
+        &self,
+        pid: i32,
+        current_bounds: ScreenRect,
+        window_title: String,
+        requested_bounds: ScreenRect,
+    ) -> Result<(), DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(SemanticCommand::SetWindowBounds {
+            pid,
+            current_bounds,
+            window_title,
+            requested_bounds,
+            reply,
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn set_window_minimized(
+        &self,
+        pid: i32,
+        current_bounds: ScreenRect,
+        window_title: String,
+        minimized: bool,
+    ) -> Result<(), DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(SemanticCommand::SetWindowMinimized {
+            pid,
+            current_bounds,
+            window_title,
+            minimized,
+            reply,
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
         receiver.await.map_err(actor_stopped)?
     }
 
@@ -163,10 +227,31 @@ enum SemanticCommand {
         action: SemanticAction,
         reply: oneshot::Sender<Result<(), DriverError>>,
     },
+    InvokeAtPoint {
+        pid: i32,
+        window_bounds: ScreenRect,
+        window_title: String,
+        point: ScreenPoint,
+        reply: oneshot::Sender<Result<bool, DriverError>>,
+    },
     RaiseWindow {
         pid: i32,
         window_bounds: ScreenRect,
         window_title: String,
+        reply: oneshot::Sender<Result<(), DriverError>>,
+    },
+    SetWindowBounds {
+        pid: i32,
+        current_bounds: ScreenRect,
+        window_title: String,
+        requested_bounds: ScreenRect,
+        reply: oneshot::Sender<Result<(), DriverError>>,
+    },
+    SetWindowMinimized {
+        pid: i32,
+        current_bounds: ScreenRect,
+        window_title: String,
+        minimized: bool,
         reply: oneshot::Sender<Result<(), DriverError>>,
     },
 }
@@ -197,8 +282,12 @@ struct NodeValues {
     role: String,
     name: String,
     value: Option<String>,
+    range_value: Option<AccessibilityRangeValue>,
     enabled: bool,
     focused: bool,
+    selected: Option<bool>,
+    checked: Option<bool>,
+    expanded: Option<bool>,
     bounds: Option<ScreenRect>,
     children: Vec<AxElement>,
 }
@@ -223,6 +312,15 @@ impl SemanticState {
                 } => {
                     let _ = reply.send(self.perform(&element_key, action));
                 }
+                SemanticCommand::InvokeAtPoint {
+                    pid,
+                    window_bounds,
+                    window_title,
+                    point,
+                    reply,
+                } => {
+                    let _ = reply.send(invoke_at_point(pid, window_bounds, &window_title, point));
+                }
                 SemanticCommand::RaiseWindow {
                     pid,
                     window_bounds,
@@ -230,6 +328,34 @@ impl SemanticState {
                     reply,
                 } => {
                     let _ = reply.send(raise_window(pid, window_bounds, &window_title));
+                }
+                SemanticCommand::SetWindowBounds {
+                    pid,
+                    current_bounds,
+                    window_title,
+                    requested_bounds,
+                    reply,
+                } => {
+                    let _ = reply.send(set_window_bounds(
+                        pid,
+                        current_bounds,
+                        &window_title,
+                        requested_bounds,
+                    ));
+                }
+                SemanticCommand::SetWindowMinimized {
+                    pid,
+                    current_bounds,
+                    window_title,
+                    minimized,
+                    reply,
+                } => {
+                    let _ = reply.send(set_window_minimized(
+                        pid,
+                        current_bounds,
+                        &window_title,
+                        minimized,
+                    ));
                 }
             }
         }
@@ -279,8 +405,9 @@ impl SemanticState {
                 }
                 Err(_) => continue,
             };
+            let actions = normalized_actions(&values.role, values.range_value);
             let emit = mode == AccessibilityMode::Full
-                || is_interactive(&values.role)
+                || !actions.is_empty()
                 || !values.name.is_empty()
                 || depth <= 1;
             let current_parent = if emit {
@@ -293,7 +420,6 @@ impl SemanticState {
                     truncation = Some(TruncationReason::ByteLimit);
                     break;
                 }
-                let actions = normalized_actions(&values.role);
                 let signature = element_signature(&values);
                 elements.push(DriverElement {
                     key: key.clone(),
@@ -301,9 +427,13 @@ impl SemanticState {
                     role: normalize_role(&values.role),
                     name: values.name,
                     value: values.value,
+                    range_value: values.range_value,
                     screen_bounds: values.bounds,
                     enabled: values.enabled,
                     focused: values.focused,
+                    selected: values.selected,
+                    checked: values.checked,
+                    expanded: values.expanded,
                     actions,
                 });
                 stored.insert(key.clone(), StoredElement { element, signature });
@@ -360,6 +490,9 @@ impl SemanticState {
             SemanticAction::SetValue(value) => {
                 set_string(&stored.element, kAXValueAttribute, value.expose())
             }
+            SemanticAction::SetRangeValue(value) => {
+                set_number(&stored.element, kAXValueAttribute, value)
+            }
             SemanticAction::Select => set_boolean(&stored.element, kAXSelectedAttribute, true)
                 .or_else(|_| perform_native_action(&stored.element, kAXPickAction))
                 .or_else(|_| perform_native_action(&stored.element, kAXPressAction)),
@@ -368,6 +501,51 @@ impl SemanticState {
             }
         }
     }
+}
+
+fn invoke_at_point(
+    pid: i32,
+    window_bounds: ScreenRect,
+    window_title: &str,
+    point: ScreenPoint,
+) -> Result<bool, DriverError> {
+    ensure_accessibility_permission()?;
+    find_window(pid, window_bounds, window_title)?;
+    let application = AxElement::application(pid);
+    application.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)?;
+    let mut element = element_at_position(&application, point.x, point.y)?;
+    let element_window = copy_element(&element, kAXWindowAttribute)?;
+    let (actual_title, actual_bounds) = read_window_identity(&element_window)?;
+    if !window_identity_matches(
+        actual_bounds,
+        actual_title.as_deref(),
+        window_bounds,
+        window_title,
+    ) {
+        return Err(stale_element().mutation_not_dispatched());
+    }
+
+    // Hit testing may land on a label nested inside an actionable control.
+    // Walk a small, bounded ancestor chain without ever crossing the exact
+    // revalidated target window.
+    for _ in 0..8 {
+        if supports_native_action(&element, kAXPressAction)? {
+            perform_native_action(&element, kAXPressAction)?;
+            return Ok(true);
+        }
+        let Ok(parent) = copy_element(&element, kAXParentAttribute) else {
+            return Ok(false);
+        };
+        if read_window_identity(&parent)
+            .ok()
+            .and_then(|(_, bounds)| bounds)
+            .is_some_and(|bounds| window_bounds_match(bounds, window_bounds))
+        {
+            return Ok(false);
+        }
+        element = parent;
+    }
+    Ok(false)
 }
 
 fn propagate_table_row_names(elements: &mut [DriverElement]) {
@@ -559,20 +737,41 @@ fn read_node(element: &AxElement) -> Result<NodeValues, DriverError> {
             kAXPositionAttribute,
             kAXSizeAttribute,
             kAXChildrenAttribute,
+            kAXSelectedAttribute,
+            kAXExpandedAttribute,
+            kAXMinValueAttribute,
+            kAXMaxValueAttribute,
+            kAXValueIncrementAttribute,
         ],
     )?;
+    let role = values.first().and_then(cf_string).unwrap_or_default();
     let subrole = values.get(1).and_then(cf_string).unwrap_or_default();
     let title = values.get(2).and_then(cf_string).unwrap_or_default();
     let description = values.get(3).and_then(cf_string).unwrap_or_default();
     let value = (subrole != kAXSecureTextFieldSubrole)
         .then(|| values.get(4).and_then(cf_string).map(bounded_string))
         .flatten();
+    let checked = matches!(role.as_str(), "AXCheckBox" | "AXSwitch" | "AXRadioButton")
+        .then(|| values.get(4).and_then(cf_booleanish))
+        .flatten();
+    let range_value = range_value(
+        element,
+        values.get(4),
+        values.get(12),
+        values.get(13),
+        values.get(14),
+    );
+    let value = value.or_else(|| range_value.map(|range| range.value.to_string()));
     Ok(NodeValues {
-        role: values.first().and_then(cf_string).unwrap_or_default(),
+        role,
         name: bounded_string(if title.is_empty() { description } else { title }),
         value,
+        range_value,
         enabled: values.get(5).and_then(cf_boolean).unwrap_or(true),
         focused: values.get(6).and_then(cf_boolean).unwrap_or(false),
+        selected: values.get(10).and_then(cf_boolean),
+        checked,
+        expanded: values.get(11).and_then(cf_boolean),
         bounds: bounds_from_values(values.get(7), values.get(8)),
         children: values.get(9).map(children_from_value).unwrap_or_default(),
     })
@@ -590,6 +789,9 @@ fn read_action_identity(element: &AxElement) -> Result<NodeValues, DriverError> 
             kAXEnabledAttribute,
             kAXPositionAttribute,
             kAXSizeAttribute,
+            kAXMinValueAttribute,
+            kAXMaxValueAttribute,
+            kAXValueIncrementAttribute,
         ],
     )?;
     let subrole = values.get(1).and_then(cf_string).unwrap_or_default();
@@ -598,12 +800,24 @@ fn read_action_identity(element: &AxElement) -> Result<NodeValues, DriverError> 
     let value = (subrole != kAXSecureTextFieldSubrole)
         .then(|| values.get(4).and_then(cf_string).map(bounded_string))
         .flatten();
+    let range_value = range_value(
+        element,
+        values.get(4),
+        values.get(8),
+        values.get(9),
+        values.get(10),
+    );
+    let value = value.or_else(|| range_value.map(|range| range.value.to_string()));
     Ok(NodeValues {
         role: values.first().and_then(cf_string).unwrap_or_default(),
         name: bounded_string(if title.is_empty() { description } else { title }),
         value,
+        range_value,
         enabled: values.get(5).and_then(cf_boolean).unwrap_or(true),
         focused: false,
+        selected: None,
+        checked: None,
+        expanded: None,
         bounds: bounds_from_values(values.get(6), values.get(7)),
         children: Vec::new(),
     })
@@ -667,6 +881,53 @@ fn cf_string(value: &CFType) -> Option<String> {
 
 fn cf_boolean(value: &CFType) -> Option<bool> {
     value.downcast::<CFBoolean>().map(bool::from)
+}
+
+fn cf_booleanish(value: &CFType) -> Option<bool> {
+    cf_boolean(value).or_else(|| {
+        value
+            .downcast::<CFNumber>()
+            .and_then(|number| number.to_i64())
+            .map(|number| number != 0)
+    })
+}
+
+fn cf_number(value: &CFType) -> Option<f64> {
+    value
+        .downcast::<CFNumber>()
+        .and_then(|number| number.to_f64())
+}
+
+fn range_value(
+    element: &AxElement,
+    value: Option<&CFType>,
+    minimum: Option<&CFType>,
+    maximum: Option<&CFType>,
+    increment: Option<&CFType>,
+) -> Option<AccessibilityRangeValue> {
+    let value = value.and_then(cf_number)?;
+    let minimum = minimum.and_then(cf_number)?;
+    let maximum = maximum.and_then(cf_number)?;
+    if !value.is_finite()
+        || !minimum.is_finite()
+        || !maximum.is_finite()
+        || minimum > maximum
+        || value < minimum
+        || value > maximum
+    {
+        return None;
+    }
+    let small_change = increment
+        .and_then(cf_number)
+        .filter(|value| value.is_finite() && *value > 0.0);
+    Some(AccessibilityRangeValue {
+        value,
+        minimum,
+        maximum,
+        small_change,
+        large_change: None,
+        read_only: !attribute_is_settable(element, kAXValueAttribute),
+    })
 }
 
 fn bounds_from_values(position: Option<&CFType>, size: Option<&CFType>) -> Option<ScreenRect> {
@@ -740,6 +1001,12 @@ fn element_signature(values: &NodeValues) -> [u8; 32] {
         digest.update([0]);
         digest.update(value.as_bytes());
     }
+    if let Some(range) = values.range_value {
+        digest.update(range.value.to_bits().to_be_bytes());
+        digest.update(range.minimum.to_bits().to_be_bytes());
+        digest.update(range.maximum.to_bits().to_be_bytes());
+        digest.update([u8::from(range.read_only)]);
+    }
     // Keyboard focus can change as the accessibility provider serves the
     // snapshot. It is observable state, but not part of an element's stable
     // identity for action revalidation.
@@ -757,7 +1024,10 @@ fn normalize_role(role: &str) -> String {
     role.strip_prefix("AX").unwrap_or(role).to_ascii_lowercase()
 }
 
-fn normalized_actions(role: &str) -> Vec<String> {
+fn normalized_actions(role: &str, range_value: Option<AccessibilityRangeValue>) -> Vec<String> {
+    if range_value.is_some_and(|range| !range.read_only) {
+        return vec!["focus".to_owned(), "set_range_value".to_owned()];
+    }
     match role {
         "AXButton" | "AXMenuItem" | "AXLink" => vec!["invoke".to_owned()],
         "AXCheckBox" | "AXSwitch" => vec!["toggle".to_owned()],
@@ -768,10 +1038,6 @@ fn normalized_actions(role: &str) -> Vec<String> {
         "AXDisclosureTriangle" => vec!["set_expanded".to_owned()],
         _ => Vec::new(),
     }
-}
-
-fn is_interactive(role: &str) -> bool {
-    !normalized_actions(role).is_empty()
 }
 
 fn bounded_string(mut value: String) -> String {
@@ -831,6 +1097,82 @@ fn raise_window(pid: i32, bounds: ScreenRect, title: &str) -> Result<(), DriverE
     perform_native_action(&window, kAXRaiseAction)
 }
 
+fn set_window_bounds(
+    pid: i32,
+    current_bounds: ScreenRect,
+    title: &str,
+    requested_bounds: ScreenRect,
+) -> Result<(), DriverError> {
+    ensure_accessibility_permission()?;
+    let window = find_window(pid, current_bounds, title)?;
+    set_ax_point(
+        &window,
+        kAXPositionAttribute,
+        CGPoint::new(requested_bounds.x, requested_bounds.y),
+    )?;
+    set_ax_size(
+        &window,
+        kAXSizeAttribute,
+        CGSize::new(requested_bounds.width, requested_bounds.height),
+    )?;
+    confirm_window_bounds(&window, requested_bounds)
+}
+
+fn set_window_minimized(
+    pid: i32,
+    current_bounds: ScreenRect,
+    title: &str,
+    minimized: bool,
+) -> Result<(), DriverError> {
+    ensure_accessibility_permission()?;
+    let window = find_window(pid, current_bounds, title)?;
+    set_boolean(&window, kAXMinimizedAttribute, minimized)?;
+    confirm_window_minimized(&window, minimized)
+}
+
+fn confirm_window_bounds(window: &AxElement, requested: ScreenRect) -> Result<(), DriverError> {
+    let deadline = Instant::now() + WINDOW_CONFIRM_TIMEOUT;
+    loop {
+        if read_window_identity(window)
+            .ok()
+            .and_then(|(_, bounds)| bounds)
+            .is_some_and(|actual| window_bounds_match(actual, requested))
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(DriverError::new(
+                DriverErrorKind::Platform,
+                "macOS adjusted or rejected the requested window bounds",
+            )
+            .mutation_indeterminate());
+        }
+        thread::sleep(WINDOW_CONFIRM_INTERVAL);
+    }
+}
+
+fn confirm_window_minimized(window: &AxElement, minimized: bool) -> Result<(), DriverError> {
+    let deadline = Instant::now() + WINDOW_CONFIRM_TIMEOUT;
+    loop {
+        if copy_attribute(window, kAXMinimizedAttribute)
+            .ok()
+            .as_ref()
+            .and_then(cf_boolean)
+            == Some(minimized)
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(DriverError::new(
+                DriverErrorKind::Platform,
+                "macOS did not apply the requested minimized state",
+            )
+            .mutation_indeterminate());
+        }
+        thread::sleep(WINDOW_CONFIRM_INTERVAL);
+    }
+}
+
 fn perform_native_action(element: &AxElement, action: &str) -> Result<(), DriverError> {
     let action = CFString::new(action);
     // SAFETY: Both retained CF objects remain live for the synchronous call.
@@ -840,6 +1182,23 @@ fn perform_native_action(element: &AxElement, action: &str) -> Result<(), Driver
     map_action_error(error)
 }
 
+fn supports_native_action(element: &AxElement, expected: &str) -> Result<bool, DriverError> {
+    let mut actions: CFArrayRef = ptr::null();
+    // SAFETY: The retained element remains live and success transfers a
+    // create-rule array of retained CFString values through `actions`.
+    let error =
+        unsafe { AXUIElementCopyActionNames(element.as_concrete_TypeRef(), &raw mut actions) };
+    if error != kAXErrorSuccess || actions.is_null() {
+        return Err(provider_error(
+            error,
+            "accessibility action discovery failed",
+        ));
+    }
+    // SAFETY: A successful create-rule AX copy returned this non-null array.
+    let actions = unsafe { CFArray::<CFString>::wrap_under_create_rule(actions) };
+    Ok(actions.iter().any(|action| action.to_string() == expected))
+}
+
 fn set_boolean(element: &AxElement, attribute: &str, value: bool) -> Result<(), DriverError> {
     set_attribute(element, attribute, CFBoolean::from(value).as_CFTypeRef())
 }
@@ -847,6 +1206,75 @@ fn set_boolean(element: &AxElement, attribute: &str, value: bool) -> Result<(), 
 fn set_string(element: &AxElement, attribute: &str, value: &str) -> Result<(), DriverError> {
     let value = CFString::new(value);
     set_attribute(element, attribute, value.as_CFTypeRef())
+}
+
+fn set_number(element: &AxElement, attribute: &str, value: f64) -> Result<(), DriverError> {
+    let value = CFNumber::from(value);
+    set_attribute(element, attribute, value.as_CFTypeRef())
+}
+
+fn attribute_is_settable(element: &AxElement, attribute: &str) -> bool {
+    let attribute = CFString::new(attribute);
+    let mut settable = 0_u8;
+    // SAFETY: Both retained objects remain live and the API initializes the
+    // out-parameter on success.
+    let error = unsafe {
+        AXUIElementIsAttributeSettable(
+            element.as_concrete_TypeRef(),
+            attribute.as_concrete_TypeRef(),
+            &raw mut settable,
+        )
+    };
+    error == kAXErrorSuccess && settable != 0
+}
+
+fn set_ax_point(element: &AxElement, attribute: &str, value: CGPoint) -> Result<(), DriverError> {
+    set_ax_value(
+        element,
+        attribute,
+        kAXValueTypeCGPoint,
+        ptr::from_ref(&value).cast::<c_void>(),
+    )
+}
+
+fn set_ax_size(element: &AxElement, attribute: &str, value: CGSize) -> Result<(), DriverError> {
+    set_ax_value(
+        element,
+        attribute,
+        kAXValueTypeCGSize,
+        ptr::from_ref(&value).cast::<c_void>(),
+    )
+}
+
+fn set_ax_value(
+    element: &AxElement,
+    attribute: &str,
+    value_type: accessibility_sys::AXValueType,
+    value: *const c_void,
+) -> Result<(), DriverError> {
+    // SAFETY: `value` points to the matching initialized CoreGraphics value for
+    // the duration of AXValueCreate. The create-rule result is wrapped exactly
+    // once and retained through the synchronous attribute write.
+    let value = unsafe { AXValueCreate(value_type, value) };
+    if value.is_null() {
+        return Err(DriverError::new(
+            DriverErrorKind::Platform,
+            "macOS failed to encode the requested window geometry",
+        )
+        .mutation_not_dispatched());
+    }
+    // SAFETY: AXValueCreate returned a non-null create-rule Core Foundation
+    // object and CFType may own its release.
+    let value = unsafe { CFType::wrap_under_create_rule(value.cast()) };
+    set_attribute(element, attribute, value.as_CFTypeRef())
+}
+
+fn window_bounds_match(actual: ScreenRect, requested: ScreenRect) -> bool {
+    const TOLERANCE: f64 = 2.0;
+    (actual.x - requested.x).abs() <= TOLERANCE
+        && (actual.y - requested.y).abs() <= TOLERANCE
+        && (actual.width - requested.width).abs() <= TOLERANCE
+        && (actual.height - requested.height).abs() <= TOLERANCE
 }
 
 fn set_attribute(

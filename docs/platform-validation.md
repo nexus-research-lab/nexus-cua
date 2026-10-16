@@ -1,5 +1,188 @@
 # Platform Validation
 
+## Codex MCP dogfood
+
+On 2026-08-27, Codex CLI `0.149.0` loaded the project-scoped local
+`nexus_cua` stdio MCP server and controlled only the exact authorized
+`dev.nexus.cua.native-fixture` process. The successful visual path used
+`gpt-5.6-luna` with accessibility disabled and executed:
+
+```text
+nexus_cua_get_status
+  -> nexus_cua_list_windows
+  -> nexus_cua_observe_window
+  -> nexus_cua_click_normalized
+  -> nexus_cua_observe_window
+```
+
+`nexus_cua` and the `nexus_cua_*` leaves in this section are immutable names
+captured by historical development evidence, not supported compatibility names.
+The managed alias is `nexuscua`, with unprefixed leaves and qualified names such
+as `mcp__nexuscua__observe_window`. Historical event names are not rewritten
+after capture; the old tools were deleted outright in the M3 source migration
+and are not registered by the current adapter.
+
+The first image established `counter=0`; one click-only bounded action was
+delivered through the foreground route; the fresh second image established
+`counter=1`. Codex used MCP tools directly and ran with a read-only shell
+sandbox; no shell, filesystem, Browser, private sidecar token, or direct runtime
+call substituted for the MCP action.
+
+The provider-neutral zoom path was then dogfooded independently with the same
+fixture and shell restrictions:
+
+```text
+nexus_cua_observe_window
+  -> nexus_cua_zoom
+  -> nexus_cua_click_view_normalized
+  -> nexus_cua_observe_window
+```
+
+Codex cropped the latest protected observation around the button, clicked once
+in opaque view-local top-left `0..1000` coordinates, and verified that the full
+window counter increased by exactly one. This validates both bounded crop
+delivery and server-side projection back into the original protected image.
+
+The same project MCP integration also passed the system-routed window lifecycle
+path:
+
+```text
+list_windows -> observe(no image) -> set_window_bounds -> list_windows
+             -> observe(no image) -> set_window_minimized(true) -> list_windows
+             -> observe(no image) -> set_window_minimized(false) -> list_windows
+```
+
+Codex verified the requested logical x/y/width/height within two points, then
+verified minimized `false -> true -> false`. The actions used their independent
+authority kinds and `system` delivery; foreground pointer/keyboard permission
+was not used. Earlier attempts truthfully exposed AppKit layout and visible
+screen clamping plus asynchronous AX minimized-state propagation. The fixture
+now permits real horizontal resizing, and the macOS AX actor performs bounded
+read-back confirmation for at most 200 milliseconds before reporting success.
+
+The observation-bound application lifecycle path also passed through a fresh
+Codex CLI process using only MCP tools and with foreground input disabled:
+
+```text
+get_status -> list_windows -> observe(no image, AX disabled)
+           -> terminate_application -> list_apps -> list_windows
+```
+
+The dedicated mutation returned `delivery_mode=system`, `dispatched=true`, and
+`observation_invalidated=true`; both final listings were empty. The model never
+received or supplied a PID, path, command line, or force flag. An earlier run
+truthfully returned `indeterminate` even though read-only reconciliation then
+showed that the application had exited. That exposed a non-main-thread
+`NSRunningApplication.isTerminated` refresh race. The capture actor now confirms
+exit with libproc against the exact PID/start-time generation, and the clean
+Codex rerun passed without retrying the mutation.
+
+The stricter cold-start lifecycle path then passed in a new ephemeral Codex
+process while the fixture was absent from the running-application list. The
+fixture bundle was installed under the current user's standard Applications
+directory, and Codex used only the advertised MCP tools:
+
+```text
+get_status(session.active=false)
+  -> list_apps/list_windows (no configured application running)
+  -> list_launchable_apps (one exact stable identity)
+  -> launch_application(dispatched=true)
+  -> list_apps/list_windows
+  -> observe_window(no image, AX disabled)
+  -> terminate_application(dispatched=true)
+  -> list_apps/list_windows ([]/[])
+```
+
+The host authority admitted only `dev.nexus.cua.native-fixture`. The model never
+received a launch path, arguments, PID, native registration handle, sidecar
+credential, or shell fallback. Launch returned a fresh running-generation
+discovery reference; the MCP adapter rebuilt its finite session around that
+generation, and termination removed it cleanly. There were no unavailable
+tools, indeterminate mutations, retries, or unproven final states. This is the
+project's required form of Codex integration evidence: self-tests or direct
+shell calls alone do not satisfy it.
+
+After action effect/evidence fields were added, a fresh Codex CLI `0.149.0`
+process using `gpt-5.6-sol` repeated the cold lifecycle through the release MCP
+binary. Its JSON event stream recorded every operation as `mcp_tool_call` with
+`server = "nexus_cua"`; no shell, filesystem, browser, network, or other MCP
+tool event occurred. The exact lifecycle result was:
+
+```text
+status(session.active=false)
+  -> cold list apps/windows (session_unavailable, launch recovery)
+  -> one launchable dev.nexus.cua.native-fixture
+  -> launch once (foreground, dispatched=true)
+  -> one running app and one visible Generation 1 window
+  -> observe(no screenshot, AX disabled)
+  -> terminate once (system, dispatched=true,
+       effect_status=confirmed, evidence_kind=native_readback,
+       observation_invalidated=true)
+  -> apps=[] and windows=[]
+```
+
+The non-interactive run used an isolated seven-tool allowlist and explicit MCP
+pre-approval; nexus-cua's separate bounded authority still admitted only the
+fixture identity, launch activation, click, and cooperative termination. Three
+earlier setup probes performed no desktop mutation: they exposed qualified MCP
+names, code-mode nested-tool routing, and Codex's outer write-approval policy.
+They are not runtime failures and were not counted as acceptance evidence. The
+temporary installed fixture was moved to Trash after the final empty-state
+check.
+
+A separate read-only whole-desktop acceptance then used a fresh ephemeral Codex
+process and only three `nexus_cua` MCP tools:
+
+```text
+get_status(capture_modes includes display, allow_display_capture=true)
+  -> list_displays(three displays, exactly one primary)
+  -> observe_display(primary, one 3024x1964 image/png)
+```
+
+The session contained no application identities, action grants, foreground
+input, or launch authority. The returned structured observation exposed no
+filesystem path, and the Codex event stream contained no action tool. An
+initial run truthfully failed because the project-local Codex `enabled_tools`
+allowlist had not been extended with the new display tools; aligning the static
+allowlist with the registered MCP surface fixed the integration gap. The final
+Codex report was PASS.
+
+Two earlier truthful failures found issues that were fixed before the pass. The
+first exposed a vertically inverted macOS RGBA copy, now covered by a row-order
+regression test. The second exposed HiDPI coordinate ambiguity when a model saw
+a resized 1920 x 1504 image. The MCP adapter now advertises exact dimensions and
+provides a bounded top-left `0..1000` normalized click tool whose conversion is
+unit-tested. The adapter also permits a host-bounded 120-second visual-model
+think interval while revalidating the exact native visual fingerprint at
+dispatch.
+
+An additional strict background-click dogfood was attempted with
+`allow_foreground_input=false` and an explicit `delivery=background`. Codex
+discovered the MCP server and confirmed the bounded authority, but the first
+mutation-guard screenshot failed before any action with ScreenCaptureKit
+`SCStreamErrorDomain -3811`. This is not recorded as a background-click pass.
+The same host session returned zero ScreenCaptureKit displays, Apple
+`screencapture -l` failed against the fixture, ChatGPT, and Safari windows, and
+`replayd` logged window-screenshot creation failures while full-display
+`screencapture` still worked. The runtime now preserves the bounded native
+error detail, does not silently substitute occlusion-prone display cropping,
+and leaves native background delivery acceptance pending a healthy capture
+session.
+
+This is development-machine dogfood evidence, not signed-package or release
+evidence. Per the current development goal, eight-hour soak is deferred until a
+later explicitly requested publishing gate; it is not part of current feature
+acceptance. No artifact was published.
+
+The Windows source driver now contains the matching bounded Start Menu
+installed-discovery and cold-launch route, and the maintained-runner workflow
+installs an exact temporary fixture shortcut before exercising the public
+`lifecycle` harness command. This macOS host installed the official
+`x86_64-pc-windows-msvc` Rust target and passed strict platform Clippy plus a
+full-workspace Windows cross-check using the pinned rustup toolchain. That is
+compile evidence only: native Windows x64 execution and Codex passes remain
+unverified here.
+
 This document records concrete validation evidence for Nexus Computer Use
 Runtime. It is an evidence log, not a declared support matrix. A successful
 developer-machine smoke test does not replace deterministic fixtures, release
@@ -58,8 +241,10 @@ build inside the VM. This is a diagnostic sample, not a benchmark baseline.
 
 ### Official client engineering validation
 
-The Go and Python clients consume every committed request, success result, and
-stable error fixture. Local macOS tests also completed real Unix-socket
+The Go, Python, and TypeScript clients consume every committed request, success
+result, and stable error fixture. The zero-runtime-dependency TypeScript client
+also passes strict declaration compilation, sensitive-text redaction, and
+same-request reconciliation tests. Local macOS tests completed real Unix-socket
 `get_capabilities`, permission, and trusted-discovery requests against the
 sidecar. Python 3.10, 3.11, 3.12, and 3.13 passed the source test suite; the
 declared wheel and source distribution built without runtime dependencies.
@@ -75,8 +260,8 @@ downloads of the Go MSI failed at the VM network boundary; no Go test result
 was inferred from that failed installation.
 
 These runs establish client transport engineering on macOS and Windows ARM64.
-They do not replace the M2 maintained Windows x64 fixture/evidence gate or the
-M3 full native action acceptance that depends on it.
+They do not replace the maintained Windows x64 fixture/evidence gate or the
+full native action acceptance that depends on it.
 
 ### Deterministic Windows fixture
 
@@ -98,7 +283,7 @@ named-pipe path as the interactive console user. The strict run proved:
 
 One configured VM session exposed a real multiple-display transition and a
 different screenshot scale, so multiple-display and mixed-DPI mapping passed in
-that engineering run. The final M2 regression ran with only the primary VM
+that engineering run. The final Windows VM regression ran with only the primary VM
 display exposed, so its machine-readable summary correctly left all three
 topology scenarios incomplete instead of borrowing the earlier result. A
 negative-coordinate target and elevated/protected target remain outstanding.
@@ -179,9 +364,28 @@ footprint rose from approximately 54.0 MiB to 61.4 MiB even though native leak
 object counts stayed constant. That monotonic trend still requires resolution
 or accepted long-soak evidence. None of these results is a release baseline.
 
+## Current macOS smoke: 2026-10-13
+
+On the current Apple Silicon macOS host, the release `nexuscua` binary was built with
+`cargo build --release --locked --package nexus-cua --bin nexuscua`. `doctor --compact`
+reported `platform=macos`, protocol `nexus.cua.v1`, and `screen_capture=granted`,
+`accessibility=granted`, `input_control=granted`. A real sidecar was then started with
+its private development root, and authenticated local IPC successfully returned
+`get_capabilities` and `get_permission_status`.
+
+The signed debug AppKit fixture was launched through LaunchServices and the standard
+`native-validate` harness ran against that sidecar. Sixteen automated scenario groups
+passed, including discovery, display overview, observation, semantic and foreground
+mutation, stale observation, window generation, occlusion, minimized windows, negative
+coordinates, reconciliation, secure redaction, and artifact cleanup. `mixed_dpi` was
+`manual_required` because this host did not provide the maintained mixed-DPI topology;
+the aggregate status was `partial` and `automated_topology_complete=false`. This is
+current engineering evidence for the CUA runtime, not signed payload, Nexus end-to-end,
+Codex acceptance, or release evidence.
+
 ## Remaining native release evidence
 
-The current snapshot does not establish release support. Phase 1 still needs:
+The current snapshot does not establish release support. Current acceptance still needs:
 
 - an accepted complete macOS fixture path under a stable permission-owning app
   identity;
@@ -193,5 +397,5 @@ The current snapshot does not establish release support. Phase 1 still needs:
 - signed clean-machine package and upgrade testing on the declared macOS and
   Windows matrix.
 
-See the [delivery roadmap](roadmap.md) for ordering and
+See the [complete product PRD](PRD.zh-CN.md) for ordering and
 [runtime contract](specs/runtime-contract-v1.md) for the normative gates.

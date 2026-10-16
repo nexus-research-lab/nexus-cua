@@ -1,0 +1,26 @@
+{
+  "name": "nexus-cua",
+  "version": "0.1.0",
+  "description": "Signed Nexus Computer Use Runtime launcher",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nexus-research-lab/nexus-cua.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "nexuscua": "bin/nexuscua.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "optionalDependencies": {
+    "@nexus-research-lab/nexus-cua-darwin-arm64": "0.1.0",
+    "@nexus-research-lab/nexus-cua-win32-x64": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

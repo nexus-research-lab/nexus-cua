@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 )
 
 type requestEnvelope struct {
@@ -169,6 +170,15 @@ func marshalAction(action Action) (map[string]any, error) {
 	switch value := action.(type) {
 	case FocusWindow:
 		kind = string(ActionFocusWindow)
+	case SetWindowBounds:
+		if !finiteWindowBounds(value.Bounds) {
+			return nil, fmt.Errorf("nexus-cua: invalid window bounds")
+		}
+		kind = string(ActionSetWindowBounds)
+	case SetWindowMinimized:
+		kind = string(ActionSetWindowMinimized)
+	case TerminateApplication:
+		kind = string(ActionTerminateApplication)
 	case FocusElement:
 		kind = string(ActionFocusElement)
 	case InvokeElement:
@@ -177,9 +187,26 @@ func marshalAction(action Action) (map[string]any, error) {
 		if !contains([]string{"left", "middle", "right"}, string(value.Button)) || value.Count == 0 {
 			return nil, fmt.Errorf("nexus-cua: invalid click button or count")
 		}
+		if value.Delivery == "" {
+			value.Delivery = DeliveryPreferenceForeground
+		}
+		if !contains([]string{"background", "foreground"}, string(value.Delivery)) {
+			return nil, fmt.Errorf("nexus-cua: invalid click delivery")
+		}
+		action = value
 		kind = string(ActionClickPoint)
+	case PressPoint:
+		if !contains([]string{"left", "middle", "right"}, string(value.Button)) {
+			return nil, fmt.Errorf("nexus-cua: invalid press button")
+		}
+		kind = string(ActionPressPoint)
 	case SetValue:
 		kind = string(ActionSetValue)
+	case SetRangeValue:
+		if math.IsNaN(value.Value) || math.IsInf(value.Value, 0) || math.Abs(value.Value) > 1_000_000_000_000 {
+			return nil, fmt.Errorf("nexus-cua: numeric range value is outside the supported range")
+		}
+		kind = string(ActionSetRangeValue)
 	case ToggleElement:
 		kind = string(ActionToggleElement)
 	case SelectElement:
@@ -210,13 +237,25 @@ func marshalAction(action Action) (map[string]any, error) {
 	return taggedValue(kind, action)
 }
 
+func finiteWindowBounds(bounds ScreenRect) bool {
+	return !math.IsNaN(bounds.X) && !math.IsInf(bounds.X, 0) &&
+		!math.IsNaN(bounds.Y) && !math.IsInf(bounds.Y, 0) &&
+		!math.IsNaN(bounds.Width) && !math.IsInf(bounds.Width, 0) && bounds.Width > 0 &&
+		!math.IsNaN(bounds.Height) && !math.IsInf(bounds.Height, 0) && bounds.Height > 0
+}
+
 func marshalPredicate(predicate StatePredicate) (map[string]any, error) {
 	var kind string
-	switch predicate.(type) {
+	switch value := predicate.(type) {
 	case WindowTitleContains:
 		kind = "window_title_contains"
 	case ElementExists:
 		kind = "element_exists"
+	case ElementStateMatches:
+		if !contains([]string{"enabled", "focused", "selected", "checked", "expanded"}, string(value.State)) {
+			return nil, fmt.Errorf("nexus-cua: invalid element state %q", value.State)
+		}
+		kind = "element_state"
 	case BoundsContained:
 		kind = "bounds_contained"
 	default:
@@ -241,7 +280,7 @@ func taggedValue(kind string, value any) (map[string]any, error) {
 var errorCodes = []string{
 	"protocol_mismatch", "unauthorized", "invalid_request", "busy", "deadline_exceeded",
 	"session_unavailable", "stale_discovery", "capability_denied", "reference_not_found",
-	"stale_observation", "permission_required", "unsupported", "foreground_required",
+	"stale_observation", "stale_clipboard", "permission_required", "unsupported", "foreground_required",
 	"target_unavailable", "target_unresponsive", "driver_failure", "internal",
 }
 

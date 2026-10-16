@@ -74,6 +74,58 @@
           ]
         },
         {
+          "description": "Moves and resizes the exact target window in logical screen coordinates.",
+          "type": "object",
+          "properties": {
+            "bounds": {
+              "description": "Requested logical top-left screen bounds.",
+              "$ref": "#/$defs/ScreenRect"
+            },
+            "kind": {
+              "type": "string",
+              "const": "set_window_bounds"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bounds"
+          ]
+        },
+        {
+          "description": "Changes the minimized state of the exact target window.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_window_minimized"
+            },
+            "minimized": {
+              "description": "`true` minimizes and `false` restores the window without granting\nforeground keyboard or pointer input.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "minimized"
+          ]
+        },
+        {
+          "description": "Requests cooperative termination of the exact guarded application's\ncurrent process generation.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "terminate_application"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
           "description": "Moves semantic keyboard focus to an observed element.",
           "type": "object",
           "properties": {
@@ -126,6 +178,11 @@
               "maximum": 255,
               "minimum": 0
             },
+            "delivery": {
+              "description": "Requested delivery route. Omission preserves the foreground v0.1\nbehavior for older trusted hosts.",
+              "$ref": "#/$defs/DeliveryPreference",
+              "default": "foreground"
+            },
             "kind": {
               "type": "string",
               "const": "click_point"
@@ -144,6 +201,37 @@
           ]
         },
         {
+          "description": "Holds one pointer button at a point, then always releases it in the same dispatch.",
+          "type": "object",
+          "properties": {
+            "button": {
+              "description": "Pointer button.",
+              "$ref": "#/$defs/PointerButton"
+            },
+            "duration_ms": {
+              "description": "Bounded hold duration in milliseconds.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "press_point"
+            },
+            "point": {
+              "description": "Integer coordinate in the guarded screenshot artifact.",
+              "$ref": "#/$defs/ScreenshotPoint"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "point",
+            "button",
+            "duration_ms"
+          ]
+        },
+        {
           "description": "Replaces an accessibility element value.",
           "type": "object",
           "properties": {
@@ -158,6 +246,31 @@
             "value": {
               "description": "Sensitive value that must not enter logs.",
               "$ref": "#/$defs/SensitiveText"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "element_ref",
+            "value"
+          ]
+        },
+        {
+          "description": "Sets a numeric range control to an absolute value advertised by the\nguarded accessibility observation.",
+          "type": "object",
+          "properties": {
+            "element_ref": {
+              "description": "Element scoped to the bound observation.",
+              "$ref": "#/$defs/ElementRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "set_range_value"
+            },
+            "value": {
+              "description": "Finite value within the observed inclusive range.",
+              "type": "number",
+              "format": "double"
             }
           },
           "additionalProperties": false,
@@ -375,6 +488,21 @@
           "const": "focus_window"
         },
         {
+          "description": "Move and resize a target window through an operating-system window API.",
+          "type": "string",
+          "const": "set_window_bounds"
+        },
+        {
+          "description": "Minimize or restore a target window.",
+          "type": "string",
+          "const": "set_window_minimized"
+        },
+        {
+          "description": "Cooperatively terminate the exact application process generation.",
+          "type": "string",
+          "const": "terminate_application"
+        },
+        {
           "description": "Move semantic keyboard focus to an accessibility element.",
           "type": "string",
           "const": "focus_element"
@@ -390,9 +518,19 @@
           "const": "click_point"
         },
         {
+          "description": "Press and release a pointer button after a bounded hold.",
+          "type": "string",
+          "const": "press_point"
+        },
+        {
           "description": "Replace an accessibility value.",
           "type": "string",
           "const": "set_value"
+        },
+        {
+          "description": "Set a bounded numeric accessibility range value.",
+          "type": "string",
+          "const": "set_range_value"
         },
         {
           "description": "Toggle a semantic element.",
@@ -448,6 +586,21 @@
       "description": "Exact, host-reviewed session authority.",
       "type": "object",
       "properties": {
+        "allow_clipboard_read": {
+          "description": "Whether bounded plain-text clipboard reads are allowed.",
+          "type": "boolean",
+          "default": false
+        },
+        "allow_clipboard_write": {
+          "description": "Whether guarded plain-text clipboard replacement is allowed.",
+          "type": "boolean",
+          "default": false
+        },
+        "allow_display_capture": {
+          "description": "Whether read-only capture of an exact physical display is allowed.",
+          "type": "boolean",
+          "default": false
+        },
         "allow_foreground_input": {
           "description": "Whether any foreground input route is allowed.",
           "type": "boolean"
@@ -470,6 +623,10 @@
           "description": "Session mode. There is deliberately no unrestricted value.",
           "$ref": "#/$defs/PermissionMode"
         },
+        "restore_foreground_after_input": {
+          "description": "Whether temporary foreground input should restore the exact prior owner.",
+          "type": "boolean"
+        },
         "ttl_seconds": {
           "description": "Finite lifetime in seconds.",
           "type": "integer",
@@ -483,8 +640,13 @@
         "application_refs",
         "allowed_actions",
         "allow_foreground_input",
+        "restore_foreground_after_input",
         "ttl_seconds"
       ]
+    },
+    "ClipboardRef": {
+      "description": "Session-scoped opaque guard for one transient clipboard generation.",
+      "type": "string"
     },
     "Command": {
       "description": "Exact public operation. Unknown variants or fields are rejected.",
@@ -529,6 +691,38 @@
           "additionalProperties": false,
           "required": [
             "operation"
+          ]
+        },
+        {
+          "description": "Discover installed applications through bounded native registration sources.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "discover_launchable_applications"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation"
+          ]
+        },
+        {
+          "description": "Launch one freshly discovered installed application identity.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/LaunchApplicationInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "launch_application"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
           ]
         },
         {
@@ -604,6 +798,24 @@
           ]
         },
         {
+          "description": "List exact physical displays under separate read-only authority.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/SessionInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "list_displays"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
           "description": "Capture one exact window.",
           "type": "object",
           "properties": {
@@ -622,6 +834,60 @@
           ]
         },
         {
+          "description": "Capture one exact physical display for desktop overview.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ObserveDisplayInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "observe_display"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "Read bounded plain text under separate clipboard authority.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ReadClipboardInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "read_clipboard"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "Replace plain text only when a fresh clipboard guard still matches.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/WriteClipboardInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "write_clipboard"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
           "description": "Execute one mutation bound to a fresh observation.",
           "type": "object",
           "properties": {
@@ -631,6 +897,24 @@
             "operation": {
               "type": "string",
               "const": "perform_action"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
+          "description": "Query one prior mutation identity without dispatching it again.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ReconcileMutationInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "reconcile_mutation"
             }
           },
           "additionalProperties": false,
@@ -659,12 +943,84 @@
         }
       ]
     },
+    "DeliveryPreference": {
+      "description": "Caller-selected delivery ceiling for pixel actions that support both routes.",
+      "oneOf": [
+        {
+          "description": "Route to the exact target without activating it, or fail explicitly.",
+          "type": "string",
+          "const": "background"
+        },
+        {
+          "description": "Use the system foreground pointer route.",
+          "type": "string",
+          "const": "foreground"
+        }
+      ]
+    },
     "DiscoveryRef": {
       "description": "Short-lived runtime-local reference for one discovered process generation.",
       "type": "string"
     },
+    "DisplayRef": {
+      "description": "Session-scoped opaque display reference.",
+      "type": "string"
+    },
     "ElementRef": {
       "description": "Observation-scoped opaque accessibility element reference.",
+      "type": "string"
+    },
+    "ElementState": {
+      "description": "A deterministic predicate evaluated against fresh platform state.",
+      "oneOf": [
+        {
+          "description": "Whether the element accepts actions.",
+          "type": "string",
+          "const": "enabled"
+        },
+        {
+          "description": "Whether the element owns keyboard focus.",
+          "type": "string",
+          "const": "focused"
+        },
+        {
+          "description": "Whether the platform reports the element as selected.",
+          "type": "string",
+          "const": "selected"
+        },
+        {
+          "description": "Whether the platform reports the element as checked.",
+          "type": "string",
+          "const": "checked"
+        },
+        {
+          "description": "Whether the platform reports the element as expanded.",
+          "type": "string",
+          "const": "expanded"
+        }
+      ]
+    },
+    "LaunchApplicationInput": {
+      "description": "Explicit host authority for one cold application launch.",
+      "type": "object",
+      "properties": {
+        "allow_foreground_activation": {
+          "description": "Whether the launched application may become the foreground owner.",
+          "type": "boolean"
+        },
+        "launch_ref": {
+          "description": "Fresh opaque identity from installed-application discovery.",
+          "$ref": "#/$defs/LaunchRef"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "launch_ref",
+        "allow_foreground_activation"
+      ]
+    },
+    "LaunchRef": {
+      "description": "Short-lived runtime-local reference for one reviewed installed application identity.",
       "type": "string"
     },
     "ListWindowsInput": {
@@ -693,8 +1049,27 @@
       ]
     },
     "ObservationId": {
-      "description": "Identity for one immutable window observation.",
+      "description": "Identity for one immutable window or display observation.",
       "type": "string"
+    },
+    "ObserveDisplayInput": {
+      "description": "Input for capturing one exact physical display.",
+      "type": "object",
+      "properties": {
+        "display_ref": {
+          "description": "Session-scoped target returned by display enumeration.",
+          "$ref": "#/$defs/DisplayRef"
+        },
+        "session_id": {
+          "description": "Runtime-issued session identity.",
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "display_ref"
+      ]
     },
     "ObserveWindowInput": {
       "description": "Input for capturing one exact window.",
@@ -801,6 +1176,41 @@
           "type": "string",
           "const": "right"
         }
+      ]
+    },
+    "ReadClipboardInput": {
+      "description": "Input for one separately authorized clipboard read.",
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "description": "Runtime-issued session identity with clipboard-read authority.",
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id"
+      ]
+    },
+    "ReconcileMutationInput": {
+      "description": "Read-only reconciliation query for one prior mutation identity.",
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "description": "Original host-generated mutation identity.",
+          "$ref": "#/$defs/RequestId"
+        },
+        "wait_ms": {
+          "description": "Maximum time to wait for an already-admitted mutation to finish.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "wait_ms"
       ]
     },
     "RequestId": {
@@ -936,6 +1346,44 @@
           ]
         },
         {
+          "description": "At least one matching element has the requested semantic state.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "element_state"
+            },
+            "name": {
+              "description": "Optional accessible-name constraint.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "description": "Optional role constraint.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "description": "Closed semantic state to compare.",
+              "$ref": "#/$defs/ElementState"
+            },
+            "value": {
+              "description": "Expected state value.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state",
+            "value"
+          ]
+        },
+        {
           "description": "One observed rectangle remains within another.",
           "type": "object",
           "properties": {
@@ -988,6 +1436,30 @@
     "WindowRef": {
       "description": "Session-scoped opaque window reference.",
       "type": "string"
+    },
+    "WriteClipboardInput": {
+      "description": "Input for a guarded plain-text clipboard replacement.",
+      "type": "object",
+      "properties": {
+        "clipboard_ref": {
+          "description": "Fresh snapshot guard proving the clipboard was inspected before write.",
+          "$ref": "#/$defs/ClipboardRef"
+        },
+        "session_id": {
+          "description": "Runtime-issued session identity with clipboard-write authority.",
+          "$ref": "#/$defs/SessionId"
+        },
+        "text": {
+          "description": "Replacement text. Debug output is always redacted.",
+          "$ref": "#/$defs/SensitiveText"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "clipboard_ref",
+        "text"
+      ]
     }
   }
 }

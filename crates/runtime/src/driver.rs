@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use nexus_cua_protocol::{
-    AccessibilityMode, ApplicationProvenance, DeliveryMode, DriverCapabilities,
-    ObservationTruncation, PermissionStatus, PointerButton, ScreenPoint, ScreenRect, SensitiveText,
-    StatePredicate,
+    AccessibilityMode, AccessibilityRangeValue, ActionEffectStatus, ActionEvidenceKind,
+    ApplicationProvenance, DeliveryMode, DeliveryPreference, DriverCapabilities,
+    ForegroundRestorationStatus, ObservationTruncation, PermissionStatus, PointerButton,
+    ScreenPoint, ScreenRect, SensitiveText, StatePredicate,
 };
 use zeroize::Zeroize;
 
@@ -27,6 +28,42 @@ pub struct DriverApplication {
     pub foreground: bool,
     /// Public best-effort provenance summary without native authority handles.
     pub provenance: ApplicationProvenance,
+}
+
+/// Internal installed-application identity owned by a platform driver.
+#[derive(Clone, Debug)]
+pub struct DriverLaunchableApplication {
+    /// Stable native registration key, never exposed as public authority.
+    pub key: String,
+    /// Driver-owned native launch target; public callers never supply it.
+    pub launch_target: String,
+    /// Normalized executable/bundle identity used for revalidation.
+    pub identity: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Stable bundle, package, or executable identity.
+    pub application_id: String,
+    /// Public best-effort provenance summary.
+    pub provenance: ApplicationProvenance,
+}
+
+impl DriverLaunchableApplication {
+    /// Returns true only when native rediscovery produced the same installed identity.
+    pub fn matches_identity(&self, current: &Self) -> bool {
+        self.key == current.key
+            && self.launch_target == current.launch_target
+            && self.identity == current.identity
+            && self.application_id == current.application_id
+            && self.provenance == current.provenance
+    }
+}
+
+/// Native cold-launch result.
+pub struct DriverLaunchOutput {
+    /// Newly started process generation.
+    pub application: DriverApplication,
+    /// Native delivery route used by launch.
+    pub delivery_mode: DeliveryMode,
 }
 
 impl DriverApplication {
@@ -56,6 +93,17 @@ pub struct DriverWindow {
     pub visible: bool,
     /// Whether the window owns foreground input.
     pub foreground: bool,
+}
+
+/// Internal physical-display identity owned by a platform driver.
+#[derive(Clone, Debug)]
+pub struct DriverDisplay {
+    /// Stable key within the lifetime of one driver process.
+    pub key: String,
+    /// Logical top-left bounds in the multi-display desktop coordinate space.
+    pub screen_bounds: ScreenRect,
+    /// Whether this display owns the operating-system primary origin.
+    pub primary: bool,
 }
 
 /// Raw RGBA screenshot returned to the runtime for validated PNG encoding.
@@ -118,12 +166,20 @@ pub struct DriverElement {
     pub name: String,
     /// Non-sensitive display value when available.
     pub value: Option<String>,
+    /// Numeric range metadata when the native provider exposes it coherently.
+    pub range_value: Option<AccessibilityRangeValue>,
     /// Logical top-left screen bounds.
     pub screen_bounds: Option<ScreenRect>,
     /// Whether actions are currently accepted.
     pub enabled: bool,
     /// Whether the element owns keyboard focus.
     pub focused: bool,
+    /// Whether the platform reports the element as selected.
+    pub selected: Option<bool>,
+    /// Whether the platform reports the element as checked.
+    pub checked: Option<bool>,
+    /// Whether the platform reports the element as expanded.
+    pub expanded: Option<bool>,
     /// Normalized semantic actions.
     pub actions: Vec<String>,
 }
@@ -152,6 +208,18 @@ pub struct DriverObservation {
 pub enum DriverAction {
     /// Bring the target window to the foreground.
     FocusWindow,
+    /// Move and resize the exact target window.
+    SetWindowBounds {
+        /// Requested logical top-left screen bounds.
+        bounds: ScreenRect,
+    },
+    /// Minimize or restore the exact target window.
+    SetWindowMinimized {
+        /// Requested minimized state.
+        minimized: bool,
+    },
+    /// Cooperatively terminate the exact application process generation.
+    TerminateApplication,
     /// Move semantic focus to one accessibility element.
     FocusElement {
         /// Driver-owned element identity from the guarded observation.
@@ -170,6 +238,17 @@ pub enum DriverAction {
         button: PointerButton,
         /// Validated click count.
         count: u8,
+        /// Requested foreground or exact-target background route.
+        delivery: DeliveryPreference,
+    },
+    /// Hold and release a pointer button at one resolved logical screen point.
+    PressPoint {
+        /// Logical screen coordinate resolved from the guarded screenshot.
+        point: ScreenPoint,
+        /// Requested pointer button.
+        button: PointerButton,
+        /// Validated bounded hold duration.
+        duration_ms: u32,
     },
     /// Replace one accessibility value.
     SetValue {
@@ -177,6 +256,13 @@ pub enum DriverAction {
         element_key: String,
         /// Sensitive value delivered only to the native driver.
         value: SensitiveText,
+    },
+    /// Set one native numeric range pattern.
+    SetRangeValue {
+        /// Driver-owned element identity from the guarded observation.
+        element_key: String,
+        /// Runtime-validated finite value within the observed range.
+        value: f64,
     },
     /// Toggle one accessibility element.
     ToggleElement {
@@ -232,11 +318,70 @@ pub enum DriverAction {
     },
 }
 
+impl DriverAction {
+    /// Returns whether the action temporarily activates a target for input and
+    /// can therefore restore a prior foreground owner afterwards.
+    pub fn supports_foreground_restoration(&self) -> bool {
+        matches!(
+            self,
+            Self::ClickPoint {
+                delivery: DeliveryPreference::Foreground,
+                ..
+            } | Self::PressPoint { .. }
+                | Self::MovePointer { .. }
+                | Self::TypeText { .. }
+                | Self::PressKeys { .. }
+                | Self::Scroll { .. }
+                | Self::Drag { .. }
+        )
+    }
+}
+
 /// Successful platform dispatch result.
 #[derive(Clone, Copy, Debug)]
 pub struct DriverActionOutput {
     /// Route actually used. It must not exceed runtime authorization.
     pub delivery_mode: DeliveryMode,
+    /// Direct effect classification established by the owning native actor.
+    pub effect_status: ActionEffectStatus,
+    /// Closed evidence class supporting the effect classification.
+    pub evidence_kind: ActionEvidenceKind,
+    /// Outcome of the bounded prior-foreground restoration attempt.
+    pub foreground_restoration: ForegroundRestorationStatus,
+}
+
+impl DriverActionOutput {
+    /// Builds an output backed by bounded native state read-back.
+    pub fn confirmed(delivery_mode: DeliveryMode) -> Self {
+        Self {
+            delivery_mode,
+            effect_status: ActionEffectStatus::Confirmed,
+            evidence_kind: ActionEvidenceKind::NativeReadback,
+            foreground_restoration: ForegroundRestorationStatus::NotRequested,
+        }
+    }
+
+    /// Builds an output that proves dispatch only; callers must observe effect.
+    pub fn unverified(delivery_mode: DeliveryMode) -> Self {
+        Self {
+            delivery_mode,
+            effect_status: ActionEffectStatus::Unverified,
+            evidence_kind: ActionEvidenceKind::DispatchAcceptance,
+            foreground_restoration: ForegroundRestorationStatus::NotRequested,
+        }
+    }
+
+    /// Attaches the native actor's truthful restoration outcome.
+    #[must_use]
+    pub fn with_foreground_restoration(mut self, status: ForegroundRestorationStatus) -> Self {
+        self.foreground_restoration = status;
+        self
+    }
+
+    /// Returns whether the closed status/evidence pair is internally coherent.
+    pub fn evidence_is_coherent(&self) -> bool {
+        self.effect_status.is_supported_by(self.evidence_kind)
+    }
 }
 
 /// Deterministic platform verification result.
@@ -246,6 +391,25 @@ pub struct DriverVerification {
     pub matched: bool,
     /// Concise non-sensitive evidence.
     pub evidence: String,
+}
+
+/// Bounded native plain-text clipboard snapshot. The opaque change marker is
+/// retained only behind a session-scoped public guard.
+pub struct DriverClipboardSnapshot {
+    /// Platform generation marker used for compare-and-replace.
+    pub change_marker: String,
+    /// Plain text, or `None` when no supported text format is available.
+    pub text: Option<SensitiveText>,
+}
+
+/// Native result of a guarded clipboard replacement.
+pub struct DriverClipboardWriteOutput {
+    /// Platform generation marker after the replacement.
+    pub change_marker: String,
+    /// Truthful effect classification.
+    pub effect_status: ActionEffectStatus,
+    /// Evidence supporting `effect_status`.
+    pub evidence_kind: ActionEvidenceKind,
 }
 
 /// Replaceable platform implementation beneath the authorization runtime.
@@ -260,11 +424,48 @@ pub trait DesktopDriver: Send + Sync {
     /// Lists running user applications.
     async fn list_applications(&self) -> Result<Vec<DriverApplication>, DriverError>;
 
+    /// Lists installed application identities accepted by the native launcher.
+    async fn list_launchable_applications(
+        &self,
+    ) -> Result<Vec<DriverLaunchableApplication>, DriverError> {
+        Ok(Vec::new())
+    }
+
+    /// Starts one freshly revalidated installed application identity.
+    async fn launch_application(
+        &self,
+        _application: &DriverLaunchableApplication,
+        _allow_foreground_activation: bool,
+    ) -> Result<DriverLaunchOutput, DriverError> {
+        Err(DriverError::new(
+            crate::DriverErrorKind::Unsupported,
+            "installed application launch is unsupported",
+        )
+        .mutation_not_dispatched())
+    }
+
     /// Lists top-level windows, optionally for one driver application key.
     async fn list_windows(
         &self,
         application_key: Option<&str>,
     ) -> Result<Vec<DriverWindow>, DriverError>;
+
+    /// Lists physical displays available to the current interactive desktop.
+    async fn list_displays(&self) -> Result<Vec<DriverDisplay>, DriverError> {
+        Ok(Vec::new())
+    }
+
+    /// Captures one freshly revalidated physical display without creating
+    /// action authority.
+    async fn observe_display(
+        &self,
+        _display: &DriverDisplay,
+    ) -> Result<(RgbaImage, ScreenRect), DriverError> {
+        Err(DriverError::new(
+            crate::DriverErrorKind::Unsupported,
+            "physical display capture is unsupported",
+        ))
+    }
 
     /// Observes one exact driver window.
     async fn observe_window(
@@ -273,6 +474,31 @@ pub trait DesktopDriver: Send + Sync {
         include_screenshot: bool,
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError>;
+
+    /// Reads bounded plain text from the current interactive desktop clipboard.
+    async fn read_clipboard(
+        &self,
+        _max_text_bytes: usize,
+    ) -> Result<DriverClipboardSnapshot, DriverError> {
+        Err(DriverError::new(
+            crate::DriverErrorKind::Unsupported,
+            "plain-text clipboard reads are unsupported",
+        ))
+    }
+
+    /// Replaces clipboard text only when the native generation still matches.
+    async fn write_clipboard(
+        &self,
+        _expected_change_marker: &str,
+        _text: &SensitiveText,
+        _max_text_bytes: usize,
+    ) -> Result<DriverClipboardWriteOutput, DriverError> {
+        Err(DriverError::new(
+            crate::DriverErrorKind::Unsupported,
+            "plain-text clipboard writes are unsupported",
+        )
+        .mutation_not_dispatched())
+    }
 
     /// Confirms that a prior observation fingerprint still describes the target.
     async fn observation_is_current(
@@ -291,6 +517,7 @@ pub trait DesktopDriver: Send + Sync {
         window: &DriverWindow,
         action: DriverAction,
         allow_foreground: bool,
+        restore_foreground: bool,
     ) -> Result<DriverActionOutput, DriverError>;
 
     /// Evaluates a deterministic predicate against fresh state.

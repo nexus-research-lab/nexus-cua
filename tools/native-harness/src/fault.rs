@@ -79,6 +79,10 @@ async fn open_target(cli: &Cli, client: &mut Client) -> Result<FaultTarget, Box<
                 application_refs: vec![application.discovery_ref.clone()],
                 allowed_actions: capabilities.actions,
                 allow_foreground_input: false,
+                restore_foreground_after_input: false,
+                allow_display_capture: false,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
                 ttl_seconds: 60,
             },
         }))

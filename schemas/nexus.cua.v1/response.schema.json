@@ -35,6 +35,13 @@
             "type": "string"
           }
         },
+        "checked": {
+          "description": "Whether the element is checked, when the platform exposes a binary state.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "element_ref": {
           "description": "Reference valid only for the containing observation.",
           "$ref": "#/$defs/ElementRef"
@@ -42,6 +49,13 @@
         "enabled": {
           "description": "Whether the element can receive actions.",
           "type": "boolean"
+        },
+        "expanded": {
+          "description": "Whether the element is expanded, when the platform exposes that state.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "focused": {
           "description": "Whether the element currently owns keyboard focus.",
@@ -56,6 +70,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ElementRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "range_value": {
+          "description": "Numeric range metadata for sliders, spinners, and similar controls.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessibilityRangeValue"
             },
             {
               "type": "null"
@@ -77,6 +102,13 @@
             }
           ]
         },
+        "selected": {
+          "description": "Whether the element is selected, when the platform exposes that state.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "value": {
           "description": "Non-sensitive display value when safely available.",
           "type": [
@@ -95,6 +127,84 @@
         "actions"
       ]
     },
+    "AccessibilityRangeValue": {
+      "description": "Numeric accessibility range metadata from one immutable observation.",
+      "type": "object",
+      "properties": {
+        "large_change": {
+          "description": "Preferred large adjustment when the platform exposes one.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "maximum": {
+          "description": "Inclusive finite maximum.",
+          "type": "number",
+          "format": "double"
+        },
+        "minimum": {
+          "description": "Inclusive finite minimum.",
+          "type": "number",
+          "format": "double"
+        },
+        "read_only": {
+          "description": "Whether the native provider reports the range as read-only.",
+          "type": "boolean"
+        },
+        "small_change": {
+          "description": "Preferred small adjustment when the platform exposes one.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "value": {
+          "description": "Current finite value.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "minimum",
+        "maximum",
+        "read_only"
+      ]
+    },
+    "ActionEffectStatus": {
+      "description": "Whether the requested direct action effect was established before success.",
+      "oneOf": [
+        {
+          "description": "The native route read back the requested direct operating-system state.",
+          "type": "string",
+          "const": "confirmed"
+        },
+        {
+          "description": "Dispatch was accepted, but application-visible effect requires a fresh observation.",
+          "type": "string",
+          "const": "unverified"
+        }
+      ]
+    },
+    "ActionEvidenceKind": {
+      "description": "Closed evidence class supporting a successful action result.",
+      "oneOf": [
+        {
+          "description": "The native route performed a bounded read-back or exact exit confirmation.",
+          "type": "string",
+          "const": "native_readback"
+        },
+        {
+          "description": "The native route accepted delivery without proving downstream application effect.",
+          "type": "string",
+          "const": "dispatch_acceptance"
+        }
+      ]
+    },
     "ActionKind": {
       "description": "Stable action category used by bounded capability manifests.",
       "oneOf": [
@@ -102,6 +212,21 @@
           "description": "Focus or activate a target window.",
           "type": "string",
           "const": "focus_window"
+        },
+        {
+          "description": "Move and resize a target window through an operating-system window API.",
+          "type": "string",
+          "const": "set_window_bounds"
+        },
+        {
+          "description": "Minimize or restore a target window.",
+          "type": "string",
+          "const": "set_window_minimized"
+        },
+        {
+          "description": "Cooperatively terminate the exact application process generation.",
+          "type": "string",
+          "const": "terminate_application"
         },
         {
           "description": "Move semantic keyboard focus to an accessibility element.",
@@ -119,9 +244,19 @@
           "const": "click_point"
         },
         {
+          "description": "Press and release a pointer button after a bounded hold.",
+          "type": "string",
+          "const": "press_point"
+        },
+        {
           "description": "Replace an accessibility value.",
           "type": "string",
           "const": "set_value"
+        },
+        {
+          "description": "Set a bounded numeric accessibility range value.",
+          "type": "string",
+          "const": "set_range_value"
         },
         {
           "description": "Toggle a semantic element.",
@@ -177,6 +312,18 @@
           "description": "Whether the platform reported successful dispatch.",
           "type": "boolean"
         },
+        "effect_status": {
+          "description": "Truthful effect classification for the direct requested mutation.",
+          "$ref": "#/$defs/ActionEffectStatus"
+        },
+        "evidence_kind": {
+          "description": "Evidence class supporting `effect_status`.",
+          "$ref": "#/$defs/ActionEvidenceKind"
+        },
+        "foreground_restoration": {
+          "description": "Truthful outcome of any host-authorized foreground restoration attempt.",
+          "$ref": "#/$defs/ForegroundRestorationStatus"
+        },
         "observation_invalidated": {
           "description": "Whether callers must observe again before another mutation.",
           "type": "boolean"
@@ -186,12 +333,49 @@
       "required": [
         "delivery_mode",
         "dispatched",
+        "effect_status",
+        "evidence_kind",
+        "foreground_restoration",
         "observation_invalidated"
       ]
     },
     "AppRef": {
       "description": "Session-scoped opaque application reference.",
       "type": "string"
+    },
+    "ApplicationLaunchOutput": {
+      "description": "Successful cold-launch result and fresh running-generation reference.",
+      "type": "object",
+      "properties": {
+        "application": {
+          "description": "Newly launched exact process generation, usable to open a bounded session.",
+          "$ref": "#/$defs/DiscoveredApplication"
+        },
+        "delivery_mode": {
+          "description": "Native route observed for the launch.",
+          "$ref": "#/$defs/DeliveryMode"
+        },
+        "dispatched": {
+          "description": "Whether the platform reported successful dispatch and generation discovery.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "application",
+        "delivery_mode",
+        "dispatched"
+      ]
+    },
+    "ApplicationLifecycleOperation": {
+      "description": "Installed-application lifecycle operations implemented by a driver.",
+      "oneOf": [
+        {
+          "description": "Discover reviewed installed applications and start one exact identity.",
+          "type": "string",
+          "const": "launch"
+        }
+      ]
     },
     "ApplicationProvenance": {
       "description": "Public, non-authoritative provenance summary for one running application.",
@@ -332,7 +516,97 @@
           "description": "One exact top-level application window.",
           "type": "string",
           "const": "window"
+        },
+        {
+          "description": "One exact physical display for read-only desktop overview.",
+          "type": "string",
+          "const": "display"
         }
+      ]
+    },
+    "ClipboardOperation": {
+      "description": "Clipboard capabilities advertised by the selected native driver.",
+      "oneOf": [
+        {
+          "description": "Read bounded UTF-8 plain text from the interactive desktop clipboard.",
+          "type": "string",
+          "const": "read_text"
+        },
+        {
+          "description": "Replace the clipboard with bounded plain text after a change guard.",
+          "type": "string",
+          "const": "write_text"
+        }
+      ]
+    },
+    "ClipboardRef": {
+      "description": "Session-scoped opaque guard for one transient clipboard generation.",
+      "type": "string"
+    },
+    "ClipboardSnapshot": {
+      "description": "One transient clipboard snapshot. The text is deliberately redacted from\ndebug formatting and must not be logged or retained by the runtime.",
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "description": "Exact UTF-8 byte length of `text`, or zero when text is unavailable.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "clipboard_ref": {
+          "description": "Session-scoped guard for a later compare-and-replace write.",
+          "$ref": "#/$defs/ClipboardRef"
+        },
+        "text": {
+          "description": "Plain text, or `null` when the clipboard has no supported text format.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SensitiveText"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "clipboard_ref",
+        "byte_length"
+      ]
+    },
+    "ClipboardWriteOutput": {
+      "description": "Successful guarded clipboard replacement.",
+      "type": "object",
+      "properties": {
+        "clipboard_ref": {
+          "description": "Fresh guard describing the clipboard immediately after the write.",
+          "$ref": "#/$defs/ClipboardRef"
+        },
+        "delivery_mode": {
+          "description": "Native system clipboard route.",
+          "$ref": "#/$defs/DeliveryMode"
+        },
+        "dispatched": {
+          "description": "Whether the native provider accepted the replacement.",
+          "type": "boolean"
+        },
+        "effect_status": {
+          "description": "Truthful effect classification.",
+          "$ref": "#/$defs/ActionEffectStatus"
+        },
+        "evidence_kind": {
+          "description": "Evidence supporting `effect_status`.",
+          "$ref": "#/$defs/ActionEvidenceKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "clipboard_ref",
+        "delivery_mode",
+        "dispatched",
+        "effect_status",
+        "evidence_kind"
       ]
     },
     "CommandResult": {
@@ -384,6 +658,42 @@
             "result_type": {
               "type": "string",
               "const": "applications_discovered"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Short-lived installed-application discovery response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/DiscoverLaunchableApplicationsOutput"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "launchable_applications_discovered"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Newly launched running process generation.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/ApplicationLaunchOutput"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "application_launched"
             }
           },
           "additionalProperties": false,
@@ -467,6 +777,27 @@
           ]
         },
         {
+          "description": "Display enumeration response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DisplaySummary"
+              }
+            },
+            "result_type": {
+              "type": "string",
+              "const": "displays"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
           "description": "Immutable observation response.",
           "type": "object",
           "properties": {
@@ -485,6 +816,60 @@
           ]
         },
         {
+          "description": "Immutable read-only display observation response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/DisplayObservation"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "display_observed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Transient bounded clipboard text and a fresh write guard.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/ClipboardSnapshot"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "clipboard_read"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Guarded clipboard mutation response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/ClipboardWriteOutput"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "clipboard_written"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
           "description": "Mutation response.",
           "type": "object",
           "properties": {
@@ -494,6 +879,24 @@
             "result_type": {
               "type": "string",
               "const": "action_performed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result_type",
+            "data"
+          ]
+        },
+        {
+          "description": "Read-only mutation-ledger response.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/MutationReconciliation"
+            },
+            "result_type": {
+              "type": "string",
+              "const": "mutation_reconciled"
             }
           },
           "additionalProperties": false,
@@ -567,6 +970,16 @@
           "const": "semantic"
         },
         {
+          "description": "An operating-system window or application lifecycle API.",
+          "type": "string",
+          "const": "system"
+        },
+        {
+          "description": "Routed directly to an exact background target without activating it.",
+          "type": "string",
+          "const": "background"
+        },
+        {
           "description": "System-wide foreground pointer or keyboard input.",
           "type": "string",
           "const": "foreground"
@@ -582,6 +995,28 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/DiscoveredApplication"
+          }
+        },
+        "complete": {
+          "description": "False when the configured discovery result bound truncated the snapshot.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "applications",
+        "complete"
+      ]
+    },
+    "DiscoverLaunchableApplicationsOutput": {
+      "description": "Bounded result of trusted-host installed-application discovery.",
+      "type": "object",
+      "properties": {
+        "applications": {
+          "description": "Runtime-issued descriptors ordered by stable application identity.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LaunchableApplication"
           }
         },
         "complete": {
@@ -638,6 +1073,68 @@
       "description": "Short-lived runtime-local reference for one discovered process generation.",
       "type": "string"
     },
+    "DisplayObservation": {
+      "description": "Immutable read-only overview of one exact physical display.",
+      "type": "object",
+      "properties": {
+        "captured_at": {
+          "description": "RFC 3339 capture timestamp.",
+          "type": "string"
+        },
+        "display_ref": {
+          "description": "Exact physical display captured.",
+          "$ref": "#/$defs/DisplayRef"
+        },
+        "display_screen_bounds": {
+          "description": "Logical display bounds at capture time.",
+          "$ref": "#/$defs/ScreenRect"
+        },
+        "observation_id": {
+          "description": "Runtime identity for observation correlation only; it cannot guard actions.",
+          "$ref": "#/$defs/ObservationId"
+        },
+        "screenshot": {
+          "description": "Transient full-display screenshot.",
+          "$ref": "#/$defs/ScreenshotArtifact"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "display_ref",
+        "captured_at",
+        "display_screen_bounds",
+        "screenshot"
+      ]
+    },
+    "DisplayRef": {
+      "description": "Session-scoped opaque display reference.",
+      "type": "string"
+    },
+    "DisplaySummary": {
+      "description": "One physical display available to an explicitly authorized session.",
+      "type": "object",
+      "properties": {
+        "display_ref": {
+          "description": "Session-scoped opaque display reference.",
+          "$ref": "#/$defs/DisplayRef"
+        },
+        "primary": {
+          "description": "Whether this display contains the operating-system primary origin.",
+          "type": "boolean"
+        },
+        "screen_bounds": {
+          "description": "Logical top-left bounds in the multi-display desktop coordinate space.",
+          "$ref": "#/$defs/ScreenRect"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "display_ref",
+        "screen_bounds",
+        "primary"
+      ]
+    },
     "DriverCapabilities": {
       "description": "Capabilities advertised by the selected platform driver.",
       "type": "object",
@@ -653,11 +1150,26 @@
             "$ref": "#/$defs/ActionKind"
           }
         },
+        "application_lifecycle": {
+          "description": "Exact installed-application lifecycle operations implemented by the driver.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApplicationLifecycleOperation"
+          }
+        },
         "capture_modes": {
           "description": "Exact capture surfaces implemented by the driver.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/CaptureMode"
+          }
+        },
+        "clipboard": {
+          "description": "Separately authorized clipboard operations implemented by a driver.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ClipboardOperation"
           }
         },
         "input_routes": {
@@ -688,6 +1200,7 @@
         "capture_modes",
         "accessibility_tree",
         "input_routes",
+        "application_lifecycle",
         "actions"
       ]
     },
@@ -749,6 +1262,11 @@
           "const": "stale_observation"
         },
         {
+          "description": "Clipboard contents changed after the supplied guard was issued.",
+          "type": "string",
+          "const": "stale_clipboard"
+        },
+        {
           "description": "Required operating-system permission is missing.",
           "type": "string",
           "const": "permission_required"
@@ -785,6 +1303,41 @@
         }
       ]
     },
+    "ForegroundRestorationStatus": {
+      "description": "Outcome of the host-authorized attempt to return foreground ownership after\ntemporary pointer or keyboard input.",
+      "oneOf": [
+        {
+          "description": "Restoration was not authorized or the action intentionally owns final focus.",
+          "type": "string",
+          "const": "not_requested"
+        },
+        {
+          "description": "The exact target already owned foreground before the action.",
+          "type": "string",
+          "const": "not_needed"
+        },
+        {
+          "description": "The exact previous process generation was restored and read back.",
+          "type": "string",
+          "const": "restored"
+        },
+        {
+          "description": "Another owner appeared after dispatch, so the runtime did not steal focus.",
+          "type": "string",
+          "const": "skipped_owner_changed"
+        },
+        {
+          "description": "The previous process generation or native window no longer existed.",
+          "type": "string",
+          "const": "target_unavailable"
+        },
+        {
+          "description": "The operating system rejected restoration or read-back did not confirm it.",
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    },
     "InputRoute": {
       "description": "Input delivery route implemented by the selected driver.",
       "oneOf": [
@@ -794,10 +1347,189 @@
           "const": "semantic"
         },
         {
+          "description": "Operating-system window or application lifecycle APIs.",
+          "type": "string",
+          "const": "system"
+        },
+        {
+          "description": "Best-effort exact-window input that does not activate the target.",
+          "type": "string",
+          "const": "background"
+        },
+        {
           "description": "User-visible system foreground input.",
           "type": "string",
           "const": "foreground"
         }
+      ]
+    },
+    "LaunchRef": {
+      "description": "Short-lived runtime-local reference for one reviewed installed application identity.",
+      "type": "string"
+    },
+    "LaunchableApplication": {
+      "description": "One installed application selected from bounded native discovery.",
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "description": "Stable bundle, package, or executable identity used for policy review.",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "RFC 3339 deadline after which the application must be rediscovered.",
+          "type": "string"
+        },
+        "launch_ref": {
+          "description": "Short-lived, single-use runtime reference. It is not a filesystem path.",
+          "$ref": "#/$defs/LaunchRef"
+        },
+        "name": {
+          "description": "Human-readable installed application name.",
+          "type": "string"
+        },
+        "provenance": {
+          "description": "Non-authoritative provenance summary captured during discovery.",
+          "$ref": "#/$defs/ApplicationProvenance"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "launch_ref",
+        "name",
+        "application_id",
+        "provenance",
+        "expires_at"
+      ]
+    },
+    "MutationAdmission": {
+      "description": "Whether a mutation identity is known to the current runtime epoch.",
+      "oneOf": [
+        {
+          "description": "No retained ledger entry exists in this runtime epoch.",
+          "type": "string",
+          "const": "unknown"
+        },
+        {
+          "description": "The dispatcher admitted the original command in this runtime epoch.",
+          "type": "string",
+          "const": "admitted"
+        }
+      ]
+    },
+    "MutationDisposition": {
+      "description": "Read-only disposition of one retained mutation identity.",
+      "oneOf": [
+        {
+          "description": "No retained ledger entry exists in this runtime epoch.",
+          "type": "string",
+          "const": "unknown"
+        },
+        {
+          "description": "The identity belongs to a read-only command, not a mutation.",
+          "type": "string",
+          "const": "not_mutation"
+        },
+        {
+          "description": "The mutation remains admitted and may still complete.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "The mutation completed successfully.",
+          "type": "string",
+          "const": "succeeded"
+        },
+        {
+          "description": "The runtime proved that the target mutation was not dispatched.",
+          "type": "string",
+          "const": "not_dispatched"
+        },
+        {
+          "description": "Dispatch may have occurred and the direct effect cannot be proven here.",
+          "type": "string",
+          "const": "indeterminate"
+        }
+      ]
+    },
+    "MutationReconciliation": {
+      "description": "Bounded, read-only evidence retained for mutation reconciliation.",
+      "type": "object",
+      "properties": {
+        "admission": {
+          "description": "Whether this runtime epoch admitted the original mutation.",
+          "$ref": "#/$defs/MutationAdmission"
+        },
+        "dispatched": {
+          "description": "Whether the native provider accepted delivery, when known.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "disposition": {
+          "description": "Current closed mutation disposition.",
+          "$ref": "#/$defs/MutationDisposition"
+        },
+        "effect_status": {
+          "description": "Direct-effect status retained from a successful mutation, when available.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionEffectStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error_code": {
+          "description": "Stable terminal error category, when reconciliation found a failure.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_kind": {
+          "description": "Evidence class retained from a successful mutation, when available.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionEvidenceKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fresh_observation_required": {
+          "description": "Whether the caller must establish a fresh observation before another mutation.",
+          "type": "boolean"
+        },
+        "request_id": {
+          "description": "Original host-generated mutation identity.",
+          "$ref": "#/$defs/RequestId"
+        },
+        "runtime_epoch": {
+          "description": "Runtime generation that answered this query.",
+          "type": "string"
+        },
+        "worker_epoch": {
+          "description": "Remote worker generation, or `null` for an embedded/local runtime.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "runtime_epoch",
+        "admission",
+        "disposition",
+        "fresh_observation_required"
       ]
     },
     "MutationStatus": {
@@ -821,7 +1553,7 @@
       ]
     },
     "ObservationId": {
-      "description": "Identity for one immutable window observation.",
+      "description": "Identity for one immutable window or display observation.",
       "type": "string"
     },
     "ObservationTruncation": {
@@ -1100,6 +1832,10 @@
         "screen_bounds",
         "pixel_size"
       ]
+    },
+    "SensitiveText": {
+      "description": "User input whose debug output is always redacted.",
+      "type": "string"
     },
     "SessionId": {
       "description": "Runtime-issued identity for an authorized session.",

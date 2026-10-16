@@ -65,7 +65,9 @@ def main() -> None:
         print(
             f"window={window.title!r} elements={len(updated.elements)} "
             f"screenshot={observation.screenshot is not None} "
-            f"mutation={action.delivery_mode.value}/{action.dispatched}"
+            f"mutation={action.delivery_mode.value}/{action.dispatched} "
+            f"effect={action.effect_status.value}/{action.evidence_kind.value} "
+            f"foreground_restoration={action.foreground_restoration.value}"
         )
     finally:
         client.close_session(session.session_id)

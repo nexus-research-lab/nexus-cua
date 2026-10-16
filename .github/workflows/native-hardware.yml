@@ -13,11 +13,15 @@ on:
           - idle
           - engineering
           - release
-      enforce_release_gates:
-        description: Fail unless benchmark and soak evidence are release-eligible
+      evidence_class:
+        description: Evidence class to enforce; accepted classes override soak_profile
         required: true
-        default: false
-        type: boolean
+        default: diagnostic
+        type: choice
+        options:
+          - diagnostic
+          - engineering_accepted
+          - release_accepted
       run_macos_permission_revocation:
         description: Reset the stable test identity's TCC grants after the macOS matrix
         required: true
@@ -46,22 +50,32 @@ jobs:
     runs-on: [self-hosted, nexus-cua, macos, apple-silicon]
     timeout-minutes: 720
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify maintained runner assignment
         env:
-          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          EVIDENCE_CLASS: ${{ inputs.evidence_class }}
           RUN_PERMISSION_REVOCATION: ${{ inputs.run_macos_permission_revocation }}
         run: |
           test -f benchmarks/runners/macos-apple-silicon.json
-          if [[ "$ENFORCE_RELEASE_GATES" == "true" && "$RUN_PERMISSION_REVOCATION" != "true" ]]; then
-            echo "release enforcement requires run_macos_permission_revocation=true" >&2
+          if [[ "$EVIDENCE_CLASS" == "release_accepted" && "$RUN_PERMISSION_REVOCATION" != "true" ]]; then
+            echo "release_accepted requires run_macos_permission_revocation=true" >&2
             exit 1
           fi
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy
+          rustup target add --toolchain 1.88.0 x86_64-apple-darwin
       - name: Build release runtime, harness, and fixture
         run: |
           cargo +1.88.0 build --workspace --release --locked
+          cargo +1.88.0 build --package nexus-cua --release --locked --target x86_64-apple-darwin
+          lipo -create \
+            target/release/nexuscua \
+            target/x86_64-apple-darwin/release/nexuscua \
+            -output target/release/nexuscua-universal
+          mv target/release/nexuscua-universal target/release/nexuscua
+          test "$(lipo -archs target/release/nexuscua)" = "x86_64 arm64" || \
+            test "$(lipo -archs target/release/nexuscua)" = "arm64 x86_64"
           cargo +1.88.0 build --release --locked --manifest-path tools/native-harness/Cargo.toml
           fixtures/native/macos/build.sh release
       - name: Bind stable macOS permission identity
@@ -73,7 +87,7 @@ jobs:
             echo "NEXUS_CUA_TEST_SIGNING_IDENTITY must name a real operator-provisioned signing identity" >&2
             exit 1
           fi
-          sidecar="$PWD/target/release/nexus-cua"
+          sidecar="$PWD/target/release/nexuscua"
           evidence="$PWD/target/native-evidence/macos"
           mkdir -p "$evidence"
           codesign --force --sign "$identity" --identifier io.nexus.cua.hardware-sidecar --timestamp=none "$sidecar"
@@ -84,7 +98,7 @@ jobs:
         shell: bash
         env:
           SOAK_PROFILE: ${{ inputs.soak_profile }}
-          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          EVIDENCE_CLASS: ${{ inputs.evidence_class }}
           RUN_PERMISSION_REVOCATION: ${{ inputs.run_macos_permission_revocation }}
         run: |
           set -euo pipefail
@@ -95,7 +109,7 @@ jobs:
           artifacts="$PWD/target/native-evidence/artifacts"
           fixture="$PWD/target/native-fixtures/macos/Nexus CUA Native Fixture.app"
           harness="$PWD/tools/native-harness/target/release/nexus-cua-native-harness"
-          sidecar="$PWD/target/release/nexus-cua"
+          sidecar="$PWD/target/release/nexuscua"
           manifest="$PWD/benchmarks/runners/macos-apple-silicon.json"
           mkdir -p "$evidence" "$artifacts"
           umask 077
@@ -166,7 +180,7 @@ jobs:
           start_service
           start_fixture default
           validation_args=()
-          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then validation_args+=(--enforce); fi
+          if [[ "$EVIDENCE_CLASS" != "diagnostic" ]]; then validation_args+=(--enforce); fi
           "$harness" --endpoint "$endpoint" --token-file "$token" validate "${validation_args[@]}" | tee "$evidence/validation.json"
           start_fault_fixture
           "$harness" --endpoint "$endpoint" --token-file "$token" fault preflight --arm-delay-ms 3000 | tee "$evidence/fault-preflight.json"
@@ -176,22 +190,30 @@ jobs:
           "$harness" --endpoint "$endpoint" --token-file "$token" permission protected | tee "$evidence/permission-protected.json"
           start_fixture 1080p
           benchmark_args=(--runner-manifest "$manifest")
-          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then
+          if [[ "$EVIDENCE_CLASS" != "diagnostic" ]]; then
             benchmark_args+=(--enforce)
           fi
           "$harness" --endpoint "$endpoint" --token-file "$token" benchmark "${benchmark_args[@]}" | tee "$evidence/benchmark.json"
-          if [[ "$ENFORCE_RELEASE_GATES" == "true" || "$SOAK_PROFILE" == "release" ]]; then
+          if [[ "$EVIDENCE_CLASS" != "diagnostic" ]]; then
             "$harness" --endpoint "$endpoint" --token-file "$token" soak --profile idle --service-pid "$service_pid" --runner-manifest "$manifest" --enforce | tee "$evidence/soak-idle.json"
           fi
-          active_profile="$SOAK_PROFILE"
-          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then active_profile=release; fi
-          if [[ "$active_profile" != "idle" ]]; then
+          run_active_soak() {
+            profile="$1"
+            output="$2"
             start_fixture 4k
-            soak_args=(--profile "$active_profile" --service-pid "$service_pid" --runner-manifest "$manifest")
-            if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then soak_args+=(--enforce); fi
-            "$harness" --endpoint "$endpoint" --token-file "$token" soak "${soak_args[@]}" | tee "$evidence/soak-active.json"
-          elif [[ "$ENFORCE_RELEASE_GATES" != "true" ]]; then
+            soak_args=(--profile "$profile" --service-pid "$service_pid" --runner-manifest "$manifest")
+            if [[ "$EVIDENCE_CLASS" != "diagnostic" ]]; then soak_args+=(--enforce); fi
+            "$harness" --endpoint "$endpoint" --token-file "$token" soak "${soak_args[@]}" | tee "$evidence/$output"
+          }
+          if [[ "$EVIDENCE_CLASS" == "engineering_accepted" ]]; then
+            run_active_soak engineering soak-engineering.json
+          elif [[ "$EVIDENCE_CLASS" == "release_accepted" ]]; then
+            run_active_soak engineering soak-engineering.json
+            run_active_soak release soak-release.json
+          elif [[ "$SOAK_PROFILE" == "idle" ]]; then
             "$harness" --endpoint "$endpoint" --token-file "$token" soak --profile idle --service-pid "$service_pid" --runner-manifest "$manifest" | tee "$evidence/soak-idle.json"
+          else
+            run_active_soak "$SOAK_PROFILE" "soak-$SOAK_PROFILE.json"
           fi
           start_fixture default
           "$harness" --endpoint "$endpoint" --token-file "$token" restart-prepare --state-file "$state" | tee "$evidence/restart-prepare.json"
@@ -216,14 +238,20 @@ jobs:
           fi
           source_revision="$(git rev-parse HEAD)"
           runtime_sha256="$(shasum -a 256 "$sidecar" | awk '{print $1}')"
-          evidence_args=(evidence --evidence-dir "$evidence" --runner-manifest "$manifest" --source-revision "$source_revision" --runtime-sha256 "$runtime_sha256")
-          if [[ "$ENFORCE_RELEASE_GATES" == "true" ]]; then evidence_args+=(--enforce); fi
+          evidence_args=(evidence --evidence-dir "$evidence" --runner-manifest "$manifest" --source-revision "$source_revision" --runtime-sha256 "$runtime_sha256" --required-class "$EVIDENCE_CLASS")
+          if [[ "$EVIDENCE_CLASS" != "diagnostic" ]]; then evidence_args+=(--enforce); fi
           "$harness" "${evidence_args[@]}" | tee "$evidence/summary.json"
-      - uses: actions/upload-artifact@v6
+          mkdir -p "$evidence/tested-runtime"
+          cp "$sidecar" "$evidence/tested-runtime/nexuscua"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: nexus-cua-macos-native-evidence
-          path: target/native-evidence/macos
+          path: |
+            target/native-evidence/macos/summary.json
+            target/native-evidence/macos/sidecar-designated-requirement.txt
+            target/native-evidence/macos/sidecar-signing-details.txt
+            target/native-evidence/macos/tested-runtime/nexuscua
           if-no-files-found: error
 
   windows:
@@ -231,16 +259,16 @@ jobs:
     runs-on: [self-hosted, nexus-cua, windows, x64]
     timeout-minutes: 720
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify maintained runner assignment
         shell: pwsh
         env:
-          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          EVIDENCE_CLASS: ${{ inputs.evidence_class }}
           RUN_PROTECTED_TARGET: ${{ inputs.run_windows_protected_target }}
         run: |
           if (-not (Test-Path benchmarks/runners/windows-x64.json)) { throw "runner manifest is not assigned" }
-          if ($env:ENFORCE_RELEASE_GATES -eq "true" -and $env:RUN_PROTECTED_TARGET -ne "true") {
-            throw "release enforcement requires run_windows_protected_target=true"
+          if ($env:EVIDENCE_CLASS -eq "release_accepted" -and $env:RUN_PROTECTED_TARGET -ne "true") {
+            throw "release_accepted requires run_windows_protected_target=true"
           }
       - name: Install pinned Rust toolchain
         shell: pwsh
@@ -257,7 +285,7 @@ jobs:
         shell: pwsh
         env:
           SOAK_PROFILE: ${{ inputs.soak_profile }}
-          ENFORCE_RELEASE_GATES: ${{ inputs.enforce_release_gates }}
+          EVIDENCE_CLASS: ${{ inputs.evidence_class }}
           RUN_PROTECTED_TARGET: ${{ inputs.run_windows_protected_target }}
         run: |
           $ErrorActionPreference = "Stop"
@@ -266,8 +294,9 @@ jobs:
           $token = Join-Path $evidence "token"
           $artifacts = Join-Path $evidence "artifacts"
           $harness = Join-Path $PWD "tools/native-harness/target/release/nexus-cua-native-harness.exe"
-          $sidecar = Join-Path $PWD "target/release/nexus-cua.exe"
+          $sidecar = Join-Path $PWD "target/release/nexuscua.exe"
           $fixture = Join-Path $PWD "target/native-fixtures/windows/nexus-cua-native-fixture.exe"
+          $shortcutInstaller = Join-Path $PWD "fixtures/native/windows/install-shortcut.ps1"
           $manifest = Join-Path $PWD "benchmarks/runners/windows-x64.json"
           New-Item -ItemType Directory -Force $evidence, $artifacts | Out-Null
           ([guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")) | Set-Content -NoNewline $token
@@ -276,6 +305,7 @@ jobs:
           $serviceErr = Join-Path $evidence "service.err.log"
           $service = $null
           $fixtureProcess = $null
+          $fixtureShortcutInstalled = $false
           function Start-ServiceProcess {
             $script:service = Start-Process $sidecar -PassThru -ArgumentList @(
               "serve", "--log-level", "info", "--endpoint", $endpoint,
@@ -300,9 +330,13 @@ jobs:
           }
           try {
             Start-ServiceProcess
+            & $shortcutInstaller -Executable $fixture | Out-Null
+            $fixtureShortcutInstalled = $true
+            & $harness --endpoint $endpoint --token-file $token lifecycle | Tee-Object (Join-Path $evidence "lifecycle.json")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Start-FixtureProcess default
             $validationArgs = @("--endpoint", $endpoint, "--token-file", $token, "validate")
-            if ($env:ENFORCE_RELEASE_GATES -eq "true") { $validationArgs += "--enforce" }
+            if ($env:EVIDENCE_CLASS -ne "diagnostic") { $validationArgs += "--enforce" }
             & $harness @validationArgs | Tee-Object (Join-Path $evidence "validation.json")
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if ($fixtureProcess -and -not $fixtureProcess.HasExited) {
@@ -318,23 +352,30 @@ jobs:
             }
             Start-FixtureProcess 1080p
             $benchmarkArgs = @("--endpoint", $endpoint, "--token-file", $token, "benchmark", "--runner-manifest", $manifest)
-            if ($env:ENFORCE_RELEASE_GATES -eq "true") { $benchmarkArgs += "--enforce" }
+            if ($env:EVIDENCE_CLASS -ne "diagnostic") { $benchmarkArgs += "--enforce" }
             & $harness @benchmarkArgs | Tee-Object (Join-Path $evidence "benchmark.json")
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            if ($env:ENFORCE_RELEASE_GATES -eq "true" -or $env:SOAK_PROFILE -eq "release") {
+            if ($env:EVIDENCE_CLASS -ne "diagnostic") {
               & $harness --endpoint $endpoint --token-file $token soak --profile idle --service-pid $service.Id --runner-manifest $manifest --enforce | Tee-Object (Join-Path $evidence "soak-idle.json")
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
-            $activeProfile = if ($env:ENFORCE_RELEASE_GATES -eq "true") { "release" } else { $env:SOAK_PROFILE }
-            if ($activeProfile -ne "idle") {
+            function Invoke-ActiveSoak([string]$Profile, [string]$OutputName) {
               Start-FixtureProcess 4k
-              $soakArgs = @("--endpoint", $endpoint, "--token-file", $token, "soak", "--profile", $activeProfile, "--service-pid", $service.Id, "--runner-manifest", $manifest)
-              if ($env:ENFORCE_RELEASE_GATES -eq "true") { $soakArgs += "--enforce" }
-              & $harness @soakArgs | Tee-Object (Join-Path $evidence "soak-active.json")
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            } elseif ($env:ENFORCE_RELEASE_GATES -ne "true") {
+              $soakArgs = @("--endpoint", $endpoint, "--token-file", $token, "soak", "--profile", $Profile, "--service-pid", $service.Id, "--runner-manifest", $manifest)
+              if ($env:EVIDENCE_CLASS -ne "diagnostic") { $soakArgs += "--enforce" }
+              & $harness @soakArgs | Tee-Object (Join-Path $evidence $OutputName)
+              if ($LASTEXITCODE -ne 0) { throw "active soak failed for profile $Profile" }
+            }
+            if ($env:EVIDENCE_CLASS -eq "engineering_accepted") {
+              Invoke-ActiveSoak engineering "soak-engineering.json"
+            } elseif ($env:EVIDENCE_CLASS -eq "release_accepted") {
+              Invoke-ActiveSoak engineering "soak-engineering.json"
+              Invoke-ActiveSoak release "soak-release.json"
+            } elseif ($env:SOAK_PROFILE -eq "idle") {
               & $harness --endpoint $endpoint --token-file $token soak --profile idle --service-pid $service.Id --runner-manifest $manifest | Tee-Object (Join-Path $evidence "soak-idle.json")
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else {
+              Invoke-ActiveSoak $env:SOAK_PROFILE "soak-$($env:SOAK_PROFILE).json"
             }
             Start-FixtureProcess default
             & $harness --endpoint $endpoint --token-file $token restart-prepare --state-file $state | Tee-Object (Join-Path $evidence "restart-prepare.json")
@@ -366,18 +407,24 @@ jobs:
             }
             $sourceRevision = (git rev-parse HEAD).Trim()
             $runtimeSha256 = (Get-FileHash -Algorithm SHA256 $sidecar).Hash.ToLowerInvariant()
-            $evidenceArgs = @("evidence", "--evidence-dir", $evidence, "--runner-manifest", $manifest, "--source-revision", $sourceRevision, "--runtime-sha256", $runtimeSha256)
-            if ($env:ENFORCE_RELEASE_GATES -eq "true") { $evidenceArgs += "--enforce" }
+            $evidenceArgs = @("evidence", "--evidence-dir", $evidence, "--runner-manifest", $manifest, "--source-revision", $sourceRevision, "--runtime-sha256", $runtimeSha256, "--required-class", $env:EVIDENCE_CLASS)
+            if ($env:EVIDENCE_CLASS -ne "diagnostic") { $evidenceArgs += "--enforce" }
             & $harness @evidenceArgs | Tee-Object (Join-Path $evidence "summary.json")
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $testedRuntime = Join-Path $evidence "tested-runtime"
+            New-Item -ItemType Directory -Force $testedRuntime | Out-Null
+            Copy-Item $sidecar (Join-Path $testedRuntime "nexuscua.exe")
           }
           finally {
             if ($fixtureProcess -and -not $fixtureProcess.HasExited) { $fixtureProcess.Kill() }
             if ($service -and -not $service.HasExited) { $service.Kill() }
+            if ($fixtureShortcutInstalled) { & $shortcutInstaller -Remove | Out-Null }
           }
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: nexus-cua-windows-native-evidence
-          path: target/native-evidence/windows
+          path: |
+            target/native-evidence/windows/summary.json
+            target/native-evidence/windows/tested-runtime/nexuscua.exe
           if-no-files-found: error

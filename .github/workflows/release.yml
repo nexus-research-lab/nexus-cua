@@ -1,90 +1,419 @@
-name: Release
+name: Unaccepted legacy candidate (no publish)
 
 on:
-  push:
-    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact Cargo workspace version (without a v prefix)
+        required: true
+        type: string
+      candidate_kind:
+        description: Evidence class selector; output remains unaccepted legacy
+        required: true
+        default: engineering
+        type: choice
+        options:
+          - engineering
+          - release
+      native_evidence_run_id:
+        description: Successful Native hardware evidence workflow run for this commit
+        required: true
+        type: string
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CANDIDATE_VERSION: ${{ inputs.version }}
+  CANDIDATE_KIND: ${{ inputs.candidate_kind }}
+  REQUIRED_EVIDENCE_CLASS: ${{ inputs.candidate_kind == 'release' && 'release_accepted' || 'engineering_accepted' }}
+  NATIVE_EVIDENCE_RUN_ID: ${{ inputs.native_evidence_run_id }}
 
 jobs:
-  macos:
-    name: Package macOS universal
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install minimum supported Rust
-        run: |
-          rustup toolchain install 1.88.0 --profile minimal
-          rustup target add --toolchain 1.88.0 aarch64-apple-darwin x86_64-apple-darwin
-      - name: Build both macOS architectures
-        run: |
-          cargo +1.88.0 build --locked --release --package nexus-cua --target aarch64-apple-darwin
-          cargo +1.88.0 build --locked --release --package nexus-cua --target x86_64-apple-darwin
-      - name: Assemble package
-        run: |
-          mkdir -p dist/package
-          lipo -create \
-            target/aarch64-apple-darwin/release/nexus-cua \
-            target/x86_64-apple-darwin/release/nexus-cua \
-            -output dist/package/nexus-cua
-          cp README.md LICENSE THIRD_PARTY_NOTICES.md Cargo.lock dist/package/
-          tar -czf "dist/nexus-cua-${GITHUB_REF_NAME}-macos-universal.tar.gz" -C dist/package .
-      - uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: dist/*.tar.gz
-      - uses: actions/upload-artifact@v7
-        with:
-          name: macos-package
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
-  windows:
-    name: Package Windows x64
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install minimum supported Rust
-        run: rustup toolchain install 1.88.0 --profile minimal
-      - name: Build Windows package
-        run: cargo +1.88.0 build --locked --release --package nexus-cua
-      - name: Assemble package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist/package | Out-Null
-          Copy-Item target/release/nexus-cua.exe, README.md, LICENSE, THIRD_PARTY_NOTICES.md, Cargo.lock dist/package/
-          Compress-Archive -Path dist/package/* -DestinationPath "dist/nexus-cua-$env:GITHUB_REF_NAME-windows-x86_64.zip"
-      - uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: dist/*.zip
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-package
-          path: dist/*.zip
-          if-no-files-found: error
-
-  publish:
-    name: Publish GitHub release
-    needs: [macos, windows]
+  evidence:
+    name: Bind accepted native evidence
     runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          path: dist
-          merge-multiple: true
-      - name: Validate tag and checksums
-        run: |
-          VERSION="$(jq -r '.workspace_root as $root | .packages[] | select(.manifest_path == ($root + "/crates/cli/Cargo.toml")) | .version' <<<"$(cargo metadata --locked --no-deps --format-version 1)")"
-          test "$GITHUB_REF_NAME" = "v$VERSION"
-          cd dist
-          sha256sum *.tar.gz *.zip > SHA256SUMS
-      - name: Publish immutable assets
+          python-version: "3.13"
+      - name: Validate candidate version
+        run: >-
+          python scripts/release_candidate.py check-version
+          --version "$CANDIDATE_VERSION"
+      - name: Validate evidence workflow provenance
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+        run: |
+          set -euo pipefail
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$NATIVE_EVIDENCE_RUN_ID" \
+            > native-evidence-run.json
+          [[ "$(jq -r .path native-evidence-run.json)" == ".github/workflows/native-hardware.yml" ]]
+          [[ "$(jq -r .status native-evidence-run.json)" == "completed" ]]
+          [[ "$(jq -r .conclusion native-evidence-run.json)" == "success" ]]
+          [[ "$(jq -r .head_sha native-evidence-run.json)" == "$GITHUB_SHA" ]]
+      - name: Download exact tested runtimes and evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "$NATIVE_EVIDENCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name nexus-cua-macos-native-evidence \
+            --dir evidence/macos
+          gh run download "$NATIVE_EVIDENCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name nexus-cua-windows-native-evidence \
+            --dir evidence/windows
+      - name: Reject incomplete, stale, or rebuilt evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_candidate.py validate-evidence \
+            --evidence evidence/macos/summary.json \
+            --runtime evidence/macos/tested-runtime/nexuscua \
+            --source-revision "$GITHUB_SHA" \
+            --platform macos \
+            --architecture aarch64 \
+            --required-class "$REQUIRED_EVIDENCE_CLASS" \
+            --runner-manifest benchmarks/runners/macos-apple-silicon.json
+          python scripts/release_candidate.py validate-evidence \
+            --evidence evidence/windows/summary.json \
+            --runtime evidence/windows/tested-runtime/nexuscua.exe \
+            --source-revision "$GITHUB_SHA" \
+            --platform windows \
+            --architecture x86_64 \
+            --required-class "$REQUIRED_EVIDENCE_CLASS" \
+            --runner-manifest benchmarks/runners/windows-x64.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unaccepted-legacy-${{ inputs.candidate_kind }}-native-evidence-${{ github.sha }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: Sign and notarize macOS universal candidate
+    needs: evidence
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unaccepted-legacy-${{ inputs.candidate_kind }}-native-evidence-${{ github.sha }}
+          path: evidence
+      - name: Stage exact tested runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_candidate.py validate-evidence \
+            --evidence evidence/macos/summary.json \
+            --runtime evidence/macos/tested-runtime/nexuscua \
+            --source-revision "$GITHUB_SHA" \
+            --platform macos \
+            --architecture aarch64 \
+            --required-class "$REQUIRED_EVIDENCE_CLASS" \
+            --runner-manifest benchmarks/runners/macos-apple-silicon.json
+          mkdir -p dist/package
+          cp evidence/macos/tested-runtime/nexuscua dist/package/nexuscua
+          chmod 0755 dist/package/nexuscua
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md Cargo.lock dist/package/
+          cp evidence/macos/summary.json dist/package/native-evidence-summary.json
+          lipo -verify_arch x86_64 arm64 dist/package/nexuscua
+      - name: Require distribution signing authority
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for variable in \
+            MACOS_DEVELOPER_ID_P12_BASE64 \
+            MACOS_DEVELOPER_ID_P12_PASSWORD \
+            MACOS_KEYCHAIN_PASSWORD \
+            MACOS_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_TEAM_ID \
+            APPLE_APP_PASSWORD; do
+            [[ -n "${!variable:-}" ]] || {
+              echo "$variable must be configured for candidate signing" >&2
+              exit 1
+            }
+          done
+      - name: Import Developer ID identity
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/nexus-cua-release.keychain-db"
+          certificate="$RUNNER_TEMP/nexus-cua-developer-id.p12"
+          printf '%s' "$MACOS_DEVELOPER_ID_P12_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" \
+            -P "$MACOS_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Sign exact tested payload
+        shell: bash
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime --timestamp \
+            --identifier io.nexus.cua.runtime \
+            --sign "$MACOS_SIGNING_IDENTITY" \
+            dist/package/nexuscua
+          codesign --verify --strict --verbose=4 dist/package/nexuscua
+          codesign -dvvv --requirements - dist/package/nexuscua \
+            2> dist/package/signature-evidence.txt
+      - name: Notarize signed command-line runtime
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          submission="$RUNNER_TEMP/nexus-cua-notary-submission.zip"
+          ditto -c -k --keepParent dist/package/nexuscua "$submission"
+          xcrun notarytool submit "$submission" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait \
+            --output-format json \
+            > dist/package/notarization.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path("dist/package/notarization.json").read_text())
+          if receipt.get("status") != "Accepted" or not receipt.get("id"):
+              raise SystemExit(f"notarization rejected: {receipt}")
+          Path("notarization-id.txt").write_text(receipt["id"])
+          PY
+          xcrun notarytool log "$(cat notarization-id.txt)" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            dist/package/notarization-log.json
+          cat dist/package/notarization.json >> dist/package/signature-evidence.txt
+      - name: Smoke signed runtime on clean candidate host
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_version="$(dist/package/nexuscua --version)"
+          [[ "$runtime_version" == *"$CANDIDATE_VERSION"* ]]
+          {
+            printf 'version=%s\n' "$runtime_version"
+            dist/package/nexuscua doctor --compact
+          } > dist/package/smoke-evidence.txt
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: dist/package
+          format: spdx-json
+          output-file: dist/package/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+      - name: Write manifest and archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_candidate.py manifest \
+            --version "$CANDIDATE_VERSION" \
+            --candidate-kind "$CANDIDATE_KIND" \
+            --protocol-version nexus.cua.v1 \
+            --source-revision "$GITHUB_SHA" \
+            --platform macos \
+            --architecture universal2 \
+            --runtime dist/package/nexuscua \
+            --sbom dist/package/sbom.spdx.json \
+            --evidence dist/package/native-evidence-summary.json \
+            --signature-evidence dist/package/signature-evidence.txt \
+            --smoke-evidence dist/package/smoke-evidence.txt \
+            --output dist/package/manifest.json
+          archive="nexus-cua-v${CANDIDATE_VERSION}-macos-universal-${CANDIDATE_KIND}-unaccepted-legacy.tar.gz"
+          tar -czf "dist/$archive" -C dist/package .
+          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nexus-cua-v${{ inputs.version }}-macos-universal-${{ inputs.candidate_kind }}-unaccepted-legacy
+          path: |
+            dist/nexus-cua-v${{ inputs.version }}-macos-universal-${{ inputs.candidate_kind }}-unaccepted-legacy.tar.gz
+            dist/nexus-cua-v${{ inputs.version }}-macos-universal-${{ inputs.candidate_kind }}-unaccepted-legacy.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove temporary signing keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+
+  windows:
+    name: Sign Windows x64 candidate
+    needs: evidence
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unaccepted-legacy-${{ inputs.candidate_kind }}-native-evidence-${{ github.sha }}
+          path: evidence
+      - name: Stage exact tested runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python scripts/release_candidate.py validate-evidence `
+            --evidence evidence/windows/summary.json `
+            --runtime evidence/windows/tested-runtime/nexuscua.exe `
+            --source-revision $env:GITHUB_SHA `
+            --platform windows `
+            --architecture x86_64 `
+            --required-class $env:REQUIRED_EVIDENCE_CLASS `
+            --runner-manifest benchmarks/runners/windows-x64.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist/package | Out-Null
+          Copy-Item evidence/windows/tested-runtime/nexuscua.exe dist/package/nexuscua.exe
+          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md, Cargo.lock dist/package/
+          Copy-Item evidence/windows/summary.json dist/package/native-evidence-summary.json
+      - name: Require Azure Artifact Signing authority
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+        run: |
+          $required = @(
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "ARTIFACT_SIGNING_ENDPOINT",
+            "ARTIFACT_SIGNING_ACCOUNT",
+            "ARTIFACT_SIGNING_PROFILE"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              throw "$name must be configured for candidate signing"
+            }
+          }
+      - name: Azure login with OIDC
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Authenticode sign exact tested payload
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}\dist\package\nexuscua.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Nexus Computer Use Runtime
+      - name: Verify Authenticode signature
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $signature = Get-AuthenticodeSignature dist/package/nexuscua.exe
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "Authenticode verification failed: $($signature.StatusMessage)"
+          }
+          [ordered]@{
+            status = $signature.Status.ToString()
+            status_message = $signature.StatusMessage
+            signer_subject = $signature.SignerCertificate.Subject
+            signer_issuer = $signature.SignerCertificate.Issuer
+            signer_thumbprint = $signature.SignerCertificate.Thumbprint
+            signer_not_before = $signature.SignerCertificate.NotBefore.ToUniversalTime().ToString("o")
+            signer_not_after = $signature.SignerCertificate.NotAfter.ToUniversalTime().ToString("o")
+            timestamp_subject = $signature.TimeStamperCertificate.Subject
+          } | ConvertTo-Json | Set-Content -Encoding utf8 dist/package/signature-evidence.json
+      - name: Smoke signed runtime on clean candidate host
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtimeVersion = (& dist/package/nexuscua.exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not $runtimeVersion.Contains($env:CANDIDATE_VERSION)) {
+            throw "signed runtime version does not match candidate version"
+          }
+          $doctor = (& dist/package/nexuscua.exe doctor --compact | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @("version=$runtimeVersion", $doctor) | Set-Content -Encoding utf8 dist/package/smoke-evidence.txt
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: dist/package
+          format: spdx-json
+          output-file: dist/package/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+      - name: Write manifest and archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python scripts/release_candidate.py manifest `
+            --version $env:CANDIDATE_VERSION `
+            --candidate-kind $env:CANDIDATE_KIND `
+            --protocol-version nexus.cua.v1 `
+            --source-revision $env:GITHUB_SHA `
+            --platform windows `
+            --architecture x86_64 `
+            --runtime dist/package/nexuscua.exe `
+            --sbom dist/package/sbom.spdx.json `
+            --evidence dist/package/native-evidence-summary.json `
+            --signature-evidence dist/package/signature-evidence.json `
+            --smoke-evidence dist/package/smoke-evidence.txt `
+            --output dist/package/manifest.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $archive = "nexus-cua-v$env:CANDIDATE_VERSION-windows-x86_64-$env:CANDIDATE_KIND-unaccepted-legacy.zip"
+          Compress-Archive -Path dist/package/* -DestinationPath "dist/$archive"
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -Encoding ascii "dist/$archive.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nexus-cua-v${{ inputs.version }}-windows-x86_64-${{ inputs.candidate_kind }}-unaccepted-legacy
+          path: |
+            dist/nexus-cua-v${{ inputs.version }}-windows-x86_64-${{ inputs.candidate_kind }}-unaccepted-legacy.zip
+            dist/nexus-cua-v${{ inputs.version }}-windows-x86_64-${{ inputs.candidate_kind }}-unaccepted-legacy.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

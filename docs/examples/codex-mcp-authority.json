@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "mode": "bounded",
+  "application_ids": ["dev.nexus.cua.native-fixture"],
+  "allowed_actions": ["click_point", "terminate_application"],
+  "allow_foreground_input": true,
+  "restore_foreground_after_input": true,
+  "allow_display_capture": true,
+  "allow_clipboard_read": true,
+  "allow_clipboard_write": true,
+  "allow_application_launch": true,
+  "allow_application_launch_activation": true,
+  "ttl_seconds": 3600
+}

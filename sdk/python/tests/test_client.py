@@ -72,6 +72,10 @@ class ClientTests(unittest.TestCase):
         client.get_capabilities()
         client.get_permission_status()
         client.discover_applications()
+        client.discover_launchable_applications()
+        client.launch_application(
+            "launch_fixture", allow_foreground_activation=True
+        )
         client.open_session(
             nexus_cua.CapabilityManifest(
                 nexus_cua.PermissionMode.BOUNDED,
@@ -79,16 +83,29 @@ class ClientTests(unittest.TestCase):
                 (
                     nexus_cua.ActionKind.FOCUS_WINDOW,
                     nexus_cua.ActionKind.INVOKE_ELEMENT,
+                    nexus_cua.ActionKind.SET_RANGE_VALUE,
                     nexus_cua.ActionKind.CLICK_POINT,
                 ),
                 True,
                 300,
+                True,
+                True,
+                True,
+                True,
             )
         )
         client.close_session("session_fixture")
         client.list_apps("session_fixture")
         client.list_windows("session_fixture", "app_fixture")
+        client.list_displays("session_fixture")
+        client.observe_display("session_fixture", "display_fixture")
         client.observe_window("session_fixture", "window_fixture")
+        client.read_clipboard("session_fixture")
+        client.write_clipboard(
+            "session_fixture",
+            "clipboard_fixture",
+            nexus_cua.SensitiveText("replacement fixture"),
+        )
         client.perform_action(
             "session_fixture",
             "window_fixture",
@@ -98,8 +115,14 @@ class ClientTests(unittest.TestCase):
         client.verify_state(
             "session_fixture",
             "window_fixture",
-            nexus_cua.WindowTitleContains("Fixture"),
+            nexus_cua.ElementStateMatches(
+                state=nexus_cua.ElementState.CHECKED,
+                value=True,
+                role="checkbox",
+                name="Remember me",
+            ),
         )
+        client.reconcile_mutation("fixture-action", wait=0)
 
         self.assertEqual(transport.requests, requests)
 
@@ -126,11 +149,31 @@ class ClientTests(unittest.TestCase):
                     "extra": True,
                 }
             )
+        with self.assertRaises(ValueError):
+            nexus_cua.ActionOutput.from_wire(
+                {
+                    "delivery_mode": "system",
+                    "dispatched": True,
+                    "effect_status": "confirmed",
+                    "evidence_kind": "dispatch_acceptance",
+                    "foreground_restoration": "not_requested",
+                    "observation_invalidated": True,
+                }
+            )
+        with self.assertRaises(ValueError):
+            nexus_cua.ForegroundRestorationStatus("future_status")
+        with self.assertRaises(ValueError):
+            nexus_cua.CapabilityManifest(
+                nexus_cua.PermissionMode.BOUNDED,
+                ("discovery_fixture",),
+                restore_foreground_after_input=True,
+            ).to_wire()
 
     def test_sensitive_text_is_redacted(self) -> None:
         secret = nexus_cua.SensitiveText("do-not-print")
         self.assertEqual(str(secret), "[REDACTED]")
         self.assertEqual(repr(secret), "SensitiveText([REDACTED])")
+        self.assertEqual(secret.expose(), "do-not-print")
 
     def test_application_selection_prefers_exact_and_rejects_ambiguity(self) -> None:
         applications = (
@@ -196,6 +239,9 @@ class ClientTests(unittest.TestCase):
                     "data": {
                         "delivery_mode": "semantic",
                         "dispatched": True,
+                        "effect_status": "unverified",
+                        "evidence_kind": "dispatch_acceptance",
+                        "foreground_restoration": "not_requested",
                         "observation_invalidated": True,
                     },
                 }
@@ -222,6 +268,95 @@ class ClientTests(unittest.TestCase):
         )
         self.assertLess(
             transport.requests[0]["timeout_ms"], transport.requests[1]["timeout_ms"]
+        )
+
+    def test_launch_reconciliation_reuses_identity_and_extends_wait(self) -> None:
+        transport = ScriptedTransport(
+            {
+                "launch_application": {
+                    "result_type": "application_launched",
+                    "data": {
+                        "application": {
+                            "discovery_ref": "discovery_launched",
+                            "name": "Fixture",
+                            "application_id": "dev.nexus.fixture",
+                            "foreground": True,
+                            "provenance": {
+                                "platform": "macos",
+                                "bundle_id": "dev.nexus.fixture",
+                                "executable_path": "/Applications/Fixture.app/Contents/MacOS/Fixture",
+                                "signing_team_id": None,
+                                "designated_requirement": None,
+                            },
+                            "expires_at": "2026-08-25T12:00:30Z",
+                        },
+                        "delivery_mode": "foreground",
+                        "dispatched": True,
+                    },
+                }
+            }
+        )
+        transport.fail_once = True
+        client = self.client(transport)
+        client._request_id = lambda: "request_launch_reconcile"
+        with self.assertRaises(nexus_cua.LaunchIndeterminateError) as captured:
+            client.launch_application(
+                "launch_fixture", allow_foreground_activation=True, timeout=1.0
+            )
+        request = captured.exception.request
+        with self.assertRaises(ValueError):
+            client.reconcile_launch(request, 0.5)
+        result = client.reconcile_launch(request, 2.0)
+        self.assertTrue(result.dispatched)
+        self.assertEqual(result.application.application_id, "dev.nexus.fixture")
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(
+            transport.requests[0]["request_id"], transport.requests[1]["request_id"]
+        )
+        self.assertEqual(
+            transport.requests[0]["command"], transport.requests[1]["command"]
+        )
+        self.assertLess(
+            transport.requests[0]["timeout_ms"], transport.requests[1]["timeout_ms"]
+        )
+
+    def test_clipboard_reconciliation_reuses_identity_and_hides_text(self) -> None:
+        transport = ScriptedTransport(
+            {
+                "write_clipboard": {
+                    "result_type": "clipboard_written",
+                    "data": {
+                        "clipboard_ref": "clipboard_after",
+                        "delivery_mode": "system",
+                        "dispatched": True,
+                        "effect_status": "confirmed",
+                        "evidence_kind": "native_readback",
+                    },
+                }
+            }
+        )
+        transport.fail_once = True
+        client = self.client(transport)
+        client._request_id = lambda: "request_clipboard_reconcile"
+        with self.assertRaises(nexus_cua.ClipboardIndeterminateError) as captured:
+            client.write_clipboard(
+                "session",
+                "clipboard_before",
+                nexus_cua.SensitiveText("do-not-print"),
+                timeout=1.0,
+            )
+        request = captured.exception.request
+        self.assertNotIn("do-not-print", repr(request))
+        with self.assertRaises(ValueError):
+            client.reconcile_clipboard(request, 0.5)
+        result = client.reconcile_clipboard(request, 2.0)
+        self.assertTrue(result.dispatched)
+        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(
+            transport.requests[0]["request_id"], transport.requests[1]["request_id"]
+        )
+        self.assertEqual(
+            transport.requests[0]["command"], transport.requests[1]["command"]
         )
 
     @unittest.skipUnless(

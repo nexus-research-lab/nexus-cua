@@ -1,5 +1,6 @@
 [package]
 name = "nexus-cua"
+autobins = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,19 +8,29 @@ license.workspace = true
 repository.workspace = true
 description = "Nexus Computer Use Runtime service and diagnostics CLI"
 
+[[bin]]
+name = "nexuscua"
+path = "src/main.rs"
+
 [dependencies]
+async-trait.workspace = true
 clap.workspace = true
+hex.workspace = true
 nexus-cua-platform = { version = "0.1.0", path = "../platform" }
+nexus-cua-mcp = { version = "0.1.0", path = "../mcp" }
+nexus-cua-provider = { version = "0.1.0", path = "../provider" }
 nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
 nexus-cua-runtime = { version = "0.1.0", path = "../runtime" }
 nexus-cua-transport = { version = "0.1.0", path = "../transport" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true

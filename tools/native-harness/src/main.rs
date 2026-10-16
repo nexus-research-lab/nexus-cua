@@ -8,11 +8,13 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use nexus_cua_protocol::{
-    AccessibilityMode, Action, ActionKind, AuthorizationToken, CapabilityManifest, Command,
-    CommandResult, CuaError, DeliveryMode, DiscoverApplicationsOutput, ErrorCode, ListWindowsInput,
-    MutationStatus, OpenSessionInput, PROTOCOL_VERSION, PerformActionInput, PermissionMode,
-    Platform, PointerButton, RequestEnvelope, RequestId, ResponseOutcome, ScreenRect,
-    ScreenshotPoint, SensitiveText, SessionInput, WindowObservation, WindowSummary,
+    AccessibilityMode, Action, ActionKind, ApplicationLifecycleOperation, AuthorizationToken,
+    CapabilityManifest, CaptureMode, Command, CommandResult, CuaError, DeliveryMode,
+    DiscoverApplicationsOutput, DiscoverLaunchableApplicationsOutput, ErrorCode,
+    LaunchApplicationInput, ListWindowsInput, MutationStatus, ObserveDisplayInput,
+    OpenSessionInput, PROTOCOL_VERSION, PerformActionInput, PermissionMode, Platform,
+    PointerButton, RequestEnvelope, RequestId, ResponseOutcome, ScreenRect, ScreenshotPoint,
+    SensitiveText, SessionInput, WindowObservation, WindowSummary,
 };
 use nexus_cua_transport::LocalEndpoint;
 use serde_json::{Value, json};
@@ -65,6 +67,8 @@ enum HarnessCommand {
         #[arg(long)]
         enforce: bool,
     },
+    /// Prove installed discovery, cold launch, session admission, and termination.
+    Lifecycle,
     /// Measure warm end-to-end latency distributions against absolute budgets.
     Benchmark(performance::BenchmarkArgs),
     /// Exercise idle or active lifecycle/resource behavior for a bounded duration.
@@ -73,7 +77,7 @@ enum HarnessCommand {
     Fault(fault::FaultArgs),
     /// Prove operating-system denial, revocation, and protected-target behavior.
     Permission(permission::PermissionArgs),
-    /// Merge raw native reports into one release-gate evidence summary.
+    /// Merge raw native reports into one classed native-evidence summary.
     Evidence(evidence::EvidenceArgs),
     /// Leave a live session and artifact for an orchestrated sidecar restart.
     RestartPrepare(restart::RestartArgs),
@@ -174,6 +178,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             inspect(&cli, &mut client, !*no_screenshot).await
         }
         HarnessCommand::Validate { enforce } => validate(&cli, &mut client, *enforce).await,
+        HarnessCommand::Lifecycle => validate_lifecycle(&cli, &mut client).await,
         HarnessCommand::Benchmark(args) => performance::benchmark(&cli, &mut client, args).await,
         HarnessCommand::Soak(args) => performance::soak(&cli, &mut client, args).await,
         HarnessCommand::Fault(args) => fault::validate(&cli, &mut client, args).await,
@@ -182,6 +187,129 @@ async fn main() -> Result<(), Box<dyn Error>> {
         HarnessCommand::RestartVerify(args) => restart::verify(&mut client, args).await,
         HarnessCommand::Evidence(_) => unreachable!("evidence returned before IPC setup"),
     }
+}
+
+async fn validate_lifecycle(cli: &Cli, client: &mut Client) -> Result<(), Box<dyn Error>> {
+    let capabilities = match client.send(Command::GetCapabilities).await? {
+        CommandResult::Capabilities(value) => value,
+        other => return Err(unexpected("capabilities", &other)),
+    };
+    if !capabilities
+        .application_lifecycle
+        .contains(&ApplicationLifecycleOperation::Launch)
+        || !capabilities
+            .actions
+            .contains(&ActionKind::TerminateApplication)
+    {
+        return Err("driver does not advertise the complete application lifecycle path".into());
+    }
+    let running = match client.send(Command::DiscoverApplications).await? {
+        CommandResult::ApplicationsDiscovered(value) => value,
+        other => return Err(unexpected("application discovery", &other)),
+    };
+    if matching_running_application(&running, &cli.application_match).is_some() {
+        return Err("fixture must not be running before lifecycle validation".into());
+    }
+    let launchable = match client.send(Command::DiscoverLaunchableApplications).await? {
+        CommandResult::LaunchableApplicationsDiscovered(value) => value,
+        other => return Err(unexpected("installed application discovery", &other)),
+    };
+    if !launchable.complete {
+        return Err("installed application discovery was incomplete".into());
+    }
+    let application = select_launchable_application(&launchable, &cli.application_match)?;
+    let expected_application_id = application.application_id.clone();
+    let launched = match client
+        .send(Command::LaunchApplication(LaunchApplicationInput {
+            launch_ref: application.launch_ref.clone(),
+            allow_foreground_activation: true,
+        }))
+        .await?
+    {
+        CommandResult::ApplicationLaunched(value)
+            if value.dispatched && value.application.application_id == expected_application_id =>
+        {
+            value
+        }
+        other => return Err(unexpected("application launch", &other)),
+    };
+    let session = match client
+        .send(Command::OpenSession(OpenSessionInput {
+            manifest: CapabilityManifest {
+                mode: PermissionMode::Bounded,
+                application_refs: vec![launched.application.discovery_ref.clone()],
+                allowed_actions: vec![ActionKind::TerminateApplication],
+                allow_foreground_input: false,
+                restore_foreground_after_input: false,
+                allow_display_capture: false,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
+                ttl_seconds: 120,
+            },
+        }))
+        .await?
+    {
+        CommandResult::SessionOpened(value) => value,
+        other => return Err(unexpected("open launched application session", &other)),
+    };
+    let session_id = session.session_id.clone();
+    let window = wait_for_window(
+        client,
+        &session_id,
+        &cli.window_title_prefix,
+        Duration::from_secs(5),
+    )
+    .await?;
+    let observation = observe(
+        client,
+        &session_id,
+        &window,
+        false,
+        AccessibilityMode::Disabled,
+    )
+    .await?;
+    perform(
+        client,
+        &session_id,
+        &window,
+        &observation,
+        Action::TerminateApplication,
+        ActionKind::TerminateApplication,
+    )
+    .await?;
+    let applications = match client
+        .send(Command::ListApps(SessionInput {
+            session_id: session_id.clone(),
+        }))
+        .await?
+    {
+        CommandResult::Apps(value) => value,
+        other => return Err(unexpected("final application list", &other)),
+    };
+    let windows = list_windows(client, &session_id).await?;
+    client
+        .send(Command::CloseSession(SessionInput {
+            session_id: session.session_id,
+        }))
+        .await?;
+    if !applications.is_empty() || !windows.is_empty() {
+        return Err("terminated fixture remained in the final session state".into());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "fixture_contract": "nexus.cua.fixture.v1",
+            "status": "passed",
+            "platform": capabilities.platform,
+            "architecture": std::env::consts::ARCH,
+            "application_id": expected_application_id,
+            "launch_delivery": launched.delivery_mode,
+            "scenario_groups": {
+                "application_lifecycle": "passed"
+            }
+        }))?
+    );
+    Ok(())
 }
 
 async fn validate(cli: &Cli, client: &mut Client, enforce: bool) -> Result<(), Box<dyn Error>> {
@@ -198,6 +326,7 @@ async fn validate(cli: &Cli, client: &mut Client, enforce: bool) -> Result<(), B
         other => return Err(unexpected("application discovery", &other)),
     };
     let application = select_application(&discovered, &cli.application_match)?;
+    let display_capture = capabilities.capture_modes.contains(&CaptureMode::Display);
     let session = match client
         .send(Command::OpenSession(OpenSessionInput {
             manifest: CapabilityManifest {
@@ -205,6 +334,10 @@ async fn validate(cli: &Cli, client: &mut Client, enforce: bool) -> Result<(), B
                 application_refs: vec![application.discovery_ref.clone()],
                 allowed_actions: capabilities.actions.clone(),
                 allow_foreground_input: true,
+                restore_foreground_after_input: false,
+                allow_display_capture: display_capture,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
                 ttl_seconds: 180,
             },
         }))
@@ -214,22 +347,28 @@ async fn validate(cli: &Cli, client: &mut Client, enforce: bool) -> Result<(), B
         other => return Err(unexpected("open session", &other)),
     };
     let session_id = session.session_id.clone();
-    let validation = validate_session(cli, client, &session_id, capabilities.platform)
-        .await
-        .map_err(|error| format!("core fixture path failed: {error}"));
+    let validation = validate_session(
+        cli,
+        client,
+        &session_id,
+        capabilities.platform,
+        display_capture,
+    )
+    .await
+    .map_err(|error| format!("core fixture path failed: {error}"));
     let close = client
         .send(Command::CloseSession(SessionInput {
             session_id: session.session_id,
         }))
         .await;
-    let (mut report, artifact_path) = validation?;
+    let (mut report, artifact_paths) = validation?;
     close?;
-    if let Some(path) = artifact_path {
+    for path in artifact_paths {
         if std::path::Path::new(&path).exists() {
             return Err("session close did not delete its screenshot artifact".into());
         }
-        report["scenario_groups"]["artifact_cleanup"] = json!("passed");
     }
+    report["scenario_groups"]["artifact_cleanup"] = json!("passed");
     validate_session_expiry(cli, client)
         .await
         .map_err(|error| format!("session-expiry path failed: {error}"))?;
@@ -252,7 +391,12 @@ async fn validate_session(
     client: &mut Client,
     session_id: &nexus_cua_protocol::SessionId,
     platform: Platform,
-) -> Result<(Value, Option<String>), Box<dyn Error>> {
+    display_capture: bool,
+) -> Result<(Value, Vec<String>), Box<dyn Error>> {
+    if !display_capture {
+        return Err("driver does not advertise separately authorized display capture".into());
+    }
+    let display_artifact = validate_display_overview(client, session_id).await?;
     let windows = list_windows(client, session_id).await?;
     let window = select_window(windows, &cli.window_title_prefix)?;
     let reconciled = reconcile_observation(client, session_id, &window).await?;
@@ -278,7 +422,7 @@ async fn validate_session(
     let initial = observe(client, session_id, &window, true, AccessibilityMode::Full).await?;
     validate_initial_observation(&window, &initial)?;
     validate_fixture_contract(cli, platform, &initial)?;
-    let artifact_path = initial
+    let window_artifact = initial
         .screenshot
         .as_ref()
         .map(|artifact| artifact.path.clone());
@@ -338,12 +482,68 @@ async fn validate_session(
         return Err("semantic set-value did not update Fixture Text".into());
     }
 
-    let toggle = find_actionable(&after_text, "Enable Feature", "toggle")?;
+    let range = find_actionable(&after_text, "Fixture Range", "set_range_value")?;
+    let metadata = range
+        .range_value
+        .ok_or("Fixture Range did not expose numeric range metadata")?;
+    if metadata.value != 50.0
+        || metadata.minimum != 0.0
+        || metadata.maximum != 100.0
+        || metadata.read_only
+    {
+        return Err("Fixture Range exposed incoherent initial metadata".into());
+    }
+    let outside = client
+        .send_outcome(Command::PerformAction(PerformActionInput {
+            session_id: session_id.clone(),
+            window_ref: window.window_ref.clone(),
+            observation_id: after_text.observation_id.clone(),
+            action: Action::SetRangeValue {
+                element_ref: range.element_ref.clone(),
+                value: 101.0,
+            },
+        }))
+        .await?;
+    match outside {
+        Err(error)
+            if error.code == ErrorCode::InvalidRequest
+                && error.mutation_status == MutationStatus::NotDispatched => {}
+        Err(error) => {
+            return Err(format!(
+                "out-of-range semantic mutation returned {:?}/{:?}",
+                error.code, error.mutation_status
+            )
+            .into());
+        }
+        Ok(_) => return Err("out-of-range semantic mutation was accepted".into()),
+    }
     perform(
         client,
         session_id,
         &window,
         &after_text,
+        Action::SetRangeValue {
+            element_ref: range.element_ref.clone(),
+            value: 75.0,
+        },
+        ActionKind::SetRangeValue,
+    )
+    .await?;
+    let after_range = observe(client, session_id, &window, false, AccessibilityMode::Full).await?;
+    require_state(&after_range, &["level=75"])?;
+    let metadata = find_named(&after_range, "Fixture Range")?
+        .range_value
+        .ok_or("Fixture Range metadata disappeared after mutation")?;
+    if metadata.value != 75.0 {
+        return Err("native range readback did not expose the requested value".into());
+    }
+
+    let toggle = find_actionable(&after_range, "Enable Feature", "toggle")?;
+    perform(
+        client,
+        session_id,
+        &window,
+        &after_range,
         Action::ToggleElement {
             element_ref: toggle.element_ref.clone(),
         },
@@ -420,19 +620,56 @@ async fn validate_session(
             point: increment_point,
             button: PointerButton::Left,
             count: 1,
+            delivery: nexus_cua_protocol::DeliveryPreference::Foreground,
         },
         ActionKind::ClickPoint,
     )
     .await?;
-    let after_click = observe(client, session_id, &window, false, AccessibilityMode::Full).await?;
+    let after_click = observe(client, session_id, &window, true, AccessibilityMode::Full).await?;
     require_state(&after_click, &["counter=2"])?;
-
-    let text = find_actionable(&after_click, "Fixture Text", "focus")?;
+    let background_point = element_screenshot_point(&after_click, "Increment Counter")?;
     perform(
         client,
         session_id,
         &window,
         &after_click,
+        Action::ClickPoint {
+            point: background_point,
+            button: PointerButton::Left,
+            count: 1,
+            delivery: nexus_cua_protocol::DeliveryPreference::Background,
+        },
+        ActionKind::ClickPoint,
+    )
+    .await?;
+    let after_background =
+        observe(client, session_id, &window, false, AccessibilityMode::Full).await?;
+    require_state(&after_background, &["counter=3"])?;
+
+    let before_press = observe(client, session_id, &window, true, AccessibilityMode::Full).await?;
+    let press_point = element_screenshot_point(&before_press, "Long Press Target")?;
+    perform(
+        client,
+        session_id,
+        &window,
+        &before_press,
+        Action::PressPoint {
+            point: press_point,
+            button: PointerButton::Left,
+            duration_ms: 350,
+        },
+        ActionKind::PressPoint,
+    )
+    .await?;
+    let after_press = observe(client, session_id, &window, false, AccessibilityMode::Full).await?;
+    require_state(&after_press, &["pressed=true"])?;
+
+    let text = find_actionable(&after_press, "Fixture Text", "focus")?;
+    perform(
+        client,
+        session_id,
+        &window,
+        &after_press,
         Action::FocusElement {
             element_ref: text.element_ref.clone(),
         },
@@ -454,6 +691,7 @@ async fn validate_session(
             point: text_point,
             button: PointerButton::Left,
             count: 1,
+            delivery: nexus_cua_protocol::DeliveryPreference::Foreground,
         },
         ActionKind::ClickPoint,
     )
@@ -610,6 +848,7 @@ async fn validate_session(
             "scenario_groups": {
                 "discovery_and_identity": "passed",
                 "observation": "passed",
+                "display_overview": "passed",
                 "secure_redaction": "passed",
                 "semantic_mutation": "passed",
                 "foreground_mutation": "passed",
@@ -625,8 +864,53 @@ async fn validate_session(
             "element_count": initial.elements.len(),
             "screenshot_bytes": initial.screenshot.as_ref().map(|value| value.byte_length),
         }),
-        artifact_path,
+        std::iter::once(display_artifact)
+            .chain(window_artifact)
+            .collect(),
     ))
+}
+
+async fn validate_display_overview(
+    client: &mut Client,
+    session_id: &nexus_cua_protocol::SessionId,
+) -> Result<String, Box<dyn Error>> {
+    let displays = match client
+        .send(Command::ListDisplays(SessionInput {
+            session_id: session_id.clone(),
+        }))
+        .await?
+    {
+        CommandResult::Displays(displays) if !displays.is_empty() => displays,
+        other => return Err(unexpected("physical display list", &other)),
+    };
+    let primary_count = displays.iter().filter(|display| display.primary).count();
+    if primary_count != 1 {
+        return Err(
+            format!("physical display list reported {primary_count} primary displays").into(),
+        );
+    }
+    let display = displays
+        .iter()
+        .find(|display| display.primary)
+        .expect("exactly one primary display checked above");
+    let observation = match client
+        .send(Command::ObserveDisplay(ObserveDisplayInput {
+            session_id: session_id.clone(),
+            display_ref: display.display_ref.clone(),
+        }))
+        .await?
+    {
+        CommandResult::DisplayObserved(observation) => observation,
+        other => return Err(unexpected("physical display observation", &other)),
+    };
+    if observation.display_screen_bounds != display.screen_bounds
+        || observation.screenshot.mapping.screen_bounds != display.screen_bounds
+        || observation.screenshot.byte_length == 0
+        || !std::path::Path::new(&observation.screenshot.path).is_file()
+    {
+        return Err("physical display observation mapping or artifact is invalid".into());
+    }
+    Ok(observation.screenshot.path.clone())
 }
 
 async fn validate_display_transition(
@@ -678,12 +962,13 @@ async fn validate_display_transition(
             point,
             button: PointerButton::Left,
             count: 1,
+            delivery: nexus_cua_protocol::DeliveryPreference::Foreground,
         },
         ActionKind::ClickPoint,
     )
     .await?;
     let after_click = observe(client, session_id, &moved, false, AccessibilityMode::Full).await?;
-    require_state(&after_click, &["counter=3"])?;
+    require_state(&after_click, &["counter=4"])?;
     let mixed_dpi = (before_scale.0 - after_scale.0).abs() > 0.01
         || (before_scale.1 - after_scale.1).abs() > 0.01;
     let negative = moved.screen_bounds.x < 0.0 || moved.screen_bounds.y < 0.0;
@@ -805,6 +1090,10 @@ async fn validate_session_expiry(cli: &Cli, client: &mut Client) -> Result<(), B
                 application_refs: vec![application.discovery_ref.clone()],
                 allowed_actions: Vec::new(),
                 allow_foreground_input: false,
+                restore_foreground_after_input: false,
+                allow_display_capture: false,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
                 ttl_seconds: 3,
             },
         }))
@@ -872,6 +1161,10 @@ async fn validate_desktop_conditions(
                 application_refs: vec![application.discovery_ref.clone()],
                 allowed_actions: capabilities.actions.clone(),
                 allow_foreground_input: true,
+                restore_foreground_after_input: false,
+                allow_display_capture: false,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
                 ttl_seconds: 60,
             },
         }))
@@ -1054,6 +1347,7 @@ fn validate_initial_observation(
         ("Increment Counter", "invoke"),
         ("Fixture Text", "set_value"),
         ("Fixture Secure Text", "set_value"),
+        ("Fixture Range", "set_range_value"),
         ("Enable Feature", "toggle"),
         ("Beta", "select"),
         ("Advanced Options", "set_expanded"),
@@ -1061,6 +1355,7 @@ fn validate_initial_observation(
         find_actionable(observation, name, action)?;
     }
     find_named(observation, "Drag Token")?;
+    find_named(observation, "Long Press Target")?;
     find_named(observation, "Drop Zone")?;
     let secure = find_named(observation, "Fixture Secure Text")?;
     if secure.value.is_some() {
@@ -1077,7 +1372,9 @@ fn validate_initial_observation(
             "text=ready",
             "checked=false",
             "selection=none",
+            "level=50",
             "expanded=false",
+            "pressed=false",
             "dropped=false",
         ],
     )
@@ -1146,10 +1443,25 @@ async fn perform(
     if action.kind() != expected_kind {
         return Err("harness action-kind assertion failed".into());
     }
-    let expected_delivery = if action.requires_foreground() {
-        DeliveryMode::Foreground
-    } else {
-        DeliveryMode::Semantic
+    let allows_semantic_background = matches!(
+        &action,
+        Action::ClickPoint {
+            delivery: nexus_cua_protocol::DeliveryPreference::Background,
+            button: PointerButton::Left,
+            count: 1,
+            ..
+        }
+    );
+    let expected_delivery = match &action {
+        Action::ClickPoint {
+            delivery: nexus_cua_protocol::DeliveryPreference::Background,
+            ..
+        } => DeliveryMode::Background,
+        Action::SetWindowBounds { .. }
+        | Action::SetWindowMinimized { .. }
+        | Action::TerminateApplication => DeliveryMode::System,
+        _ if action.requires_foreground() => DeliveryMode::Foreground,
+        _ => DeliveryMode::Semantic,
     };
     let result = client
         .send(Command::PerformAction(PerformActionInput {
@@ -1162,16 +1474,27 @@ async fn perform(
         .map_err(|error| format!("{expected_kind:?} action failed: {error}"))?;
     match result {
         CommandResult::ActionPerformed(output)
-            if output.delivery_mode == expected_delivery
+            if (output.delivery_mode == expected_delivery
+                || (allows_semantic_background
+                    && output.delivery_mode == DeliveryMode::Semantic))
                 && output.dispatched
+                && output.effect_status.is_supported_by(output.evidence_kind)
+                && output.foreground_restoration
+                    == nexus_cua_protocol::ForegroundRestorationStatus::NotRequested
                 && output.observation_invalidated =>
         {
             Ok(())
         }
         CommandResult::ActionPerformed(output) if output.delivery_mode != expected_delivery => {
             Err(format!(
-                "action used {:?} delivery, expected {:?}",
-                output.delivery_mode, expected_delivery
+                "action used {:?} delivery, expected {:?}{}",
+                output.delivery_mode,
+                expected_delivery,
+                if allows_semantic_background {
+                    " or Semantic"
+                } else {
+                    ""
+                }
             )
             .into())
         }
@@ -1214,6 +1537,31 @@ async fn wait_for_geometry_change(
             return Err("fixture geometry action did not change top-level window bounds".into());
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_window(
+    client: &mut Client,
+    session_id: &nexus_cua_protocol::SessionId,
+    title_prefix: &str,
+    timeout: Duration,
+) -> Result<WindowSummary, Box<dyn Error>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(window) = list_windows(client, session_id)
+            .await?
+            .into_iter()
+            .find(|window| window.title.starts_with(title_prefix))
+        {
+            return Ok(window);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "no window title starts with {title_prefix:?} after waiting {timeout:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -1481,6 +1829,10 @@ async fn inspect(
                 application_refs: vec![application.discovery_ref.clone()],
                 allowed_actions: Vec::new(),
                 allow_foreground_input: false,
+                restore_foreground_after_input: false,
+                allow_display_capture: false,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
                 ttl_seconds: 120,
             },
         }))
@@ -1611,6 +1963,45 @@ fn select_application<'a>(
             )
             .into()
         })
+}
+
+fn matching_running_application<'a>(
+    discovered: &'a DiscoverApplicationsOutput,
+    application_match: &str,
+) -> Option<&'a nexus_cua_protocol::DiscoveredApplication> {
+    discovered.applications.iter().find(|application| {
+        application.name.contains(application_match)
+            || application.application_id.contains(application_match)
+            || serde_json::to_string(&application.provenance)
+                .is_ok_and(|value| value.contains(application_match))
+    })
+}
+
+fn select_launchable_application<'a>(
+    discovered: &'a DiscoverLaunchableApplicationsOutput,
+    application_match: &str,
+) -> Result<&'a nexus_cua_protocol::LaunchableApplication, Box<dyn Error>> {
+    let matches = discovered
+        .applications
+        .iter()
+        .filter(|application| {
+            application.name.contains(application_match)
+                || application.application_id.contains(application_match)
+                || serde_json::to_string(&application.provenance)
+                    .is_ok_and(|value| value.contains(application_match))
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [application] => Ok(*application),
+        [] => Err(
+            format!("installed fixture containing {application_match:?} was not discovered").into(),
+        ),
+        _ => Err(format!(
+            "installed fixture match {application_match:?} is ambiguous across {} registrations",
+            matches.len()
+        )
+        .into()),
+    }
 }
 
 fn unexpected(expected: &str, actual: &CommandResult) -> Box<dyn Error> {

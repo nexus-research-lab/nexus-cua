@@ -5,10 +5,12 @@
       "protocol_version": "nexus.cua.v1",
       "runtime_version": "0.1.0",
       "platform": "macos",
-      "capture_modes": ["window"],
+      "capture_modes": ["window", "display"],
       "accessibility_tree": true,
       "input_routes": ["semantic", "foreground"],
-      "actions": ["focus_window", "invoke_element", "click_point"]
+      "application_lifecycle": ["launch"],
+      "clipboard": ["read_text", "write_text"],
+      "actions": ["focus_window", "invoke_element", "set_range_value", "click_point"]
     }
   },
   {
@@ -39,6 +41,48 @@
         }
       ],
       "complete": true
+    }
+  },
+  {
+    "result_type": "launchable_applications_discovered",
+    "data": {
+      "applications": [
+        {
+          "launch_ref": "launch_fixture",
+          "name": "Fixture",
+          "application_id": "dev.nexus.fixture",
+          "provenance": {
+            "platform": "macos",
+            "bundle_id": "dev.nexus.fixture",
+            "executable_path": "/Applications/Fixture.app/Contents/MacOS/Fixture",
+            "signing_team_id": "NEXUSTEST",
+            "designated_requirement": null
+          },
+          "expires_at": "2026-08-25T12:00:30Z"
+        }
+      ],
+      "complete": true
+    }
+  },
+  {
+    "result_type": "application_launched",
+    "data": {
+      "application": {
+        "discovery_ref": "discovery_launched_fixture",
+        "name": "Fixture",
+        "application_id": "dev.nexus.fixture",
+        "foreground": true,
+        "provenance": {
+          "platform": "macos",
+          "bundle_id": "dev.nexus.fixture",
+          "executable_path": "/Applications/Fixture.app/Contents/MacOS/Fixture",
+          "signing_team_id": "NEXUSTEST",
+          "designated_requirement": null
+        },
+        "expires_at": "2026-08-25T12:00:30Z"
+      },
+      "delivery_mode": "foreground",
+      "dispatched": true
     }
   },
   {
@@ -75,6 +119,36 @@
     ]
   },
   {
+    "result_type": "displays",
+    "data": [
+      {
+        "display_ref": "display_fixture",
+        "screen_bounds": { "x": 0.0, "y": 0.0, "width": 1920.0, "height": 1080.0 },
+        "primary": true
+      }
+    ]
+  },
+  {
+    "result_type": "display_observed",
+    "data": {
+      "observation_id": "observation_display_fixture",
+      "display_ref": "display_fixture",
+      "captured_at": "2026-08-25T12:00:01Z",
+      "display_screen_bounds": { "x": 0.0, "y": 0.0, "width": 1920.0, "height": 1080.0 },
+      "screenshot": {
+        "artifact_ref": "artifact_display_fixture",
+        "path": "/private/runtime/session_fixture/artifact_display_fixture.png",
+        "mime_type": "image/png",
+        "mapping": {
+          "screen_bounds": { "x": 0.0, "y": 0.0, "width": 1920.0, "height": 1080.0 },
+          "pixel_size": { "width": 3840, "height": 2160 }
+        },
+        "byte_length": 8192,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  },
+  {
     "result_type": "window_observed",
     "data": {
       "observation_id": "observation_fixture",
@@ -92,9 +166,43 @@
         "byte_length": 4096,
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
-      "elements": [],
+      "elements": [
+        {
+          "element_ref": "element_fixture",
+          "parent_ref": null,
+          "role": "checkbox",
+          "name": "Remember me",
+          "value": null,
+          "range_value": null,
+          "screen_bounds": { "x": 40.0, "y": 80.0, "width": 120.0, "height": 32.0 },
+          "enabled": true,
+          "focused": false,
+          "selected": null,
+          "checked": true,
+          "expanded": null,
+          "actions": ["toggle"]
+        }
+      ],
       "elements_complete": true,
       "elements_truncation": null
+    }
+  },
+  {
+    "result_type": "clipboard_read",
+    "data": {
+      "clipboard_ref": "clipboard_fixture",
+      "text": "clipboard fixture",
+      "byte_length": 17
+    }
+  },
+  {
+    "result_type": "clipboard_written",
+    "data": {
+      "clipboard_ref": "clipboard_written_fixture",
+      "delivery_mode": "system",
+      "dispatched": true,
+      "effect_status": "confirmed",
+      "evidence_kind": "native_readback"
     }
   },
   {
@@ -102,11 +210,29 @@
     "data": {
       "delivery_mode": "foreground",
       "dispatched": true,
+      "effect_status": "unverified",
+      "evidence_kind": "dispatch_acceptance",
+      "foreground_restoration": "not_requested",
       "observation_invalidated": true
     }
   },
   {
     "result_type": "state_verified",
-    "data": { "matched": true, "evidence": "window title contains Fixture" }
+    "data": { "matched": true, "evidence": "fresh semantic checked state" }
+  },
+  {
+    "result_type": "mutation_reconciled",
+    "data": {
+      "request_id": "fixture-action",
+      "runtime_epoch": "runtime_fixture",
+      "worker_epoch": null,
+      "admission": "admitted",
+      "disposition": "succeeded",
+      "dispatched": true,
+      "effect_status": "unverified",
+      "evidence_kind": "dispatch_acceptance",
+      "error_code": null,
+      "fresh_observation_required": true
+    }
   }
 ]

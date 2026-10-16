@@ -12,13 +12,16 @@ use windows::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+};
 use windows::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetForegroundWindow, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, WS_EX_TOOLWINDOW,
+    IsWindowVisible, MONITORINFOF_PRIMARY, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -29,6 +32,8 @@ const MAX_PATH_UNITS: usize = 32_768;
 pub(super) struct NativeWindow {
     pub(super) key: String,
     pub(super) hwnd: isize,
+    pub(super) pid: u32,
+    pub(super) process_generation: u64,
     pub(super) application_key: String,
     pub(super) application_id: String,
     pub(super) application_name: String,
@@ -37,6 +42,13 @@ pub(super) struct NativeWindow {
     pub(super) foreground: bool,
     pub(super) minimized: bool,
     pub(super) visible: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct NativeDisplay {
+    pub(super) key: String,
+    pub(super) screen_bounds: ScreenRect,
+    pub(super) primary: bool,
 }
 
 #[derive(Clone)]
@@ -57,7 +69,21 @@ impl DiscoveryActor {
     pub(super) async fn windows(&self) -> Result<Vec<NativeWindow>, DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.sender
-            .try_send(DiscoveryCommand::List { reply })
+            .try_send(DiscoveryCommand::ListWindows { reply })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => {
+                    DriverError::new(DriverErrorKind::Busy, "Windows discovery actor is busy")
+                        .retryable("retry_with_backoff")
+                }
+                TrySendError::Disconnected(_) => actor_stopped(()),
+            })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn displays(&self) -> Result<Vec<NativeDisplay>, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .try_send(DiscoveryCommand::ListDisplays { reply })
             .map_err(|error| match error {
                 TrySendError::Full(_) => {
                     DriverError::new(DriverErrorKind::Busy, "Windows discovery actor is busy")
@@ -70,15 +96,84 @@ impl DiscoveryActor {
 }
 
 enum DiscoveryCommand {
-    List {
+    ListWindows {
         reply: oneshot::Sender<Result<Vec<NativeWindow>, DriverError>>,
+    },
+    ListDisplays {
+        reply: oneshot::Sender<Result<Vec<NativeDisplay>, DriverError>>,
     },
 }
 
 fn actor_loop(receiver: &Receiver<DiscoveryCommand>) {
-    while let Ok(DiscoveryCommand::List { reply }) = receiver.recv() {
-        let _ = reply.send(list_windows());
+    while let Ok(command) = receiver.recv() {
+        match command {
+            DiscoveryCommand::ListWindows { reply } => {
+                let _ = reply.send(list_windows());
+            }
+            DiscoveryCommand::ListDisplays { reply } => {
+                let _ = reply.send(list_displays());
+            }
+        }
     }
+}
+
+fn list_displays() -> Result<Vec<NativeDisplay>, DriverError> {
+    let mut handles = Vec::<isize>::new();
+    // SAFETY: EnumDisplayMonitors invokes the callback synchronously while the
+    // uniquely borrowed Vec remains live.
+    let completed = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect_monitor),
+            LPARAM(ptr_to_lparam(&mut handles)),
+        )
+    };
+    if !completed.as_bool() {
+        return Err(native_failure("EnumDisplayMonitors failed"));
+    }
+    handles
+        .into_iter()
+        .map(describe_display)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+unsafe extern "system" fn collect_monitor(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _bounds: *mut RECT,
+    lparam: LPARAM,
+) -> BOOL {
+    // SAFETY: `lparam` originates from `list_displays` and the callback is
+    // synchronous, so the Vec remains uniquely borrowed.
+    let address = usize::from_ne_bytes(lparam.0.to_ne_bytes());
+    let displays = unsafe { &mut *std::ptr::with_exposed_provenance_mut::<Vec<isize>>(address) };
+    displays.push(isize::from_ne_bytes(monitor.0.addr().to_ne_bytes()));
+    true.into()
+}
+
+fn describe_display(raw_monitor: isize) -> Result<NativeDisplay, DriverError> {
+    let monitor = HMONITOR(raw_monitor as *mut c_void);
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(size_of::<MONITORINFO>()).unwrap_or(u32::MAX),
+        ..Default::default()
+    };
+    // SAFETY: GetMonitorInfoW copies metadata for the enumerated monitor into
+    // the initialized fixed-size structure.
+    if !unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool() {
+        return Err(native_failure("GetMonitorInfoW failed"));
+    }
+    let bounds = info.rcMonitor;
+    Ok(NativeDisplay {
+        key: format!("hmonitor:{:016x}", monitor.0.addr()),
+        screen_bounds: ScreenRect {
+            x: f64::from(bounds.left),
+            y: f64::from(bounds.top),
+            width: f64::from(bounds.right.saturating_sub(bounds.left)),
+            height: f64::from(bounds.bottom.saturating_sub(bounds.top)),
+        },
+        primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+    })
 }
 
 fn list_windows() -> Result<Vec<NativeWindow>, DriverError> {
@@ -148,6 +243,8 @@ fn describe_window(hwnd: HWND, foreground: HWND) -> Result<Option<NativeWindow>,
         Ok(Some(NativeWindow {
             key: format!("hwnd:{:016x}:{application_key}", hwnd.0.addr()),
             hwnd: raw_hwnd(hwnd),
+            pid,
+            process_generation: generation,
             application_key,
             application_id,
             application_name,
@@ -196,7 +293,20 @@ fn process_identity(
         .and_then(|name| name.to_str())
         .map_or_else(|| format!("Process {pid}"), str::to_owned);
     let generation = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
-    Ok((path.to_lowercase(), application_name, generation))
+    Ok((
+        normalize_executable_identity(Path::new(&path)),
+        application_name,
+        generation,
+    ))
+}
+
+pub(super) fn normalize_executable_identity(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('/', "\\");
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}").to_lowercase()
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(&path).to_lowercase()
+    }
 }
 
 fn window_title(hwnd: HWND) -> String {
@@ -253,4 +363,26 @@ fn native_failure(message: &str) -> DriverError {
 
 fn actor_stopped<T>(_error: T) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, "Windows discovery actor stopped")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_executable_identity;
+    use std::path::Path;
+
+    #[test]
+    fn executable_identity_normalizes_verbatim_drive_paths() {
+        assert_eq!(
+            normalize_executable_identity(Path::new(r"\\?\C:\Program Files\Fixture\APP.EXE")),
+            r"c:\program files\fixture\app.exe"
+        );
+    }
+
+    #[test]
+    fn executable_identity_preserves_unc_authority() {
+        assert_eq!(
+            normalize_executable_identity(Path::new(r"\\?\UNC\server\share\APP.EXE")),
+            r"\\server\share\app.exe"
+        );
+    }
 }

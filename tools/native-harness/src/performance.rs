@@ -273,7 +273,7 @@ pub(super) async fn benchmark(
         },
         "gates": gates,
         "absolute_budgets_passed": absolute_pass,
-        "accepted_release_evidence": evidence_accepted,
+        "evidence_accepted": evidence_accepted,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     if args.enforce && !evidence_accepted {
@@ -435,7 +435,7 @@ pub(super) async fn soak(
             "observed_percent": cpu_percent,
             "passed": idle_cpu_applies && idle_cpu_pass,
         },
-        "accepted_release_evidence": accepted,
+        "evidence_accepted": accepted,
         "unavailable_resource_counts": ["com", "iosurface", "gpu"],
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -472,6 +472,10 @@ async fn open_fixture_session(
                 application_refs: vec![application.discovery_ref.clone()],
                 allowed_actions: capabilities.actions.clone(),
                 allow_foreground_input: true,
+                restore_foreground_after_input: false,
+                allow_display_capture: false,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
                 ttl_seconds,
             },
         }))
@@ -709,13 +713,21 @@ async fn perform_command(
         CommandResult::ActionPerformed(output)
             if output.delivery_mode == delivery_mode
                 && output.dispatched
+                && output.effect_status.is_supported_by(output.evidence_kind)
+                && output.foreground_restoration
+                    == nexus_cua_protocol::ForegroundRestorationStatus::NotRequested
                 && output.observation_invalidated =>
         {
             Ok(())
         }
         CommandResult::ActionPerformed(output) => Err(format!(
-            "{expected_kind:?} returned delivery={:?}, dispatched={}, invalidated={}",
-            output.delivery_mode, output.dispatched, output.observation_invalidated
+            "{expected_kind:?} returned delivery={:?}, dispatched={}, effect={:?}/{:?}, restoration={:?}, invalidated={}",
+            output.delivery_mode,
+            output.dispatched,
+            output.effect_status,
+            output.evidence_kind,
+            output.foreground_restoration,
+            output.observation_invalidated
         )
         .into()),
         other => Err(unexpected("performance action", &other)),
@@ -861,10 +873,12 @@ fn macos_physical_footprint(pid: u32) -> Result<(u64, Option<u64>), Box<dyn Erro
     }
     // SAFETY: A successful proc_pid_rusage call initialized the full structure.
     let usage = unsafe { usage.assume_init() };
-    Ok((
-        usage.ri_phys_footprint,
-        Some(usage.ri_lifetime_max_phys_footprint),
-    ))
+    let current = usage.ri_phys_footprint;
+    // Some macOS builds can report a lifetime maximum a sampling tick behind
+    // the current footprint. Preserve the more conservative value instead of
+    // emitting an impossible peak below the same sample's current usage.
+    let peak = usage.ri_lifetime_max_phys_footprint.max(current);
+    Ok((current, Some(peak)))
 }
 
 #[cfg(not(windows))]

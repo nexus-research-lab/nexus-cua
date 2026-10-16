@@ -4,7 +4,6 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use nexus_cua_protocol::{
@@ -16,7 +15,7 @@ use nexus_cua_runtime::{
     DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
     DriverObservation, DriverVerification, DriverWindow, Runtime, RuntimeConfig,
 };
-use nexus_cua_transport::{Dispatcher, LocalEndpoint, ServerConfig, request, serve_until};
+use nexus_cua_transport::{Dispatcher, LocalEndpoint, ServerConfig, request, serve_until_ready};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -32,6 +31,8 @@ impl DesktopDriver for CapabilityDriver {
             capture_modes: vec![CaptureMode::Window],
             accessibility_tree: false,
             input_routes: vec![InputRoute::Foreground],
+            application_lifecycle: Vec::new(),
+            clipboard: Vec::new(),
             actions: Vec::new(),
         })
     }
@@ -77,6 +78,7 @@ impl DesktopDriver for CapabilityDriver {
         _window: &DriverWindow,
         _action: DriverAction,
         _allow_foreground: bool,
+        _restore_foreground: bool,
     ) -> Result<DriverActionOutput, DriverError> {
         unreachable!("smoke test requests capabilities only")
     }
@@ -116,13 +118,21 @@ async fn serves_one_authenticated_request_over_native_local_ipc() {
         )
         .expect("create dispatcher"),
     );
+    let (ready_tx, ready_rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
-        serve_until(dispatcher, config, async {
+        serve_until_ready(dispatcher, config, ready_tx, async {
             let _ = shutdown_rx.await;
         })
         .await
     });
+    match ready_rx.await {
+        Ok(()) => {}
+        Err(error) => panic!(
+            "local endpoint startup signal failed ({error}): {:?}",
+            server.await.expect("join failed local server")
+        ),
+    }
     let envelope = RequestEnvelope {
         protocol_version: PROTOCOL_VERSION.to_owned(),
         request_id: RequestId::new(format!("request_{identity}")),
@@ -131,7 +141,7 @@ async fn serves_one_authenticated_request_over_native_local_ipc() {
         command: Command::GetCapabilities,
     };
 
-    let response = request_when_ready(&endpoint, &envelope)
+    let response = request(&endpoint, &envelope, 1024 * 1024)
         .await
         .expect("request native local endpoint");
     assert!(matches!(response.outcome, ResponseOutcome::Success { .. }));
@@ -144,21 +154,6 @@ async fn serves_one_authenticated_request_over_native_local_ipc() {
     #[cfg(unix)]
     assert!(!Path::new(endpoint.as_str()).exists());
     let _ = std::fs::remove_dir_all(root);
-}
-
-async fn request_when_ready(
-    endpoint: &LocalEndpoint,
-    envelope: &RequestEnvelope,
-) -> Result<nexus_cua_protocol::ResponseEnvelope, String> {
-    let mut last_error = "local endpoint did not start".to_owned();
-    for _ in 0..100 {
-        match request(endpoint, envelope, 1024 * 1024).await {
-            Ok(response) => return Ok(response),
-            Err(error) => last_error = error.to_string(),
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    Err(last_error)
 }
 
 fn test_endpoint(_root: &Path, identity: &str) -> LocalEndpoint {

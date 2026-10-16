@@ -13,7 +13,7 @@ use windows::Win32::Security::WinTrust::{
 };
 use windows::core::PCWSTR;
 
-pub(super) fn inspect(executable_path: &str) -> (Option<String>, SignatureStatus) {
+pub(crate) fn inspect(executable_path: &str) -> (Option<String>, SignatureStatus) {
     let path = executable_path
         .encode_utf16()
         .chain(std::iter::once(0))

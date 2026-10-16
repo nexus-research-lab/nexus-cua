@@ -20,6 +20,8 @@ pub enum DriverErrorKind {
     ForegroundRequired,
     /// Observation no longer matches platform state.
     StaleObservation,
+    /// Clipboard generation no longer matches the supplied guard.
+    StaleClipboard,
     /// Platform operation failed.
     Platform,
 }
@@ -85,6 +87,7 @@ impl From<DriverError> for CuaError {
             DriverErrorKind::TargetUnresponsive => ErrorCode::TargetUnresponsive,
             DriverErrorKind::ForegroundRequired => ErrorCode::ForegroundRequired,
             DriverErrorKind::StaleObservation => ErrorCode::StaleObservation,
+            DriverErrorKind::StaleClipboard => ErrorCode::StaleClipboard,
             DriverErrorKind::Platform => ErrorCode::DriverFailure,
         };
         Self {

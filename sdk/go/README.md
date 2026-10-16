@@ -14,3 +14,8 @@ ambiguous substring matches instead of trusting platform enumeration order.
 Mutation calls return an `ActionRequest`. If the wait becomes indeterminate,
 retain that value and call `ReconcileAction` with a longer timeout. Never create
 a second mutation request to recover from an indeterminate result.
+
+Clipboard access is separately authorized. `ReadClipboard` returns redacted
+sensitive text plus a fresh opaque guard. Pass that guard and a `SensitiveText`
+value to `WriteClipboard`; retain its `ClipboardRequest` for same-request
+reconciliation, and read again after any stale or consumed guard.

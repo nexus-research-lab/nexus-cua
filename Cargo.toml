@@ -1,10 +1,14 @@
 [workspace]
 members = [
     "crates/cli",
+    "crates/host",
+    "crates/mcp",
     "crates/platform",
+    "crates/provider",
     "crates/protocol",
     "crates/runtime",
     "crates/transport",
+    "tools/remote-harness",
 ]
 resolver = "2"
 
@@ -18,18 +22,26 @@ repository = "https://github.com/nexus-research-lab/nexus-cua"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
+axum = { version = "0.8.8", default-features = false, features = ["http1", "tokio"] }
+base64 = "0.23.1"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 fs2 = "0.4.3"
 hex = "0.4.3"
+libc = "0.2.189"
 png = "0.18.0"
+rmcp = { version = "3.1.4", default-features = false, features = ["base64", "macros", "server", "transport-io", "transport-streamable-http-server"] }
+rcgen = { version = "0.14.5", default-features = false, features = ["ring"] }
+rustls = { version = "0.23.32", default-features = false, features = ["ring", "std", "tls12"] }
 schemars = { version = "1.2.2", features = ["uuid1"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 subtle = "2.6.1"
 thiserror = "2.0.17"
-time = { version = "0.3.44", features = ["formatting", "macros"] }
-tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
+time = { version = "0.3.44", features = ["formatting", "macros", "parsing"] }
+tokio = { version = "1.53.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
+tokio-util = "0.7.17"
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.18.1", features = ["serde", "v4"] }

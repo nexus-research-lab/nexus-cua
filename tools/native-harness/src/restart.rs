@@ -49,6 +49,10 @@ pub(super) async fn prepare(
                 application_refs: vec![application.discovery_ref.clone()],
                 allowed_actions: capabilities.actions,
                 allow_foreground_input: true,
+                restore_foreground_after_input: false,
+                allow_display_capture: false,
+                allow_clipboard_read: false,
+                allow_clipboard_write: false,
                 ttl_seconds: 180,
             },
         }))

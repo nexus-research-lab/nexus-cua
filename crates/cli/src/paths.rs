@@ -64,9 +64,22 @@ impl ServicePaths {
 }
 
 pub(crate) fn read_private_token(path: &Path) -> Result<AuthorizationToken, CliError> {
-    let metadata = std::fs::metadata(path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(invalid_token_file());
+    }
     if metadata.len() > MAXIMUM_TOKEN_BYTES as u64 {
         return Err(invalid_token_file());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(CliError::InvalidConfiguration(
+                "token file must be readable and writable only by its owner".to_owned(),
+            ));
+        }
     }
     let contents = std::fs::read_to_string(path)?;
     let value = contents.trim();

@@ -1,31 +1,39 @@
 //! Windows Graphics Capture, UI Automation, and `SendInput` driver.
 
 mod capture;
+mod clipboard;
 mod discovery;
 mod input;
-mod provenance;
+mod launch;
+pub(crate) mod provenance;
 mod semantic;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use nexus_cua_protocol::{
-    AccessibilityMode, ActionKind, ApplicationProvenance, CaptureMode, DeliveryMode,
-    DriverCapabilities, InputRoute, PROTOCOL_VERSION, PermissionState, PermissionStatus, Platform,
-    SignatureStatus, StatePredicate,
+    AccessibilityMode, ActionEffectStatus, ActionEvidenceKind, ActionKind,
+    ApplicationLifecycleOperation, ApplicationProvenance, CaptureMode, ClipboardOperation,
+    DeliveryMode, DeliveryPreference, DriverCapabilities, ElementState,
+    ForegroundRestorationStatus, InputRoute, PROTOCOL_VERSION, PermissionState, PermissionStatus,
+    Platform, SensitiveText, SignatureStatus, StatePredicate,
 };
 use nexus_cua_runtime::{
-    DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
-    DriverErrorKind, DriverObservation, DriverVerification, DriverWindow,
+    DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverClipboardSnapshot,
+    DriverClipboardWriteOutput, DriverDisplay, DriverError, DriverErrorKind, DriverLaunchOutput,
+    DriverLaunchableApplication, DriverObservation, DriverVerification, DriverWindow,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 
 use capture::CaptureActor;
+use clipboard::ClipboardActor;
 use discovery::{DiscoveryActor, NativeWindow};
 use input::{InputAction, InputActor};
+use launch::LaunchActor;
 use semantic::{SemanticAction, SemanticActor};
 use tokio::sync::Semaphore;
 
@@ -37,10 +45,14 @@ pub struct WindowsDriver {
     capture: CaptureActor,
     semantic: SemanticActor,
     input: InputActor,
+    launch: LaunchActor,
+    clipboard: ClipboardActor,
     provenance_workers: Arc<Semaphore>,
 }
 
 const PROVENANCE_WORKERS: usize = 2;
+const LAUNCH_CONFIRM_TIMEOUT: Duration = Duration::from_secs(10);
+const LAUNCH_CONFIRM_INTERVAL: Duration = Duration::from_millis(50);
 
 impl WindowsDriver {
     /// Creates the native actors without prompting or widening OS authority.
@@ -55,6 +67,8 @@ impl WindowsDriver {
             capture: CaptureActor::spawn()?,
             semantic: SemanticActor::spawn()?,
             input: InputActor::spawn(),
+            launch: LaunchActor::spawn(),
+            clipboard: ClipboardActor::spawn()?,
             provenance_workers: Arc::new(Semaphore::new(PROVENANCE_WORKERS)),
         })
     }
@@ -75,15 +89,27 @@ impl DesktopDriver for WindowsDriver {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
             platform: Platform::Windows,
-            capture_modes: vec![CaptureMode::Window],
+            capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
             accessibility_tree: true,
-            input_routes: vec![InputRoute::Semantic, InputRoute::Foreground],
+            input_routes: vec![
+                InputRoute::Semantic,
+                InputRoute::System,
+                InputRoute::Background,
+                InputRoute::Foreground,
+            ],
+            application_lifecycle: vec![ApplicationLifecycleOperation::Launch],
+            clipboard: vec![ClipboardOperation::ReadText, ClipboardOperation::WriteText],
             actions: vec![
                 ActionKind::FocusWindow,
+                ActionKind::SetWindowBounds,
+                ActionKind::SetWindowMinimized,
+                ActionKind::TerminateApplication,
                 ActionKind::FocusElement,
                 ActionKind::InvokeElement,
                 ActionKind::ClickPoint,
+                ActionKind::PressPoint,
                 ActionKind::SetValue,
+                ActionKind::SetRangeValue,
                 ActionKind::ToggleElement,
                 ActionKind::SelectElement,
                 ActionKind::SetExpanded,
@@ -134,6 +160,62 @@ impl DesktopDriver for WindowsDriver {
         })
     }
 
+    async fn list_launchable_applications(
+        &self,
+    ) -> Result<Vec<DriverLaunchableApplication>, DriverError> {
+        self.launch.list().await
+    }
+
+    async fn launch_application(
+        &self,
+        application: &DriverLaunchableApplication,
+        allow_foreground_activation: bool,
+    ) -> Result<DriverLaunchOutput, DriverError> {
+        self.launch
+            .launch(application.clone(), allow_foreground_activation)
+            .await?;
+        let deadline = Instant::now() + LAUNCH_CONFIRM_TIMEOUT;
+        loop {
+            let windows = self
+                .windows()
+                .await
+                .map_err(DriverError::mutation_indeterminate)?;
+            if let Some(window) = windows
+                .into_iter()
+                .find(|window| window.application_id == application.identity)
+            {
+                if !allow_foreground_activation && window.foreground {
+                    return Err(DriverError::new(
+                        DriverErrorKind::Platform,
+                        "Windows launch exceeded foreground activation authority",
+                    )
+                    .retryable("discover_applications")
+                    .mutation_indeterminate());
+                }
+                let mut launched = driver_application(&window);
+                launched.name.clone_from(&application.name);
+                launched.provenance.clone_from(&application.provenance);
+                return Ok(DriverLaunchOutput {
+                    application: launched,
+                    delivery_mode: if allow_foreground_activation {
+                        DeliveryMode::Foreground
+                    } else {
+                        DeliveryMode::System
+                    },
+                });
+            }
+            if Instant::now() >= deadline {
+                return Err(DriverError::new(
+                    DriverErrorKind::TargetUnresponsive,
+                    "Windows launched the application but no exact usable top-level window appeared",
+                )
+                .retryable("discover_applications")
+                .mutation_indeterminate());
+            }
+            tokio::time::sleep(LAUNCH_CONFIRM_INTERVAL).await;
+        }
+    }
+
     async fn list_windows(
         &self,
         application_key: Option<&str>,
@@ -145,6 +227,29 @@ impl DesktopDriver for WindowsDriver {
             .filter(|window| application_key.is_none_or(|key| key == window.application_key))
             .map(driver_window)
             .collect())
+    }
+
+    async fn list_displays(&self) -> Result<Vec<DriverDisplay>, DriverError> {
+        Ok(self
+            .discovery
+            .displays()
+            .await?
+            .into_iter()
+            .map(|display| DriverDisplay {
+                key: display.key,
+                screen_bounds: display.screen_bounds,
+                primary: display.primary,
+            })
+            .collect())
+    }
+
+    async fn observe_display(
+        &self,
+        display: &DriverDisplay,
+    ) -> Result<(nexus_cua_runtime::RgbaImage, nexus_cua_protocol::ScreenRect), DriverError> {
+        self.capture
+            .capture_display(&display.key, display.screen_bounds)
+            .await
     }
 
     async fn observe_window(
@@ -224,6 +329,28 @@ impl DesktopDriver for WindowsDriver {
         })
     }
 
+    async fn read_clipboard(
+        &self,
+        max_text_bytes: usize,
+    ) -> Result<DriverClipboardSnapshot, DriverError> {
+        self.clipboard.read(max_text_bytes).await
+    }
+
+    async fn write_clipboard(
+        &self,
+        expected_change_marker: &str,
+        text: &SensitiveText,
+        max_text_bytes: usize,
+    ) -> Result<DriverClipboardWriteOutput, DriverError> {
+        self.clipboard
+            .write(
+                expected_change_marker.to_owned(),
+                text.clone(),
+                max_text_bytes,
+            )
+            .await
+    }
+
     async fn observation_is_current(
         &self,
         window: &DriverWindow,
@@ -252,11 +379,16 @@ impl DesktopDriver for WindowsDriver {
         window: &DriverWindow,
         action: DriverAction,
         allow_foreground: bool,
+        restore_foreground: bool,
     ) -> Result<DriverActionOutput, DriverError> {
         let foreground = matches!(
             &action,
             DriverAction::FocusWindow
-                | DriverAction::ClickPoint { .. }
+                | DriverAction::ClickPoint {
+                    delivery: DeliveryPreference::Foreground,
+                    ..
+                }
+                | DriverAction::PressPoint { .. }
                 | DriverAction::MovePointer { .. }
                 | DriverAction::TypeText { .. }
                 | DriverAction::PressKeys { .. }
@@ -272,7 +404,9 @@ impl DesktopDriver for WindowsDriver {
         }
         let current = current_window(&self.windows().await?, &window.key)
             .map_err(DriverError::mutation_not_dispatched)?;
-        let result = self.dispatch_action(&current, action).await;
+        let result = self
+            .dispatch_action(&current, action, restore_foreground)
+            .await;
         if result.is_ok() {
             self.capture.invalidate_after_mutation();
         }
@@ -307,39 +441,161 @@ impl DesktopDriver for WindowsDriver {
                     "fresh cached UI Automation snapshot".to_owned(),
                 )
             }
+            StatePredicate::ElementState {
+                role,
+                name,
+                state,
+                value,
+            } => {
+                let snapshot = self
+                    .semantic
+                    .snapshot(current.hwnd, AccessibilityMode::Interactive)
+                    .await?;
+                (
+                    snapshot.elements.iter().any(|element| {
+                        role.as_ref().is_none_or(|role| role == &element.role)
+                            && name.as_ref().is_none_or(|name| name == &element.name)
+                            && match state {
+                                ElementState::Enabled => element.enabled == *value,
+                                ElementState::Focused => element.focused == *value,
+                                ElementState::Selected => element.selected == Some(*value),
+                                ElementState::Checked => element.checked == Some(*value),
+                                ElementState::Expanded => element.expanded == Some(*value),
+                            }
+                    }),
+                    "fresh cached UI Automation state comparison".to_owned(),
+                )
+            }
         };
         Ok(DriverVerification { matched, evidence })
     }
 }
 
 impl WindowsDriver {
+    #[allow(clippy::too_many_lines)]
     async fn dispatch_action(
         &self,
         current: &NativeWindow,
         action: DriverAction,
+        restore_foreground: bool,
     ) -> Result<DriverActionOutput, DriverError> {
-        let delivery_mode = match action {
+        let (delivery_mode, effect_status, evidence_kind, foreground_restoration) = match action {
             DriverAction::FocusWindow => {
                 self.focus_for_input(current).await?;
-                DeliveryMode::Foreground
+                (
+                    DeliveryMode::Foreground,
+                    ActionEffectStatus::Confirmed,
+                    ActionEvidenceKind::NativeReadback,
+                    ForegroundRestorationStatus::NotRequested,
+                )
+            }
+            DriverAction::SetWindowBounds { bounds } => {
+                self.input
+                    .perform(current.hwnd, InputAction::SetWindowBounds(bounds))
+                    .await?;
+                (
+                    DeliveryMode::System,
+                    ActionEffectStatus::Confirmed,
+                    ActionEvidenceKind::NativeReadback,
+                    ForegroundRestorationStatus::NotRequested,
+                )
+            }
+            DriverAction::SetWindowMinimized { minimized } => {
+                self.input
+                    .perform(current.hwnd, InputAction::SetWindowMinimized(minimized))
+                    .await?;
+                (
+                    DeliveryMode::System,
+                    ActionEffectStatus::Confirmed,
+                    ActionEvidenceKind::NativeReadback,
+                    ForegroundRestorationStatus::NotRequested,
+                )
+            }
+            DriverAction::TerminateApplication => {
+                let windows = self
+                    .windows()
+                    .await?
+                    .into_iter()
+                    .filter(|window| window.application_key == current.application_key)
+                    .map(|window| window.hwnd)
+                    .collect();
+                self.input
+                    .perform(
+                        current.hwnd,
+                        InputAction::TerminateApplication {
+                            pid: current.pid,
+                            process_generation: current.process_generation,
+                            windows,
+                        },
+                    )
+                    .await?;
+                (
+                    DeliveryMode::System,
+                    ActionEffectStatus::Confirmed,
+                    ActionEvidenceKind::NativeReadback,
+                    ForegroundRestorationStatus::NotRequested,
+                )
+            }
+            background_click @ DriverAction::ClickPoint {
+                delivery: DeliveryPreference::Background,
+                ..
+            } => {
+                self.dispatch_input_action(current.hwnd, background_click)
+                    .await?;
+                (
+                    DeliveryMode::Background,
+                    ActionEffectStatus::Unverified,
+                    ActionEvidenceKind::DispatchAcceptance,
+                    ForegroundRestorationStatus::NotRequested,
+                )
             }
             semantic_action @ (DriverAction::FocusElement { .. }
             | DriverAction::InvokeElement { .. }
             | DriverAction::SetValue { .. }
+            | DriverAction::SetRangeValue { .. }
             | DriverAction::ToggleElement { .. }
             | DriverAction::SelectElement { .. }
             | DriverAction::SetExpanded { .. }) => {
                 self.dispatch_semantic_action(semantic_action).await?;
-                DeliveryMode::Semantic
+                (
+                    DeliveryMode::Semantic,
+                    ActionEffectStatus::Unverified,
+                    ActionEvidenceKind::DispatchAcceptance,
+                    ForegroundRestorationStatus::NotRequested,
+                )
             }
             input_action => {
-                self.focus_for_input(current).await?;
-                self.dispatch_input_action(current.hwnd, input_action)
+                let previous = if restore_foreground {
+                    self.input.foreground_owner().await?
+                } else {
+                    None
+                };
+                let action = self.resolve_input_action(input_action).await?;
+                let foreground_restoration = self
+                    .input
+                    .perform_foreground(
+                        current.hwnd,
+                        current.pid,
+                        current.process_generation,
+                        action,
+                        restore_foreground,
+                        previous,
+                    )
                     .await?;
-                DeliveryMode::Foreground
+                (
+                    DeliveryMode::Foreground,
+                    ActionEffectStatus::Unverified,
+                    ActionEvidenceKind::DispatchAcceptance,
+                    foreground_restoration,
+                )
             }
         };
-        Ok(DriverActionOutput { delivery_mode })
+        Ok(DriverActionOutput {
+            delivery_mode,
+            effect_status,
+            evidence_kind,
+            foreground_restoration,
+        })
     }
 
     async fn dispatch_semantic_action(&self, action: DriverAction) -> Result<(), DriverError> {
@@ -348,6 +604,9 @@ impl WindowsDriver {
             DriverAction::InvokeElement { element_key } => (element_key, SemanticAction::Invoke),
             DriverAction::SetValue { element_key, value } => {
                 (element_key, SemanticAction::SetValue(value))
+            }
+            DriverAction::SetRangeValue { element_key, value } => {
+                (element_key, SemanticAction::SetRangeValue(value))
             }
             DriverAction::ToggleElement { element_key } => (element_key, SemanticAction::Toggle),
             DriverAction::SelectElement { element_key } => (element_key, SemanticAction::Select),
@@ -371,15 +630,31 @@ impl WindowsDriver {
         hwnd: isize,
         action: DriverAction,
     ) -> Result<(), DriverError> {
+        let action = self.resolve_input_action(action).await?;
+        self.input.perform(hwnd, action).await
+    }
+
+    async fn resolve_input_action(&self, action: DriverAction) -> Result<InputAction, DriverError> {
         let action = match action {
             DriverAction::ClickPoint {
                 point,
                 button,
                 count,
+                delivery,
             } => InputAction::Click {
                 point,
                 button,
                 count,
+                background: delivery == DeliveryPreference::Background,
+            },
+            DriverAction::PressPoint {
+                point,
+                button,
+                duration_ms,
+            } => InputAction::Press {
+                point,
+                button,
+                duration_ms,
             },
             DriverAction::MovePointer { point, duration_ms } => {
                 InputAction::Move { point, duration_ms }
@@ -415,7 +690,7 @@ impl WindowsDriver {
                 .mutation_not_dispatched());
             }
         };
-        self.input.perform(hwnd, action).await
+        Ok(action)
     }
 }
 

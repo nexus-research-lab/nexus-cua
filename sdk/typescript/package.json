@@ -1,0 +1,30 @@
+{
+  "name": "@nexus-research-lab/nexus-cua",
+  "version": "0.1.0",
+  "description": "Typed trusted-host client for Nexus Computer Use Runtime",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check src/index.js && npm run typecheck && node --test test/*.test.js",
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "license": "MIT"
+}

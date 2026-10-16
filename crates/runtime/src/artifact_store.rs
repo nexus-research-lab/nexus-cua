@@ -138,6 +138,78 @@ impl ArtifactStore {
         }
     }
 
+    pub(crate) fn read_artifact(
+        &self,
+        artifact: &ScreenshotArtifact,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, CuaError> {
+        if max_bytes == 0
+            || artifact.mime_type != "image/png"
+            || artifact.byte_length == 0
+            || artifact.byte_length > max_bytes
+        {
+            return Err(invalid_image(
+                "screenshot artifact is outside the read bound",
+            ));
+        }
+        let path = PathBuf::from(&artifact.path);
+        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() != artifact.byte_length
+            || path.file_name().and_then(|name| name.to_str())
+                != Some(&format!("{}.png", artifact.artifact_ref.as_str()))
+        {
+            return Err(invalid_image("screenshot artifact identity changed"));
+        }
+        let canonical = path.canonicalize().map_err(io_error)?;
+        if !canonical.starts_with(&self.root)
+            || !self
+                .artifacts
+                .lock()
+                .map_err(|_| io_error(std::io::ErrorKind::Other.into()))?
+                .values()
+                .flatten()
+                .any(|registered| registered == &canonical)
+        {
+            return Err(invalid_image("screenshot artifact is not runtime-owned"));
+        }
+        let bytes = fs::read(canonical).map_err(io_error)?;
+        if bytes.len() as u64 != artifact.byte_length
+            || hex::encode(Sha256::digest(&bytes)) != artifact.sha256
+        {
+            return Err(invalid_image("screenshot artifact digest changed"));
+        }
+        Ok(bytes)
+    }
+
+    pub(crate) fn take_artifact(
+        &self,
+        artifact: &ScreenshotArtifact,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, CuaError> {
+        let bytes = self.read_artifact(artifact, max_bytes)?;
+        let path = PathBuf::from(&artifact.path)
+            .canonicalize()
+            .map_err(io_error)?;
+        if !path.starts_with(&self.root) {
+            return Err(invalid_image("screenshot artifact is not runtime-owned"));
+        }
+        fs::remove_file(&path).map_err(io_error)?;
+        if let Ok(mut artifacts) = self.artifacts.lock() {
+            artifacts.retain(|_, paths| {
+                paths.retain(|candidate| candidate != &path);
+                !paths.is_empty()
+            });
+        }
+        if let Some(parent) = path.parent()
+            && parent.parent() == Some(self.root.as_path())
+        {
+            let _ = fs::remove_dir(parent);
+        }
+        Ok(bytes)
+    }
+
     fn register_artifact(&self, session_id: &SessionId, path: PathBuf) -> Result<(), CuaError> {
         let evicted = {
             let mut artifacts = self.artifacts.lock().map_err(|_| {
@@ -252,6 +324,34 @@ mod tests {
         let current = store.root.clone();
         drop(store);
         assert!(!current.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn taking_an_artifact_removes_its_file_and_registration() {
+        let root = test_root("take");
+        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        let session_id = SessionId::new("session_take");
+        let artifact = store
+            .write_image(
+                &session_id,
+                &RgbaImage::new(1, 1, vec![1, 2, 3, 4]),
+                ScreenRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
+            )
+            .unwrap();
+        let path = PathBuf::from(&artifact.path);
+
+        let bytes = store.take_artifact(&artifact, 1024).unwrap();
+
+        assert!(!bytes.is_empty());
+        assert!(!path.exists());
+        assert!(store.read_artifact(&artifact, 1024).is_err());
+        drop(store);
         fs::remove_dir_all(root).unwrap();
     }
 

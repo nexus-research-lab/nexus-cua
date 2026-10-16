@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nexus_cua_protocol::{
-    AuthorizationToken, Command, CuaError, ErrorCode, MutationStatus, PROTOCOL_VERSION,
-    RequestEnvelope, RequestId, ResponseEnvelope, ResponseOutcome,
+    AuthorizationToken, Command, CommandResult, CuaError, ErrorCode, MutationAdmission,
+    MutationDisposition, MutationReconciliation, MutationStatus, PROTOCOL_VERSION, RequestEnvelope,
+    RequestId, ResponseEnvelope, ResponseOutcome,
 };
 use nexus_cua_runtime::Runtime;
 use sha2::{Digest, Sha256};
@@ -26,6 +27,7 @@ pub struct Dispatcher {
     token: TokenVerifier,
     ledger: Arc<Mutex<RequestLedger>>,
     max_request_timeout_ms: u32,
+    runtime_epoch: String,
 }
 
 impl Dispatcher {
@@ -56,6 +58,7 @@ impl Dispatcher {
                 "authorization token must contain at least 32 bytes".to_owned(),
             )
         })?;
+        let runtime_epoch = runtime.epoch().to_owned();
         Ok(Self {
             runtime,
             token,
@@ -67,6 +70,7 @@ impl Dispatcher {
                 completed_request_ttl,
             })),
             max_request_timeout_ms,
+            runtime_epoch,
         })
     }
 
@@ -94,16 +98,46 @@ impl Dispatcher {
         operation: &'static str,
     ) -> ResponseEnvelope {
         let request_id = request.request_id.clone();
-        let is_mutation = matches!(&request.command, Command::PerformAction(_));
+        let is_mutation = is_mutation_command(&request.command);
         let digest = match self.validate_request(&request) {
             Ok(digest) => digest,
             Err(error) => {
                 return pre_admission_failure(request_id, error, is_mutation);
             }
         };
+        if let Command::ReconcileMutation(input) = &request.command {
+            if !valid_request_id(&input.request_id) || input.wait_ms > self.max_request_timeout_ms {
+                return failure(
+                    request_id,
+                    public_error(
+                        ErrorCode::InvalidRequest,
+                        "reconciliation request_id or wait_ms is outside the configured bound",
+                        false,
+                        Some("fix_reconciliation_request"),
+                    ),
+                );
+            }
+            let result = match self
+                .reconcile_mutation(
+                    &input.request_id,
+                    Duration::from_millis(u64::from(input.wait_ms)),
+                )
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => return failure(request_id, error),
+            };
+            return ResponseEnvelope {
+                protocol_version: PROTOCOL_VERSION.to_owned(),
+                request_id,
+                outcome: ResponseOutcome::Success {
+                    result: CommandResult::MutationReconciled(result),
+                },
+            };
+        }
         let deadline =
             Instant::now() + std::time::Duration::from_millis(u64::from(request.timeout_ms));
-        let begin = self.begin_request(&request_id, digest).await;
+        let begin = self.begin_request(&request_id, digest, is_mutation).await;
         self.resolve_request(begin, request, digest, operation, deadline, is_mutation)
             .await
     }
@@ -175,7 +209,7 @@ impl Dispatcher {
             }
             BeginRequest::Replay(response) => {
                 debug!(request_id = %request_id, operation, "replayed idempotent response");
-                response
+                *response
             }
             BeginRequest::Wait(receiver) => wait_for_response(receiver, deadline)
                 .await
@@ -203,13 +237,19 @@ impl Dispatcher {
         }
     }
 
-    async fn begin_request(&self, request_id: &RequestId, digest: [u8; 32]) -> BeginRequest {
+    async fn begin_request(
+        &self,
+        request_id: &RequestId,
+        digest: [u8; 32],
+        is_mutation: bool,
+    ) -> BeginRequest {
         let mut ledger = self.ledger.lock().await;
         ledger.purge_expired(Instant::now());
         match ledger.entries.get(request_id) {
             Some(RequestEntry::Pending {
                 digest: existing,
                 response,
+                ..
             }) if *existing == digest => BeginRequest::Wait(response.subscribe()),
             Some(RequestEntry::Complete {
                 digest: existing,
@@ -223,7 +263,11 @@ impl Dispatcher {
                 let (response, receiver) = watch::channel(None);
                 ledger.entries.insert(
                     request_id.clone(),
-                    RequestEntry::Pending { digest, response },
+                    RequestEntry::Pending {
+                        digest,
+                        is_mutation,
+                        response,
+                    },
                 );
                 ledger.inflight_requests += 1;
                 BeginRequest::Execute(receiver)
@@ -240,6 +284,7 @@ impl Dispatcher {
     ) {
         let runtime = Arc::clone(&self.runtime);
         let ledger = Arc::clone(&self.ledger);
+        let is_mutation = is_mutation_command(&command);
         tokio::spawn(async move {
             let started = Instant::now();
             let outcome = match runtime.execute(command).await {
@@ -252,7 +297,7 @@ impl Dispatcher {
                 outcome,
             };
             let (status, error_code) = response_status(&response);
-            complete_request(&ledger, request_id.clone(), digest, response).await;
+            complete_request(&ledger, request_id.clone(), digest, is_mutation, response).await;
             info!(
                 request_id = %request_id,
                 operation,
@@ -263,11 +308,154 @@ impl Dispatcher {
             );
         });
     }
+
+    /// Queries one retained mutation identity without ever dispatching a
+    /// command. A non-zero wait only observes an already-admitted execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable invalid-request error when the identity is not
+    /// normalized or the requested wait exceeds the dispatcher bound.
+    pub async fn reconcile_mutation(
+        &self,
+        request_id: &RequestId,
+        wait: Duration,
+    ) -> Result<MutationReconciliation, CuaError> {
+        if !valid_request_id(request_id)
+            || wait > Duration::from_millis(u64::from(self.max_request_timeout_ms))
+        {
+            return Err(public_error(
+                ErrorCode::InvalidRequest,
+                "reconciliation request_id or wait is outside the configured bound",
+                false,
+                Some("fix_reconciliation_request"),
+            ));
+        }
+        let snapshot = {
+            let mut ledger = self.ledger.lock().await;
+            ledger.purge_expired(Instant::now());
+            match ledger.entries.get(request_id) {
+                None => ReconciliationSnapshot::Missing,
+                Some(
+                    RequestEntry::Pending {
+                        is_mutation: false, ..
+                    }
+                    | RequestEntry::Complete {
+                        is_mutation: false, ..
+                    },
+                ) => ReconciliationSnapshot::NotMutation,
+                Some(RequestEntry::Pending { response, .. }) => {
+                    ReconciliationSnapshot::Pending(response.subscribe())
+                }
+                Some(RequestEntry::Complete { response, .. }) => {
+                    ReconciliationSnapshot::Complete(response.clone())
+                }
+            }
+        };
+        Ok(match snapshot {
+            ReconciliationSnapshot::Missing => self.reconciliation(
+                request_id.clone(),
+                MutationAdmission::Unknown,
+                MutationDisposition::Unknown,
+            ),
+            ReconciliationSnapshot::NotMutation => self.reconciliation(
+                request_id.clone(),
+                MutationAdmission::Admitted,
+                MutationDisposition::NotMutation,
+            ),
+            ReconciliationSnapshot::Complete(response) => {
+                self.reconciliation_from_response(*response)
+            }
+            ReconciliationSnapshot::Pending(receiver) => {
+                if let Some(response) = wait_for_response(receiver, Instant::now() + wait).await {
+                    self.reconciliation_from_response(response)
+                } else {
+                    self.reconciliation(
+                        request_id.clone(),
+                        MutationAdmission::Admitted,
+                        MutationDisposition::Pending,
+                    )
+                }
+            }
+        })
+    }
+
+    fn reconciliation(
+        &self,
+        request_id: RequestId,
+        admission: MutationAdmission,
+        disposition: MutationDisposition,
+    ) -> MutationReconciliation {
+        MutationReconciliation {
+            request_id,
+            runtime_epoch: self.runtime_epoch.clone(),
+            worker_epoch: None,
+            admission,
+            disposition,
+            dispatched: None,
+            effect_status: None,
+            evidence_kind: None,
+            error_code: None,
+            fresh_observation_required: false,
+        }
+    }
+
+    fn reconciliation_from_response(&self, response: ResponseEnvelope) -> MutationReconciliation {
+        let mut result = self.reconciliation(
+            response.request_id,
+            MutationAdmission::Admitted,
+            MutationDisposition::Succeeded,
+        );
+        match response.outcome {
+            ResponseOutcome::Success {
+                result: CommandResult::ActionPerformed(output),
+            } => {
+                result.dispatched = Some(output.dispatched);
+                result.effect_status = Some(output.effect_status);
+                result.evidence_kind = Some(output.evidence_kind);
+                result.fresh_observation_required = output.observation_invalidated;
+            }
+            ResponseOutcome::Success {
+                result: CommandResult::ClipboardWritten(output),
+            } => {
+                result.dispatched = Some(output.dispatched);
+                result.effect_status = Some(output.effect_status);
+                result.evidence_kind = Some(output.evidence_kind);
+            }
+            ResponseOutcome::Success {
+                result: CommandResult::ApplicationLaunched(output),
+            } => {
+                result.dispatched = Some(output.dispatched);
+                result.fresh_observation_required = true;
+            }
+            ResponseOutcome::Success { .. } => {
+                result.disposition = MutationDisposition::NotMutation;
+            }
+            ResponseOutcome::Error { error } => {
+                result.disposition = match error.mutation_status {
+                    MutationStatus::NotDispatched => MutationDisposition::NotDispatched,
+                    MutationStatus::Indeterminate => MutationDisposition::Indeterminate,
+                    MutationStatus::NotApplicable => MutationDisposition::NotMutation,
+                };
+                result.error_code = Some(error.code);
+                result.fresh_observation_required =
+                    error.mutation_status == MutationStatus::Indeterminate;
+            }
+        }
+        result
+    }
+}
+
+enum ReconciliationSnapshot {
+    Missing,
+    NotMutation,
+    Pending(watch::Receiver<Option<ResponseEnvelope>>),
+    Complete(Box<ResponseEnvelope>),
 }
 
 enum BeginRequest {
     Execute(watch::Receiver<Option<ResponseEnvelope>>),
-    Replay(ResponseEnvelope),
+    Replay(Box<ResponseEnvelope>),
     Wait(watch::Receiver<Option<ResponseEnvelope>>),
     Busy,
     Conflict,
@@ -292,11 +480,13 @@ impl RequestLedger {
 enum RequestEntry {
     Pending {
         digest: [u8; 32],
+        is_mutation: bool,
         response: watch::Sender<Option<ResponseEnvelope>>,
     },
     Complete {
         digest: [u8; 32],
-        response: ResponseEnvelope,
+        is_mutation: bool,
+        response: Box<ResponseEnvelope>,
         expires_at: Instant,
     },
 }
@@ -305,6 +495,7 @@ async fn complete_request(
     ledger: &Mutex<RequestLedger>,
     request_id: RequestId,
     digest: [u8; 32],
+    is_mutation: bool,
     response: ResponseEnvelope,
 ) {
     let mut ledger = ledger.lock().await;
@@ -320,7 +511,8 @@ async fn complete_request(
         request_id,
         RequestEntry::Complete {
             digest,
-            response,
+            is_mutation,
+            response: Box::new(response),
             expires_at,
         },
     );
@@ -369,14 +561,28 @@ fn operation_name(command: &Command) -> &'static str {
         Command::GetCapabilities => "get_capabilities",
         Command::GetPermissionStatus => "get_permission_status",
         Command::DiscoverApplications => "discover_applications",
+        Command::DiscoverLaunchableApplications => "discover_launchable_applications",
+        Command::LaunchApplication(_) => "launch_application",
         Command::OpenSession(_) => "open_session",
         Command::CloseSession(_) => "close_session",
         Command::ListApps(_) => "list_apps",
         Command::ListWindows(_) => "list_windows",
+        Command::ListDisplays(_) => "list_displays",
         Command::ObserveWindow(_) => "observe_window",
+        Command::ObserveDisplay(_) => "observe_display",
+        Command::ReadClipboard(_) => "read_clipboard",
+        Command::WriteClipboard(_) => "write_clipboard",
         Command::PerformAction(_) => "perform_action",
+        Command::ReconcileMutation(_) => "reconcile_mutation",
         Command::VerifyState(_) => "verify_state",
     }
+}
+
+fn is_mutation_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::PerformAction(_) | Command::LaunchApplication(_) | Command::WriteClipboard(_)
+    )
 }
 
 fn valid_request_id(request_id: &RequestId) -> bool {
@@ -415,6 +621,7 @@ fn error_code_name(code: ErrorCode) -> &'static str {
         ErrorCode::CapabilityDenied => "capability_denied",
         ErrorCode::ReferenceNotFound => "reference_not_found",
         ErrorCode::StaleObservation => "stale_observation",
+        ErrorCode::StaleClipboard => "stale_clipboard",
         ErrorCode::PermissionRequired => "permission_required",
         ErrorCode::Unsupported => "unsupported",
         ErrorCode::ForegroundRequired => "foreground_required",
@@ -473,8 +680,9 @@ mod tests {
 
     use async_trait::async_trait;
     use nexus_cua_protocol::{
-        AccessibilityMode, CaptureMode, DriverCapabilities, InputRoute, PermissionState,
-        PermissionStatus, Platform, StatePredicate,
+        AccessibilityMode, CaptureMode, DriverCapabilities, InputRoute, LaunchApplicationInput,
+        LaunchRef, MutationDisposition, PermissionState, PermissionStatus, Platform,
+        ReconcileMutationInput, StatePredicate,
     };
     use nexus_cua_runtime::{
         DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
@@ -502,6 +710,8 @@ mod tests {
                 capture_modes: vec![CaptureMode::Window],
                 accessibility_tree: false,
                 input_routes: vec![InputRoute::Foreground],
+                application_lifecycle: Vec::new(),
+                clipboard: Vec::new(),
                 actions: Vec::new(),
             })
         }
@@ -547,6 +757,7 @@ mod tests {
             _window: &DriverWindow,
             _action: DriverAction,
             _allow_foreground: bool,
+            _restore_foreground: bool,
         ) -> Result<DriverActionOutput, DriverError> {
             Err(unexpected_call())
         }
@@ -591,6 +802,46 @@ mod tests {
             ResponseOutcome::Success { .. }
         ));
         assert_eq!(driver.calls.load(Ordering::SeqCst), 1);
+        cleanup(root);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_command_reads_mutation_ledger_without_redispatch() {
+        let (dispatcher, driver, root) = dispatcher(Duration::ZERO);
+        let mutation_id = RequestId::new("mutation-reconcile-fixture");
+        let original = dispatcher
+            .dispatch(request(
+                mutation_id.as_str(),
+                500,
+                Command::LaunchApplication(LaunchApplicationInput {
+                    launch_ref: LaunchRef::new("missing-launch-ref"),
+                    allow_foreground_activation: false,
+                }),
+            ))
+            .await;
+        assert!(matches!(original.outcome, ResponseOutcome::Error { .. }));
+
+        let reconciled = dispatcher
+            .dispatch(request(
+                "reconcile-call",
+                500,
+                Command::ReconcileMutation(ReconcileMutationInput {
+                    request_id: mutation_id.clone(),
+                    wait_ms: 0,
+                }),
+            ))
+            .await;
+        let ResponseOutcome::Success {
+            result: CommandResult::MutationReconciled(result),
+        } = reconciled.outcome
+        else {
+            panic!("expected mutation reconciliation result");
+        };
+        assert_eq!(result.request_id, mutation_id);
+        assert_eq!(result.disposition, MutationDisposition::NotDispatched);
+        assert!(result.runtime_epoch.starts_with("runtime_"));
+        assert!(result.worker_epoch.is_none());
+        assert_eq!(driver.calls.load(Ordering::SeqCst), 0);
         cleanup(root);
     }
 

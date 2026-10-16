@@ -41,8 +41,8 @@ Client implementations must also prove that authorization tokens and sensitive
 typed text are redacted from diagnostics. Screenshot and accessibility content
 must remain transient and must not be copied into fixture or test logs.
 
-The official Go and Python clients consume this same corpus in their unit
-tests. Both reject unknown closed values, preserve opaque identifiers, read the
+The official Go, Python, and TypeScript clients consume this same corpus in
+their unit tests. All reject unknown closed values, preserve opaque identifiers, read the
 transport token only from a host-private file, and retain the exact mutation
 request identity needed for reconciliation.
 

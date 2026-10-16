@@ -17,4 +17,4 @@ pub use client::request;
 pub use dispatcher::Dispatcher;
 pub use endpoint::{LocalEndpoint, ServerConfig};
 pub use error::TransportError;
-pub use server::serve_until;
+pub use server::{serve_until, serve_until_ready};

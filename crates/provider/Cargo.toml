@@ -1,0 +1,55 @@
+[package]
+name = "nexus-cua-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Registered local authority provider for Nexus Computer Use Runtime"
+
+[dependencies]
+async-trait.workspace = true
+fs2.workspace = true
+hex.workspace = true
+nexus-cua-mcp = { version = "0.1.0", path = "../mcp" }
+nexus-cua-platform = { version = "0.1.0", path = "../platform" }
+nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSPathUtilities", "NSString"] }
+security-framework-sys = { version = "2.15.0", features = ["OSX_10_15"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

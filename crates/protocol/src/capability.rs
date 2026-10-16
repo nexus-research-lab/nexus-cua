@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ActionKind;
+use crate::{ActionKind, ClipboardOperation};
 
 /// Operating system hosting the driver.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
@@ -23,6 +23,8 @@ pub enum Platform {
 pub enum CaptureMode {
     /// One exact top-level application window.
     Window,
+    /// One exact physical display for read-only desktop overview.
+    Display,
 }
 
 /// Input delivery route implemented by the selected driver.
@@ -31,8 +33,20 @@ pub enum CaptureMode {
 pub enum InputRoute {
     /// Accessibility or UI Automation pattern delivery.
     Semantic,
+    /// Operating-system window or application lifecycle APIs.
+    System,
+    /// Best-effort exact-window input that does not activate the target.
+    Background,
     /// User-visible system foreground input.
     Foreground,
+}
+
+/// Installed-application lifecycle operations implemented by a driver.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationLifecycleOperation {
+    /// Discover reviewed installed applications and start one exact identity.
+    Launch,
 }
 
 /// One system permission's current state.
@@ -79,6 +93,11 @@ pub struct DriverCapabilities {
     pub accessibility_tree: bool,
     /// Exact native delivery routes implemented by the driver.
     pub input_routes: Vec<InputRoute>,
+    /// Exact installed-application lifecycle operations implemented by the driver.
+    pub application_lifecycle: Vec<ApplicationLifecycleOperation>,
+    /// Separately authorized clipboard operations implemented by a driver.
+    #[serde(default)]
+    pub clipboard: Vec<ClipboardOperation>,
     /// Exact action kinds implemented by the driver.
     pub actions: Vec<ActionKind>,
 }

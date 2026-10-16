@@ -18,12 +18,14 @@ pub(crate) fn init_logging(format: LogFormat, level: &str) -> Result<(), CliErro
     let filter = EnvFilter::try_new(level).map_err(|error| CliError::Logging(error.to_string()))?;
     match format {
         LogFormat::Pretty => tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
             .with_env_filter(filter)
             .with_target(false)
             .compact()
             .try_init()
             .map_err(|error| CliError::Logging(error.to_string())),
         LogFormat::Json => tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
             .with_env_filter(filter)
             .json()
             .flatten_event(true)

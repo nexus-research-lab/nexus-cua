@@ -1,0 +1,18 @@
+{
+  "contract": "nexus.cua.install-profile.v1",
+  "profile": "mcp",
+  "product_version": "0.1.0",
+  "protocol_version": "nexus.cua.v1",
+  "adapter_binding": "mcp",
+  "skill_binding": "mcp",
+  "authority_provider": "registered_local_provider",
+  "host_integration": "explicit_inspect_plan_apply",
+  "default_mcp_transport": "stdio",
+  "allowed_mcp_transports": [
+    "stdio",
+    "http"
+  ],
+  "bare_install_activates": false,
+  "automatic_service_start": false,
+  "automatic_permissions": false
+}

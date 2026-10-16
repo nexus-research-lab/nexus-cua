@@ -7,10 +7,12 @@
 mod artifact_store;
 mod driver;
 mod error;
+mod policy;
 mod service;
 mod session;
 mod validation;
 
 pub use driver::*;
 pub use error::*;
+pub use policy::*;
 pub use service::{Runtime, RuntimeConfig};

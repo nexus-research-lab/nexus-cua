@@ -39,6 +39,7 @@ internal sealed class FixtureWindow : Window
     private readonly int generation;
     private readonly Action<FixtureWindow?, int> replaceWindow;
     private readonly TextBox textField;
+    private readonly Slider rangeSlider;
     private readonly CheckBox featureToggle;
     private readonly ListBox choices;
     private readonly TreeViewItem advancedOptions;
@@ -50,6 +51,8 @@ internal sealed class FixtureWindow : Window
 
     private int counter;
     private bool dropped;
+    private bool pressed;
+    private DateTime pressStartedAt;
     private Point dragStart;
 
     internal FixtureWindow(int generation, Action<FixtureWindow?, int> replaceWindow)
@@ -195,6 +198,18 @@ internal sealed class FixtureWindow : Window
         };
         AutomationProperties.SetName(featureToggle, "Enable Feature");
         semanticControls.Children.Add(featureToggle);
+        rangeSlider = new Slider
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Value = 50,
+            TickFrequency = 10,
+            IsSnapToTickEnabled = false,
+            Height = 32,
+            Margin = new Thickness(0, 4, 0, 4),
+        };
+        AutomationProperties.SetName(rangeSlider, "Fixture Range");
+        semanticControls.Children.Add(rangeSlider);
         var choicesLabel = new TextBlock
         {
             Text = "Fixture Choices",
@@ -265,9 +280,13 @@ internal sealed class FixtureWindow : Window
         dragArea.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
         Grid.SetRow(dragArea, 4);
         dragToken = NamedSurface("Drag Token", Brushes.SteelBlue, Brushes.White);
+        var pressTarget = NamedSurface("Long Press Target", Brushes.DarkOrange, Brushes.White);
+        pressTarget.Width = 110;
         dropZone = NamedSurface("Drop Zone", Brushes.AliceBlue, Brushes.SteelBlue);
+        Grid.SetColumn(pressTarget, 1);
         Grid.SetColumn(dropZone, 2);
         dragArea.Children.Add(dragToken);
+        dragArea.Children.Add(pressTarget);
         dragArea.Children.Add(dropZone);
         root.Children.Add(dragArea);
 
@@ -323,11 +342,21 @@ internal sealed class FixtureWindow : Window
         textField.TextChanged += (_, _) => UpdateState();
         featureToggle.Checked += (_, _) => UpdateState();
         featureToggle.Unchecked += (_, _) => UpdateState();
+        rangeSlider.ValueChanged += (_, _) => UpdateState();
         choices.SelectionChanged += (_, _) => UpdateState();
         advancedOptions.Expanded += (_, _) => UpdateState();
         advancedOptions.Collapsed += (_, _) => UpdateState();
         dragToken.PreviewMouseLeftButtonDown += BeginDrag;
         dragToken.PreviewMouseLeftButtonUp += EndDrag;
+        pressTarget.PreviewMouseLeftButtonDown += (_, _) => pressStartedAt = DateTime.UtcNow;
+        pressTarget.PreviewMouseLeftButtonUp += (_, _) =>
+        {
+            if (DateTime.UtcNow - pressStartedAt >= TimeSpan.FromMilliseconds(250))
+            {
+                pressed = true;
+                UpdateState();
+            }
+        };
         if (captureProfile is "1080p" or "4k")
         {
             ContentRendered += (_, _) =>
@@ -434,7 +463,9 @@ internal sealed class FixtureWindow : Window
             : "none";
         var state = $"Fixture State: generation={generation}; counter={counter}; "
             + $"text={textField.Text}; checked={featureToggle.IsChecked == true}; "
-            + $"selection={selected}; expanded={advancedOptions.IsExpanded}; dropped={dropped}";
+            + $"selection={selected}; level={rangeSlider.Value:0}; "
+            + $"expanded={advancedOptions.IsExpanded}; "
+            + $"pressed={pressed}; dropped={dropped}";
         state = state.Replace("True", "true").Replace("False", "false");
         stateText.Text = state;
         AutomationProperties.SetName(stateText, state);

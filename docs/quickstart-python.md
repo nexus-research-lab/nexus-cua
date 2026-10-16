@@ -1,7 +1,7 @@
 # Python quickstart
 
-Status: source-build quickstart for the unreleased `0.1.0-alpha.1` developer
-preview. No official package or PyPI project is published yet.
+Status: source-build quickstart for the unreleased `0.1.0` development line.
+No official package or PyPI project is published yet.
 
 This path starts a private local sidecar, discovers the deterministic native
 fixture, opens a finite capability session, observes one exact window, invokes
@@ -13,7 +13,7 @@ require raw protocol JSON, a PID, a native window handle, or a model provider.
 - macOS 14 or newer on Apple Silicon, or Windows 11 with an interactive desktop;
 - Rust 1.88 or newer;
 - Python 3.10 through 3.13; and
-- screen-capture and accessibility permissions reported by `nexus-cua doctor`.
+- screen-capture and accessibility permissions reported by `nexuscua doctor`.
 
 The repository is not release-validated yet. Follow this source workflow only
 on a development machine and review the current [platform evidence](platform-validation.md).
@@ -46,7 +46,7 @@ Start-Process target\native-fixtures\windows\nexus-cua-native-fixture.exe
 Keep this terminal open:
 
 ```bash
-target/release/nexus-cua serve --dev-root .cache/quickstart
+target/release/nexuscua serve --dev-root .cache/quickstart
 ```
 
 The service prints its local endpoint and token-file path. On macOS the default

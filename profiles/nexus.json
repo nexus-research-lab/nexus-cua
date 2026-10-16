@@ -1,0 +1,15 @@
+{
+  "contract": "nexus.cua.install-profile.v1",
+  "profile": "nexus",
+  "product_version": "0.1.0",
+  "protocol_version": "nexus.cua.v1",
+  "adapter_binding": "cli",
+  "skill_binding": "cli",
+  "authority_provider": "nexus_scoped_broker",
+  "host_integration": "downstream_nexus_installer",
+  "default_mcp_transport": null,
+  "allowed_mcp_transports": [],
+  "bare_install_activates": false,
+  "automatic_service_start": false,
+  "automatic_permissions": false
+}

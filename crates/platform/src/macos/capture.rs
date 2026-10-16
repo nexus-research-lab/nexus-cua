@@ -7,7 +7,7 @@ use std::ptr;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use core_foundation::array::CFArray;
@@ -27,15 +27,17 @@ use core_graphics::window::{
     kCGWindowOwnerName, kCGWindowOwnerPID,
 };
 use foreign_types::ForeignType;
-use nexus_cua_protocol::ScreenRect;
+use nexus_cua_protocol::{ForegroundRestorationStatus, ScreenRect};
 use nexus_cua_runtime::{DriverError, DriverErrorKind, RgbaImage};
 use objc2::AnyThread;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2_app_kit::NSRunningApplication;
+use objc2_app_kit::{
+    NSApplicationActivationOptions, NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfiguration,
+};
 use objc2_core_graphics::CGImage;
-use objc2_foundation::NSError;
+use objc2_foundation::{NSArray, NSError, NSString, NSURL};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
+    SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration, SCWindow,
 };
 use tokio::sync::oneshot;
 
@@ -43,6 +45,10 @@ const COMMAND_CAPACITY: usize = 32;
 const RECYCLE_CAPACITY: usize = 2;
 const APPLICATION_CACHE_CAPACITY: usize = 256;
 const NATIVE_CALLBACK_TIMEOUT: Duration = Duration::from_secs(3);
+const TERMINATION_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
+const TERMINATION_CONFIRM_INTERVAL: Duration = Duration::from_millis(10);
+const LAUNCH_CONFIRM_TIMEOUT: Duration = Duration::from_secs(10);
+const FOREGROUND_RESTORE_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug)]
 pub(super) struct NativeWindow {
@@ -57,6 +63,19 @@ pub(super) struct NativeWindow {
     pub(super) screen_bounds: ScreenRect,
     pub(super) foreground: bool,
     pub(super) visible: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct NativeDisplay {
+    pub(super) key: String,
+    pub(super) screen_bounds: ScreenRect,
+    pub(super) primary: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ForegroundOwner {
+    pid: i32,
+    generation: String,
 }
 
 #[derive(Clone)]
@@ -78,6 +97,26 @@ impl CaptureActor {
     pub(super) async fn list_windows(&self) -> Result<Vec<NativeWindow>, DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(CaptureCommand::ListWindows { reply })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn list_displays(&self) -> Result<Vec<NativeDisplay>, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::ListDisplays { reply })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn capture_display(
+        &self,
+        target_key: String,
+        expected_bounds: ScreenRect,
+    ) -> Result<(RgbaImage, ScreenRect), DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::CaptureDisplay {
+            target_key,
+            expected_bounds,
+            reply,
+        })?;
         receiver.await.map_err(actor_stopped)?
     }
 
@@ -104,6 +143,56 @@ impl CaptureActor {
         receiver.await.map_err(actor_stopped)?
     }
 
+    pub(super) async fn terminate_application(
+        &self,
+        application_key: String,
+    ) -> Result<(), DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::TerminateApplication {
+            application_key,
+            reply,
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn foreground_owner(&self) -> Result<Option<ForegroundOwner>, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::ForegroundOwner { reply })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn restore_foreground_owner(
+        &self,
+        owner: ForegroundOwner,
+        expected_target_generation: String,
+    ) -> Result<ForegroundRestorationStatus, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::RestoreForegroundOwner {
+            owner,
+            expected_target_generation,
+            reply,
+        })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn launch_application(
+        &self,
+        launch_target: String,
+        expected_application_id: String,
+        allow_foreground_activation: bool,
+    ) -> Result<NativeWindow, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::LaunchApplication {
+            launch_target,
+            expected_application_id,
+            allow_foreground_activation,
+            reply,
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
     fn admit(&self, command: CaptureCommand) -> Result<(), DriverError> {
         self.sender.try_send(command).map_err(|error| match error {
             TrySendError::Full(_) => {
@@ -119,13 +208,39 @@ enum CaptureCommand {
     ListWindows {
         reply: oneshot::Sender<Result<Vec<NativeWindow>, DriverError>>,
     },
+    ListDisplays {
+        reply: oneshot::Sender<Result<Vec<NativeDisplay>, DriverError>>,
+    },
     Capture {
+        target_key: String,
+        expected_bounds: ScreenRect,
+        reply: oneshot::Sender<Result<(RgbaImage, ScreenRect), DriverError>>,
+    },
+    CaptureDisplay {
         target_key: String,
         expected_bounds: ScreenRect,
         reply: oneshot::Sender<Result<(RgbaImage, ScreenRect), DriverError>>,
     },
     ResolveWindow {
         target_key: String,
+        reply: oneshot::Sender<Result<NativeWindow, DriverError>>,
+    },
+    TerminateApplication {
+        application_key: String,
+        reply: oneshot::Sender<Result<(), DriverError>>,
+    },
+    ForegroundOwner {
+        reply: oneshot::Sender<Result<Option<ForegroundOwner>, DriverError>>,
+    },
+    RestoreForegroundOwner {
+        owner: ForegroundOwner,
+        expected_target_generation: String,
+        reply: oneshot::Sender<Result<ForegroundRestorationStatus, DriverError>>,
+    },
+    LaunchApplication {
+        launch_target: String,
+        expected_application_id: String,
+        allow_foreground_activation: bool,
         reply: oneshot::Sender<Result<NativeWindow, DriverError>>,
     },
 }
@@ -148,6 +263,9 @@ fn actor_loop(
             CaptureCommand::ListWindows { reply } => {
                 let _ = reply.send(load_windows(&mut applications));
             }
+            CaptureCommand::ListDisplays { reply } => {
+                let _ = reply.send(load_displays());
+            }
             CaptureCommand::Capture {
                 target_key,
                 expected_bounds,
@@ -161,11 +279,228 @@ fn actor_loop(
                     recycle_sender.clone(),
                 ));
             }
+            CaptureCommand::CaptureDisplay {
+                target_key,
+                expected_bounds,
+                reply,
+            } => {
+                let _ = reply.send(capture_display(
+                    &target_key,
+                    expected_bounds,
+                    recycled.pop_front(),
+                    recycle_sender.clone(),
+                ));
+            }
             CaptureCommand::ResolveWindow { target_key, reply } => {
                 let _ = reply.send(resolve_target(&target_key, &mut applications));
             }
+            CaptureCommand::TerminateApplication {
+                application_key,
+                reply,
+            } => {
+                capture_filter = None;
+                let _ = reply.send(terminate_application(&application_key, &mut applications));
+            }
+            CaptureCommand::ForegroundOwner { reply } => {
+                let _ = reply.send(Ok(foreground_owner()));
+            }
+            CaptureCommand::RestoreForegroundOwner {
+                owner,
+                expected_target_generation,
+                reply,
+            } => {
+                let _ = reply.send(Ok(restore_foreground_owner(
+                    &owner,
+                    &expected_target_generation,
+                )));
+            }
+            CaptureCommand::LaunchApplication {
+                launch_target,
+                expected_application_id,
+                allow_foreground_activation,
+                reply,
+            } => {
+                capture_filter = None;
+                let _ = reply.send(launch_application(
+                    &launch_target,
+                    &expected_application_id,
+                    allow_foreground_activation,
+                    &mut applications,
+                ));
+            }
         });
     }
+}
+
+fn foreground_owner() -> Option<ForegroundOwner> {
+    let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    let pid = application.processIdentifier();
+    application_generation(pid).map(|generation| ForegroundOwner { pid, generation })
+}
+
+fn restore_foreground_owner(
+    owner: &ForegroundOwner,
+    expected_target_generation: &str,
+) -> ForegroundRestorationStatus {
+    if owner.generation == expected_target_generation {
+        return ForegroundRestorationStatus::NotNeeded;
+    }
+    if foreground_owner()
+        .as_ref()
+        .is_none_or(|current| current.generation != expected_target_generation)
+    {
+        return ForegroundRestorationStatus::SkippedOwnerChanged;
+    }
+    if application_generation(owner.pid).as_deref() != Some(owner.generation.as_str()) {
+        return ForegroundRestorationStatus::TargetUnavailable;
+    }
+    let Some(application) =
+        NSRunningApplication::runningApplicationWithProcessIdentifier(owner.pid)
+    else {
+        return ForegroundRestorationStatus::TargetUnavailable;
+    };
+    if application.isTerminated() {
+        return ForegroundRestorationStatus::TargetUnavailable;
+    }
+    if !application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows) {
+        return ForegroundRestorationStatus::Failed;
+    }
+    let deadline = Instant::now() + FOREGROUND_RESTORE_TIMEOUT;
+    while Instant::now() < deadline {
+        if foreground_owner()
+            .as_ref()
+            .is_some_and(|current| current.generation == owner.generation)
+        {
+            return ForegroundRestorationStatus::Restored;
+        }
+        thread::sleep(TERMINATION_CONFIRM_INTERVAL);
+    }
+    ForegroundRestorationStatus::Failed
+}
+
+fn launch_application(
+    launch_target: &str,
+    expected_application_id: &str,
+    allow_foreground_activation: bool,
+    applications: &mut ApplicationCache,
+) -> Result<NativeWindow, DriverError> {
+    let application_url =
+        NSURL::fileURLWithPath_isDirectory(&NSString::from_str(launch_target), true);
+    let configuration = NSWorkspaceOpenConfiguration::configuration();
+    configuration.setActivates(allow_foreground_activation);
+    configuration.setAddsToRecentItems(false);
+    configuration.setPromptsUserIfNeeded(false);
+    configuration.setCreatesNewApplicationInstance(false);
+    let (sender, receiver) = sync_channel(1);
+    let completion = RcBlock::new(
+        move |application: *mut NSRunningApplication, error: *mut NSError| {
+            if !error.is_null() || application.is_null() {
+                let _ = sender.send(Err(native_nserror(
+                    "macOS application launch failed",
+                    error,
+                )
+                .mutation_indeterminate()));
+                return;
+            }
+            // SAFETY: NSWorkspace retains the running application for the
+            // duration of this callback; only its scalar PID is copied.
+            let pid = unsafe { (&*application).processIdentifier() };
+            let _ = sender.send(Ok(pid));
+        },
+    );
+    NSWorkspace::sharedWorkspace().openApplicationAtURL_configuration_completionHandler(
+        &application_url,
+        &configuration,
+        Some(&completion),
+    );
+    let pid = receiver
+        .recv_timeout(NATIVE_CALLBACK_TIMEOUT)
+        .map_err(|_| {
+            DriverError::new(
+                DriverErrorKind::TargetUnresponsive,
+                "macOS application launch callback timed out",
+            )
+            .retryable("discover_applications")
+            .mutation_indeterminate()
+        })??;
+    let deadline = Instant::now() + LAUNCH_CONFIRM_TIMEOUT;
+    loop {
+        if let Some(window) = load_windows(applications)?
+            .into_iter()
+            .find(|window| window.pid == pid && window.application_id == expected_application_id)
+        {
+            return Ok(window);
+        }
+        if Instant::now() >= deadline {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnresponsive,
+                "macOS launched the application but no usable top-level window appeared",
+            )
+            .retryable("discover_applications")
+            .mutation_indeterminate());
+        }
+        thread::sleep(TERMINATION_CONFIRM_INTERVAL);
+    }
+}
+
+fn terminate_application(
+    application_key: &str,
+    applications: &mut ApplicationCache,
+) -> Result<(), DriverError> {
+    {
+        let application = applications.entries.get(application_key).ok_or_else(|| {
+            DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "target application generation is unavailable",
+            )
+            .mutation_not_dispatched()
+        })?;
+        let running = application.running.as_ref().ok_or_else(|| {
+            DriverError::new(
+                DriverErrorKind::Unsupported,
+                "target application does not expose cooperative termination",
+            )
+            .mutation_not_dispatched()
+        })?;
+        if running.isTerminated() {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "target application generation already exited",
+            )
+            .mutation_not_dispatched());
+        }
+        if application_generation(application.pid).as_deref() != Some(application_key) {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "target application process generation changed",
+            )
+            .mutation_not_dispatched());
+        }
+        if !running.terminate() {
+            return Err(DriverError::new(
+                DriverErrorKind::Platform,
+                "macOS rejected cooperative application termination",
+            )
+            .mutation_not_dispatched());
+        }
+        let deadline = Instant::now() + TERMINATION_CONFIRM_TIMEOUT;
+        while application_generation(application.pid).as_deref() == Some(application_key)
+            && Instant::now() < deadline
+        {
+            thread::sleep(TERMINATION_CONFIRM_INTERVAL);
+        }
+        if application_generation(application.pid).as_deref() == Some(application_key) {
+            return Err(DriverError::new(
+                DriverErrorKind::Platform,
+                "macOS accepted termination but the application did not exit in time",
+            )
+            .retryable("verify_application_exit")
+            .mutation_indeterminate());
+        }
+    }
+    applications.entries.remove(application_key);
+    applications.order.retain(|key| key != application_key);
+    Ok(())
 }
 
 fn load_windows(applications: &mut ApplicationCache) -> Result<Vec<NativeWindow>, DriverError> {
@@ -191,6 +526,118 @@ fn load_windows(applications: &mut ApplicationCache) -> Result<Vec<NativeWindow>
         }
     }
     Ok(output)
+}
+
+fn load_displays() -> Result<Vec<NativeDisplay>, DriverError> {
+    let content = load_shareable_content("macOS display discovery")?;
+    let mut displays = Vec::new();
+    // SAFETY: `content` is an owned, current SCShareableContent snapshot.
+    let content_displays = unsafe { content.displays() };
+    for display in &content_displays {
+        // SAFETY: `content` retains each SCDisplay throughout this iteration;
+        // the methods only copy stable scalar metadata.
+        let (display_id, frame) = unsafe { (display.displayID(), display.frame()) };
+        let screen_bounds = ScreenRect {
+            x: frame.origin.x,
+            y: frame.origin.y,
+            width: frame.size.width,
+            height: frame.size.height,
+        };
+        if screen_bounds.x.is_finite()
+            && screen_bounds.y.is_finite()
+            && screen_bounds.width.is_finite()
+            && screen_bounds.height.is_finite()
+            && screen_bounds.width > 1.0
+            && screen_bounds.height > 1.0
+        {
+            displays.push(NativeDisplay {
+                key: format!("sc-display:{display_id}"),
+                screen_bounds,
+                primary: screen_bounds.x == 0.0 && screen_bounds.y == 0.0,
+            });
+        }
+    }
+    Ok(displays)
+}
+
+fn capture_display(
+    target_key: &str,
+    expected_bounds: ScreenRect,
+    recycled: Option<Vec<u8>>,
+    recycle_sender: SyncSender<Vec<u8>>,
+) -> Result<(RgbaImage, ScreenRect), DriverError> {
+    let display_id = target_key
+        .strip_prefix("sc-display:")
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(target_unavailable)?;
+    let content = load_shareable_content("macOS display capture discovery")?;
+    // SAFETY: `content` is an owned, current SCShareableContent snapshot.
+    let content_displays = unsafe { content.displays() };
+    let display = content_displays
+        .iter()
+        .find(|display| {
+            // SAFETY: `content` retains the display during this lookup.
+            unsafe { display.displayID() == display_id }
+        })
+        .ok_or_else(target_unavailable)?;
+    // SAFETY: The retained filter owns the selected display and the empty
+    // exclusion array. This public route includes the desktop and Dock.
+    let filter = unsafe {
+        let excluded = NSArray::<SCWindow>::new();
+        SCContentFilter::initWithDisplay_excludingWindows(
+            SCContentFilter::alloc(),
+            &display,
+            &excluded,
+        )
+    };
+    let actual_bounds = {
+        // SAFETY: The selected display is retained by `content` and `filter`.
+        let frame = unsafe { display.frame() };
+        ScreenRect {
+            x: frame.origin.x,
+            y: frame.origin.y,
+            width: frame.size.width,
+            height: frame.size.height,
+        }
+    };
+    if actual_bounds != expected_bounds {
+        return Err(DriverError::new(
+            DriverErrorKind::StaleObservation,
+            "macOS display topology changed before capture",
+        )
+        .retryable("list_displays_again"));
+    }
+    capture_with_filter(&filter, expected_bounds, recycled, recycle_sender)
+        .map(|image| (image, expected_bounds))
+}
+
+fn load_shareable_content(context: &str) -> Result<Retained<SCShareableContent>, DriverError> {
+    let (sender, receiver) = sync_channel(1);
+    let context = context.to_owned();
+    let completion = RcBlock::new(
+        move |content: *mut SCShareableContent, error: *mut NSError| {
+            if !error.is_null() || content.is_null() {
+                let _ = sender.send(Err(native_nserror(&format!("{context} failed"), error)));
+                return;
+            }
+            // SAFETY: ScreenCaptureKit retains the object for the callback;
+            // create an owned retain before crossing back to the actor.
+            let retained = unsafe { Retained::retain(content) }
+                .ok_or_else(|| native_failure("ScreenCaptureKit returned no shareable content"));
+            let _ = sender.send(retained);
+        },
+    );
+    // SAFETY: ScreenCaptureKit copies and later invokes the completion block.
+    unsafe {
+        SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
+            false,
+            false,
+            &completion,
+        );
+    }
+    receiver
+        .recv_timeout(NATIVE_CALLBACK_TIMEOUT)
+        .map_err(|_| native_timeout("ScreenCaptureKit display discovery timed out"))?
 }
 
 fn resolve_target(
@@ -288,8 +735,9 @@ fn load_capture_filter(target_key: &str, window_id: u32) -> Result<CaptureFilter
     let completion = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
             if !error.is_null() || content.is_null() {
-                let _ = sender.send(Err(native_failure(
+                let _ = sender.send(Err(native_nserror(
                     "ScreenCaptureKit target discovery failed",
+                    error,
                 )));
                 return;
             }
@@ -352,7 +800,10 @@ fn capture_with_filter(
         let completion_recycled = Arc::clone(&recycled);
         let completion = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
             let result = if !error.is_null() || image.is_null() {
-                Err(native_failure("ScreenCaptureKit image capture failed"))
+                Err(native_nserror(
+                    "ScreenCaptureKit image capture failed",
+                    error,
+                ))
             } else {
                 let pixels = completion_recycled
                     .lock()
@@ -387,6 +838,7 @@ fn target_window_id(target_key: &str) -> Result<u32, DriverError> {
 
 #[derive(Clone)]
 struct ApplicationDescriptor {
+    pid: i32,
     generation: String,
     application_id: String,
     bundle_id: Option<String>,
@@ -456,6 +908,7 @@ fn application_descriptor(
         &generation,
     );
     ApplicationDescriptor {
+        pid,
         generation,
         application_id,
         bundle_id,
@@ -523,8 +976,6 @@ fn copy_image(
         &CGColorSpace::create_device_rgb(),
         kCGImageAlphaPremultipliedLast,
     );
-    context.translate(0.0, f64::from(output_height));
-    context.scale(1.0, -1.0);
     context.draw_image(
         LegacyCGRect::new(
             &CGPoint::new(0.0, 0.0),
@@ -533,7 +984,8 @@ fn copy_image(
         image,
     );
     drop(context);
-    for pixel in pixels.chunks_exact_mut(4) {
+    let (pixel_chunks, _) = pixels.as_chunks_mut::<4>();
+    for pixel in pixel_chunks {
         let alpha = u16::from(pixel[3]);
         if alpha != 0 && alpha != 255 {
             for channel in &mut pixel[..3] {
@@ -601,6 +1053,31 @@ fn native_failure(message: &str) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, message).retryable("retry_native_capture")
 }
 
+fn native_nserror(message: &str, error: *mut NSError) -> DriverError {
+    if error.is_null() {
+        return native_failure(message);
+    }
+    // SAFETY: ScreenCaptureKit retains the NSError for the duration of its
+    // completion callback, and this helper copies only bounded scalar text.
+    let error = unsafe { &*error };
+    let domain = error.domain().to_string();
+    let description = error.localizedDescription().to_string();
+    native_failure(&format!(
+        "{message} ({domain} {}: {})",
+        error.code(),
+        truncate_error_description(&description)
+    ))
+}
+
+fn truncate_error_description(description: &str) -> String {
+    const MAX_CHARS: usize = 160;
+    let mut value = description.chars().take(MAX_CHARS).collect::<String>();
+    if description.chars().nth(MAX_CHARS).is_some() {
+        value.push('…');
+    }
+    value
+}
+
 fn native_timeout(message: &str) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, message).retryable("retry_with_backoff")
 }
@@ -622,4 +1099,42 @@ fn image_too_large() -> DriverError {
         DriverErrorKind::Platform,
         "captured image dimensions exceed protocol limits",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, mpsc::sync_channel};
+
+    use core_graphics::base::kCGImageAlphaPremultipliedLast;
+    use core_graphics::color_space::CGColorSpace;
+    use core_graphics::data_provider::CGDataProvider;
+    use core_graphics::image::CGImage;
+
+    use super::copy_image;
+
+    #[test]
+    fn copied_image_keeps_top_row_first() {
+        let top_red_bottom_blue = vec![
+            255, 0, 0, 255, // top row
+            0, 0, 255, 255, // bottom row
+        ];
+        let provider = CGDataProvider::from_buffer(Arc::new(top_red_bottom_blue.clone()));
+        let image = CGImage::new(
+            1,
+            2,
+            8,
+            32,
+            4,
+            &CGColorSpace::create_device_rgb(),
+            kCGImageAlphaPremultipliedLast,
+            &provider,
+            false,
+            0,
+        );
+        let (recycle_sender, _recycle_receiver) = sync_channel(1);
+
+        let copied = copy_image(&image, None, recycle_sender).unwrap();
+
+        assert_eq!(copied.pixels, top_red_bottom_blue);
+    }
 }

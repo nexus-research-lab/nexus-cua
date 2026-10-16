@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "product_version": "0.1.0",
+  "mcp_alias": "nexuscua",
+  "tools": [
+    { "leaf": "get_status", "kind": "read", "vision": true },
+    { "leaf": "list_apps", "kind": "read", "vision": true },
+    { "leaf": "list_launchable_apps", "kind": "read", "vision": true },
+    { "leaf": "launch_application", "kind": "mutation", "vision": true },
+    { "leaf": "list_windows", "kind": "read", "vision": true },
+    { "leaf": "list_displays", "kind": "read", "vision": true },
+    { "leaf": "observe_display", "kind": "read", "vision": true },
+    { "leaf": "observe_window", "kind": "read", "vision": true },
+    { "leaf": "read_clipboard", "kind": "read", "vision": true },
+    { "leaf": "write_clipboard", "kind": "mutation", "vision": true },
+    { "leaf": "zoom", "kind": "read", "vision": true },
+    { "leaf": "click_normalized", "kind": "mutation", "vision": true },
+    { "leaf": "click_view_normalized", "kind": "mutation", "vision": true },
+    { "leaf": "type_text", "kind": "mutation", "vision": true },
+    { "leaf": "press_keys", "kind": "mutation", "vision": true },
+    { "leaf": "scroll", "kind": "mutation", "vision": true },
+    { "leaf": "drag_normalized", "kind": "mutation", "vision": true },
+    { "leaf": "invoke_element", "kind": "mutation", "vision": true },
+    { "leaf": "set_element_value", "kind": "mutation", "vision": true },
+    { "leaf": "set_range_value", "kind": "mutation", "vision": true },
+    { "leaf": "terminate_application", "kind": "mutation", "vision": true },
+    { "leaf": "perform_action", "kind": "mutation", "vision": false },
+    { "leaf": "reconcile_mutation", "kind": "reconcile", "vision": true },
+    { "leaf": "verify_state", "kind": "read", "vision": true }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "allow": {
+    "operations": [
+      "get_capabilities",
+      "get_permission_status",
+      "discover_applications",
+      "discover_launchable_applications",
+      "launch_application",
+      "open_session",
+      "close_session",
+      "list_apps",
+      "list_windows",
+      "observe_window",
+      "perform_action",
+      "verify_state"
+    ],
+    "actions": ["terminate_application"],
+    "action_rules": [
+      {
+        "action": "click_point",
+        "max_click_count": 1,
+        "deliveries": ["background", "foreground"]
+      }
+    ]
+  },
+  "deny": {
+    "operations": [],
+    "actions": []
+  }
+}

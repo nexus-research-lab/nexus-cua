@@ -9,6 +9,7 @@
   { "code": "capability_denied", "message": "fixture", "retryable": false, "recovery_action": "request_new_bounded_session", "mutation_status": "not_applicable" },
   { "code": "reference_not_found", "message": "fixture", "retryable": false, "recovery_action": "refresh_references", "mutation_status": "not_applicable" },
   { "code": "stale_observation", "message": "fixture", "retryable": true, "recovery_action": "observe_window", "mutation_status": "not_dispatched" },
+  { "code": "stale_clipboard", "message": "fixture", "retryable": true, "recovery_action": "read_clipboard_again", "mutation_status": "not_dispatched" },
   { "code": "permission_required", "message": "fixture", "retryable": true, "recovery_action": "grant_permission", "mutation_status": "not_applicable" },
   { "code": "unsupported", "message": "fixture", "retryable": false, "recovery_action": null, "mutation_status": "not_applicable" },
   { "code": "foreground_required", "message": "fixture", "retryable": false, "recovery_action": "request_foreground_authorization", "mutation_status": "not_applicable" },

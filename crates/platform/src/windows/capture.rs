@@ -25,6 +25,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -86,7 +87,35 @@ impl CaptureActor {
         self.sender
             .try_send(CaptureCommand {
                 target_key: target_key.to_owned(),
-                hwnd,
+                target: CaptureTarget::Window(hwnd),
+                screen_bounds,
+                reply,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => {
+                    DriverError::new(DriverErrorKind::Busy, "Windows capture actor is busy")
+                        .retryable("retry_with_backoff")
+                }
+                TrySendError::Disconnected(_) => actor_stopped(()),
+            })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn capture_display(
+        &self,
+        target_key: &str,
+        screen_bounds: ScreenRect,
+    ) -> Result<(RgbaImage, ScreenRect), DriverError> {
+        let raw_monitor = target_key
+            .strip_prefix("hmonitor:")
+            .and_then(|value| u64::from_str_radix(value, 16).ok())
+            .and_then(|value| isize::try_from(value).ok())
+            .ok_or_else(target_unavailable)?;
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .try_send(CaptureCommand {
+                target_key: target_key.to_owned(),
+                target: CaptureTarget::Display(raw_monitor),
                 screen_bounds,
                 reply,
             })
@@ -103,9 +132,15 @@ impl CaptureActor {
 
 struct CaptureCommand {
     target_key: String,
-    hwnd: isize,
+    target: CaptureTarget,
     screen_bounds: ScreenRect,
     reply: oneshot::Sender<Result<(RgbaImage, ScreenRect), DriverError>>,
+}
+
+#[derive(Clone, Copy)]
+enum CaptureTarget {
+    Window(isize),
+    Display(isize),
 }
 
 struct CaptureState {
@@ -184,7 +219,7 @@ impl CaptureState {
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
             };
-            let result = self.capture(&command.target_key, command.hwnd, command.screen_bounds);
+            let result = self.capture(&command.target_key, command.target, command.screen_bounds);
             let _ = command.reply.send(result);
         }
     }
@@ -192,10 +227,19 @@ impl CaptureState {
     fn capture(
         &mut self,
         target_key: &str,
-        raw_hwnd: isize,
+        target: CaptureTarget,
         screen_bounds: ScreenRect,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
-        self.ensure_pipeline(target_key, raw_hwnd)?;
+        if let CaptureTarget::Display(raw_monitor) = target
+            && monitor_bounds(raw_monitor)? != screen_bounds
+        {
+            return Err(DriverError::new(
+                DriverErrorKind::StaleObservation,
+                "Windows display topology changed before capture",
+            )
+            .retryable("list_displays_again"));
+        }
+        self.ensure_pipeline(target_key, target)?;
         let pipeline = self
             .pipelines
             .get_mut(target_key)
@@ -245,21 +289,24 @@ impl CaptureState {
         Ok((image, screen_bounds))
     }
 
-    fn ensure_pipeline(&mut self, target_key: &str, raw_hwnd: isize) -> Result<(), DriverError> {
+    fn ensure_pipeline(
+        &mut self,
+        target_key: &str,
+        target: CaptureTarget,
+    ) -> Result<(), DriverError> {
         if self.pipelines.contains_key(target_key) {
             return Ok(());
         }
-        if self.pipelines.len() >= MAX_PIPELINES {
-            if let Some(oldest) = self
+        if self.pipelines.len() >= MAX_PIPELINES
+            && let Some(oldest) = self
                 .pipelines
                 .iter()
                 .min_by_key(|(_, pipeline)| pipeline.last_used)
                 .map(|(target_key, _)| target_key.clone())
-            {
-                self.pipelines.remove(&oldest);
-            }
+        {
+            self.pipelines.remove(&oldest);
         }
-        let item = capture_item(raw_hwnd)?;
+        let item = capture_item(target)?;
         let size = item.Size().map_err(|_| target_unavailable())?;
         if size.Width <= 0 || size.Height <= 0 {
             return Err(target_unavailable());
@@ -325,16 +372,37 @@ impl Drop for CapturePipeline {
     }
 }
 
-fn capture_item(raw_hwnd: isize) -> Result<GraphicsCaptureItem, DriverError> {
+fn capture_item(target: CaptureTarget) -> Result<GraphicsCaptureItem, DriverError> {
     let interop: IGraphicsCaptureItemInterop = factory::<GraphicsCaptureItem, _>()
         .map_err(|_| capture_failure("WGC activation factory is unavailable"))?;
-    // SAFETY: CreateForWindow consumes only the copied HWND and returns a
-    // retained WinRT capture item for that exact top-level window.
+    // SAFETY: The interop methods consume only copied native handles and
+    // return a retained WinRT capture item for that exact target.
     unsafe {
-        interop
-            .CreateForWindow(hwnd(raw_hwnd))
-            .map_err(|_| target_unavailable())
+        match target {
+            CaptureTarget::Window(raw_hwnd) => interop.CreateForWindow(hwnd(raw_hwnd)),
+            CaptureTarget::Display(raw_monitor) => interop.CreateForMonitor(hmonitor(raw_monitor)),
+        }
+        .map_err(|_| target_unavailable())
     }
+}
+
+fn monitor_bounds(raw_monitor: isize) -> Result<ScreenRect, DriverError> {
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or(u32::MAX),
+        ..Default::default()
+    };
+    // SAFETY: GetMonitorInfoW copies fixed-size data for the revalidated
+    // monitor handle into the initialized structure.
+    if !unsafe { GetMonitorInfoW(hmonitor(raw_monitor), &raw mut info) }.as_bool() {
+        return Err(target_unavailable());
+    }
+    let bounds = info.rcMonitor;
+    Ok(ScreenRect {
+        x: f64::from(bounds.left),
+        y: f64::from(bounds.top),
+        width: f64::from(bounds.right.saturating_sub(bounds.left)),
+        height: f64::from(bounds.bottom.saturating_sub(bounds.top)),
+    })
 }
 
 fn newest_frame(
@@ -445,7 +513,10 @@ fn copy_bgra_rows(
             slice::from_raw_parts((mapped.pData as *const u8).add(row * pitch), row_bytes)
         };
         let output = &mut pixels[row * row_bytes..(row + 1) * row_bytes];
-        for (bgra, rgba) in source.chunks_exact(4).zip(output.chunks_exact_mut(4)) {
+        let (source_pixels, source_remainder) = source.as_chunks::<4>();
+        let (output_pixels, output_remainder) = output.as_chunks_mut::<4>();
+        debug_assert!(source_remainder.is_empty() && output_remainder.is_empty());
+        for (bgra, rgba) in source_pixels.iter().zip(output_pixels) {
             rgba.copy_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
         }
     }
@@ -454,6 +525,10 @@ fn copy_bgra_rows(
 
 fn hwnd(raw: isize) -> HWND {
     HWND(raw as *mut c_void)
+}
+
+fn hmonitor(raw: isize) -> HMONITOR {
+    HMONITOR(raw as *mut c_void)
 }
 
 fn capture_failure(message: &str) -> DriverError {

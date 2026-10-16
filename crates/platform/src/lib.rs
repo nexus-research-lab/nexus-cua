@@ -10,11 +10,17 @@ use std::sync::Arc;
 use nexus_cua_runtime::DriverErrorKind;
 use nexus_cua_runtime::{DesktopDriver, DriverError};
 
+mod host_identity;
 #[cfg(target_os = "macos")]
 mod macos;
 mod observation;
 #[cfg(target_os = "windows")]
 mod windows;
+
+pub use host_identity::{
+    HostExecutableIdentity, HostIdentityError, HostSignatureIdentity, inspect_host_executable,
+    parent_host_identity,
+};
 
 /// Build the native driver for the current operating system.
 ///

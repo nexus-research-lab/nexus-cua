@@ -1,10 +1,12 @@
 # Native Performance Baselines
 
-This directory receives the first reviewed, accepted
-`nexus.cua.native-evidence.v1` summary from each maintained release runner.
+This directory receives the first reviewed, accepted native-evidence summary
+from each maintained release runner. The harness emits
+`nexus.cua.native-evidence.v2` with distinct `engineering_accepted` and
+`release_accepted` classes as defined by `docs/PRD.zh-CN.md`.
 There is intentionally no baseline yet: neither required physical runner has
-been assigned and accepted M2 evidence must not be synthesized from a developer
-machine, hosted worker, or virtual machine.
+been assigned, and accepted hardware evidence must not be synthesized from a
+developer machine, hosted worker, or virtual machine.
 
 Use these names when the evidence exists:
 

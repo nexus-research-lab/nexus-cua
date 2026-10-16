@@ -48,10 +48,19 @@ opaque_id!(
     DiscoveryRef,
     "Short-lived runtime-local reference for one discovered process generation."
 );
+opaque_id!(
+    LaunchRef,
+    "Short-lived runtime-local reference for one reviewed installed application identity."
+);
 opaque_id!(WindowRef, "Session-scoped opaque window reference.");
+opaque_id!(DisplayRef, "Session-scoped opaque display reference.");
+opaque_id!(
+    ClipboardRef,
+    "Session-scoped opaque guard for one transient clipboard generation."
+);
 opaque_id!(
     ObservationId,
-    "Identity for one immutable window observation."
+    "Identity for one immutable window or display observation."
 );
 opaque_id!(
     ElementRef,

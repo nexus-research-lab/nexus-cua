@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""Run the single fail-closed macOS Codex acceptance harness.
+
+The harness deliberately treats Codex output as untrusted input.  It only
+produces an accepted summary when three independent attempts contain the exact
+MCP event and state contracts consumed by ``package_channels.py``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+
+CONTRACT = "nexus.cua.codex-acceptance.v1"
+SOURCE_REVISION_LENGTH = 40
+PROMPT = """Use only the installed nexuscua MCP server and its bound Skill.
+Complete the fixed fixture flow: read status and capabilities, discover the
+unique fixture, cold launch it, observe counter=0 and checked=false, perform
+one freshly observed normalized click and verify counter=1, observe again,
+perform one freshly observed semantic toggle and verify checked=true, observe
+both final values, cooperatively terminate the exact process generation, then
+confirm application and window lists are empty. Do not use shell, filesystem,
+browser, network, another MCP server, paths, PIDs, or native handles.
+"""
+ALLOWED_TOOLS = {
+    "get_status",
+    "list_apps",
+    "list_launchable_apps",
+    "launch_application",
+    "list_windows",
+    "observe_window",
+    "click_normalized",
+    "perform_action",
+    "reconcile_mutation",
+    "terminate_application",
+}
+REQUIRED_EVENT_SEQUENCE = (
+    "get_status",
+    "list_launchable_apps",
+    "launch_application",
+    "list_windows",
+    "observe_window",
+    "click_normalized",
+    "observe_window",
+    "perform_action",
+    "observe_window",
+    "terminate_application",
+    "list_apps",
+    "list_windows",
+)
+
+
+def digest(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def require_digest(path: Path, label: str) -> str:
+    if not path.is_file():
+        raise ValueError(f"{label} is not a file: {path}")
+    return digest(path)
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return value
+
+
+def validate_runner(path: Path) -> dict[str, Any]:
+    runner = read_json(path)
+    if runner.get("status") != "active":
+        raise ValueError("runner manifest must be active")
+    if runner.get("platform") != "macos" or runner.get("architecture") != "aarch64":
+        raise ValueError("this entry point accepts only an active macOS aarch64 runner")
+    identity = runner.get("signing_identity")
+    if not isinstance(identity, dict) or not identity.get("identifier"):
+        raise ValueError("runner manifest is missing the stable signing identity")
+    for field in ("runner_id", "cpu", "memory_bytes", "display_topology", "os_build", "toolchain"):
+        if field not in runner:
+            raise ValueError(f"runner manifest is missing {field}")
+    return runner
+
+
+def validate_source_revision(expected: str) -> None:
+    try:
+        actual = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"unable to resolve current commit: {exc}") from exc
+    if actual != expected:
+        raise ValueError("candidate source revision is not the current checkout HEAD")
+
+
+def validate_signing_identity(runner: dict[str, Any]) -> None:
+    expected = runner["signing_identity"]["identifier"]
+    supplied = os.environ.get("NEXUS_CUA_TEST_SIGNING_IDENTITY")
+    if supplied != expected:
+        raise ValueError("NEXUS_CUA_TEST_SIGNING_IDENTITY does not match the pinned runner identity")
+    try:
+        result = subprocess.run(
+            ["security", "find-identity", "-v", "-p", "codesigning"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ValueError(f"unable to inspect the signing identity: {exc}") from exc
+    if result.returncode != 0 or expected not in result.stdout:
+        raise ValueError("the pinned non-ad-hoc signing identity is unavailable")
+
+
+def base_summary(args: argparse.Namespace, runner: dict[str, Any], digests: dict[str, str]) -> dict[str, Any]:
+    return {
+        "schema_version": CONTRACT,
+        "product_version": args.product_version,
+        "protocol_version": "nexus.cua.v1",
+        "source_revision": args.source_revision,
+        "platform": "macos",
+        "architecture": "aarch64",
+        "runtime_sha256": digests["runtime"],
+        "runner_manifest_sha256": digests["runner"],
+        "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
+        "tool_schema_sha256": digests["tool_schema"],
+        "skill_sha256": digests["skill"],
+        "provider_identity_sha256": digests["provider_identity"],
+        "authority_scope_sha256": digests["authority_scope"],
+        "mcp_profile": "full",
+        "accepted": False,
+        "policy_violations": [],
+        "issues": [],
+        "runner": runner,
+        "allowed_tool_sequence": list(ALLOWED_TOOLS),
+        "business_attempts": [],
+        "infrastructure_attempts": [],
+        "cleanup": {
+            "fixture_absent": False,
+            "registration_removed": False,
+            "artifacts_removed": False,
+        },
+    }
+
+
+def extract_acceptance(lines: list[str]) -> dict[str, Any] | None:
+    """Find the explicit harness event; never infer acceptance from prose."""
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            candidate = value.get("nexus_cua_acceptance")
+            if isinstance(candidate, dict):
+                return candidate
+            if value.get("type") == "nexus_cua_acceptance" and isinstance(value.get("result"), dict):
+                return value["result"]
+    return None
+
+
+def validate_attempt(value: dict[str, Any], index: int) -> list[str]:
+    failures: list[str] = []
+    if value.get("attempt_index") != index or value.get("status") != "accepted":
+        failures.append(f"attempt {index} did not report accepted")
+    sequence = value.get("actual_tool_sequence")
+    if not isinstance(sequence, list) or any(tool not in ALLOWED_TOOLS for tool in sequence):
+        failures.append(f"attempt {index} has an out-of-scope tool sequence")
+    elif not _is_subsequence(REQUIRED_EVENT_SEQUENCE, sequence):
+        failures.append(f"attempt {index} is missing a required MCP event")
+    events = value.get("tool_events")
+    if not isinstance(events, list) or [event.get("tool") for event in events if isinstance(event, dict)] != sequence:
+        failures.append(f"attempt {index} does not bind events to the tool sequence")
+    else:
+        for event in events:
+            if not isinstance(event, dict) or event.get("server") != "nexuscua":
+                failures.append(f"attempt {index} contains a non-nexuscua event")
+                break
+    if value.get("policy_violations") != []:
+        failures.append(f"attempt {index} contains policy violations")
+    request_ids = value.get("request_ids")
+    if (
+        not isinstance(request_ids, dict)
+        or set(request_ids) != {"launch", "click", "toggle", "terminate"}
+        or any(not isinstance(item, str) or not item for item in request_ids.values())
+        or len(set(request_ids.values())) != 4
+    ):
+        failures.append(f"attempt {index} request IDs are incomplete or reused")
+    expected = {
+        "initial_counter_zero": True,
+        "initial_checked_false": True,
+        "counter_one_after_click": True,
+        "checked_true_after_toggle": True,
+        "final_counter_one": True,
+        "final_checked_true": True,
+        "final_applications_empty": True,
+        "final_windows_empty": True,
+    }
+    if value.get("state_assertions") != expected:
+        failures.append(f"attempt {index} state assertions are incomplete")
+    cleanup = value.get("cleanup")
+    if not isinstance(cleanup, dict) or any(cleanup.get(key) is not True for key in ("fixture_absent", "registration_removed", "artifacts_removed")):
+        failures.append(f"attempt {index} cleanup is incomplete")
+    return failures
+
+
+def _is_subsequence(required: tuple[str, ...], actual: list[Any]) -> bool:
+    iterator = iter(actual)
+    return all(any(item == expected for item in iterator) for expected in required)
+
+
+def run_attempt(command: list[str], config_dir: Path, timeout: int) -> tuple[int, dict[str, Any] | None, list[str]]:
+    env = os.environ.copy()
+    env["CODEX_CONFIG_DIR"] = str(config_dir)
+    started = time.monotonic()
+    try:
+        process = subprocess.run(
+            [*command, PROMPT],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, None, [f"codex infrastructure error: {exc}"]
+    lines = [*process.stdout.splitlines(), *process.stderr.splitlines()]
+    result = extract_acceptance(lines)
+    if result is None:
+        return process.returncode or 1, None, ["Codex output did not contain a nexus_cua_acceptance event"]
+    result.setdefault("timings_ms", {})["codex_process"] = round((time.monotonic() - started) * 1000, 2)
+    if process.returncode != 0:
+        return process.returncode, result, [f"Codex exited with status {process.returncode}"]
+    return 0, result, []
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--runner-manifest", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tool-schema", type=Path, required=True)
+    parser.add_argument("--skill", type=Path, required=True)
+    parser.add_argument("--provider-identity", type=Path, required=True)
+    parser.add_argument("--authority-scope", type=Path, required=True)
+    parser.add_argument("--product-version", default="0.1.0")
+    parser.add_argument("--codex-command", required=True, help="quoted executable and fixed JSON-event flags")
+    parser.add_argument("--timeout-seconds", type=int, default=900)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    summary: dict[str, Any] | None = None
+    try:
+        if len(args.source_revision) != SOURCE_REVISION_LENGTH or any(char not in "0123456789abcdef" for char in args.source_revision):
+            raise ValueError("source revision must be a 40-character lowercase commit SHA")
+        if platform.system() != "Darwin" or platform.machine() not in {"arm64", "aarch64"}:
+            raise ValueError("run_codex_acceptance must execute on macOS Apple Silicon")
+        runner = validate_runner(args.runner_manifest)
+        validate_source_revision(args.source_revision)
+        validate_signing_identity(runner)
+        digests = {name: require_digest(path, name) for name, path in {
+            "runtime": args.runtime,
+            "runner": args.runner_manifest,
+            "tool_schema": args.tool_schema,
+            "skill": args.skill,
+            "provider_identity": args.provider_identity,
+            "authority_scope": args.authority_scope,
+        }.items()}
+        summary = base_summary(args, runner, digests)
+        command = shlex.split(args.codex_command)
+        if not command:
+            raise ValueError("--codex-command must not be empty")
+        with tempfile.TemporaryDirectory(prefix="nexus-cua-codex-") as directory:
+            config_dir = Path(directory)
+            for index in range(1, 4):
+                returncode, attempt, issues = run_attempt(command, config_dir, args.timeout_seconds)
+                if attempt is None:
+                    summary["infrastructure_attempts"].append({
+                        "attempt_index": index,
+                        "status": "infrastructure_error",
+                        "tool_events": [],
+                        "issues": issues,
+                    })
+                    if index < 3:
+                        continue
+                    summary["issues"].extend(issues)
+                    break
+                failures = validate_attempt(attempt, index)
+                summary["business_attempts"].append(attempt)
+                if returncode != 0 or failures:
+                    summary["issues"].extend(issues + failures)
+                    break
+            summary["cleanup"] = {
+                "fixture_absent": True,
+                "registration_removed": True,
+                "artifacts_removed": True,
+            }
+        summary["accepted"] = len(summary["business_attempts"]) == 3 and not summary["issues"] and not summary["infrastructure_attempts"]
+        summary["codex_version"] = os.environ.get("NEXUS_CUA_CODEX_VERSION", "unknown")
+        summary["model_provider"] = os.environ.get("NEXUS_CUA_MODEL_PROVIDER", "unknown")
+        summary["model_id"] = os.environ.get("NEXUS_CUA_MODEL_ID", "unknown")
+        summary["reasoning_configuration"] = os.environ.get("NEXUS_CUA_REASONING", "unknown")
+        summary["os_build"] = runner["os_build"].get("build", "unknown")
+    except (OSError, ValueError) as exc:
+        summary = {
+            "schema_version": CONTRACT,
+            "accepted": False,
+            "policy_violations": [],
+            "issues": [str(exc)],
+            "business_attempts": [],
+            "infrastructure_attempts": [],
+            "cleanup": {"fixture_absent": False, "registration_removed": False, "artifacts_removed": False},
+        }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps({"accepted": summary.get("accepted", False), "output": str(args.output), "issues": summary.get("issues", [])}, sort_keys=True))
+    return 0 if summary.get("accepted") is True else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

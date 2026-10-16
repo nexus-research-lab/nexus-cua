@@ -361,6 +361,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]
@@ -385,6 +386,8 @@ dependencies = [
  "hex",
  "nexus-cua-protocol",
  "png",
+ "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "time",

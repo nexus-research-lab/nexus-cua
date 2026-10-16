@@ -23,14 +23,26 @@ func (value *Platform) UnmarshalJSON(data []byte) error {
 }
 
 func (value *CaptureMode) UnmarshalJSON(data []byte) error {
-	parsed, err := decodeClosedEnum(data, "capture mode", []string{"window"})
+	parsed, err := decodeClosedEnum(data, "capture mode", []string{"window", "display"})
 	*value = CaptureMode(parsed)
 	return err
 }
 
 func (value *InputRoute) UnmarshalJSON(data []byte) error {
-	parsed, err := decodeClosedEnum(data, "input route", []string{"semantic", "foreground"})
+	parsed, err := decodeClosedEnum(data, "input route", []string{"semantic", "system", "background", "foreground"})
 	*value = InputRoute(parsed)
+	return err
+}
+
+func (value *ApplicationLifecycleOperation) UnmarshalJSON(data []byte) error {
+	parsed, err := decodeClosedEnum(data, "application lifecycle operation", []string{"launch"})
+	*value = ApplicationLifecycleOperation(parsed)
+	return err
+}
+
+func (value *ClipboardOperation) UnmarshalJSON(data []byte) error {
+	parsed, err := decodeClosedEnum(data, "clipboard operation", []string{"read_text", "write_text"})
+	*value = ClipboardOperation(parsed)
 	return err
 }
 
@@ -65,9 +77,80 @@ func (value *PointerButton) UnmarshalJSON(data []byte) error {
 }
 
 func (value *DeliveryMode) UnmarshalJSON(data []byte) error {
-	parsed, err := decodeClosedEnum(data, "delivery mode", []string{"semantic", "foreground"})
+	parsed, err := decodeClosedEnum(data, "delivery mode", []string{"semantic", "system", "background", "foreground"})
 	*value = DeliveryMode(parsed)
 	return err
+}
+
+func (value *ActionEffectStatus) UnmarshalJSON(data []byte) error {
+	parsed, err := decodeClosedEnum(data, "action effect status", []string{"confirmed", "unverified"})
+	*value = ActionEffectStatus(parsed)
+	return err
+}
+
+func (value *ActionEvidenceKind) UnmarshalJSON(data []byte) error {
+	parsed, err := decodeClosedEnum(data, "action evidence kind", []string{"native_readback", "dispatch_acceptance"})
+	*value = ActionEvidenceKind(parsed)
+	return err
+}
+
+func (value *ForegroundRestorationStatus) UnmarshalJSON(data []byte) error {
+	parsed, err := decodeClosedEnum(data, "foreground restoration status", []string{"not_requested", "not_needed", "restored", "skipped_owner_changed", "target_unavailable", "failed"})
+	*value = ForegroundRestorationStatus(parsed)
+	return err
+}
+
+func (value *ActionOutput) UnmarshalJSON(data []byte) error {
+	type actionOutput ActionOutput
+	var decoded actionOutput
+	if err := decodeStrict(data, &decoded); err != nil {
+		return err
+	}
+	coherent := (decoded.EffectStatus == ActionEffectConfirmed && decoded.EvidenceKind == ActionEvidenceNativeReadback) ||
+		(decoded.EffectStatus == ActionEffectUnverified && decoded.EvidenceKind == ActionEvidenceDispatchAcceptance)
+	if !coherent {
+		return fmt.Errorf("nexus-cua: incoherent action effect evidence %q/%q", decoded.EffectStatus, decoded.EvidenceKind)
+	}
+	*value = ActionOutput(decoded)
+	return nil
+}
+
+func (value *MutationReconciliation) UnmarshalJSON(data []byte) error {
+	type mutationReconciliation MutationReconciliation
+	var decoded mutationReconciliation
+	if err := decodeStrict(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.RequestID == "" || decoded.RuntimeEpoch == "" {
+		return fmt.Errorf("nexus-cua: mutation reconciliation identity is empty")
+	}
+	if (decoded.EffectStatus == nil) != (decoded.EvidenceKind == nil) {
+		return fmt.Errorf("nexus-cua: mutation effect status and evidence must both be present or absent")
+	}
+	if decoded.EffectStatus != nil && decoded.EvidenceKind != nil {
+		coherent := (*decoded.EffectStatus == ActionEffectConfirmed && *decoded.EvidenceKind == ActionEvidenceNativeReadback) ||
+			(*decoded.EffectStatus == ActionEffectUnverified && *decoded.EvidenceKind == ActionEvidenceDispatchAcceptance)
+		if !coherent {
+			return fmt.Errorf("nexus-cua: incoherent mutation reconciliation effect evidence")
+		}
+	}
+	*value = MutationReconciliation(decoded)
+	return nil
+}
+
+func (value *ClipboardWriteOutput) UnmarshalJSON(data []byte) error {
+	type clipboardWriteOutput ClipboardWriteOutput
+	var decoded clipboardWriteOutput
+	if err := decodeStrict(data, &decoded); err != nil {
+		return err
+	}
+	coherent := (decoded.EffectStatus == ActionEffectConfirmed && decoded.EvidenceKind == ActionEvidenceNativeReadback) ||
+		(decoded.EffectStatus == ActionEffectUnverified && decoded.EvidenceKind == ActionEvidenceDispatchAcceptance)
+	if !coherent {
+		return fmt.Errorf("nexus-cua: incoherent clipboard effect evidence %q/%q", decoded.EffectStatus, decoded.EvidenceKind)
+	}
+	*value = ClipboardWriteOutput(decoded)
+	return nil
 }
 
 func (value *SignatureStatus) UnmarshalJSON(data []byte) error {
@@ -79,6 +162,18 @@ func (value *SignatureStatus) UnmarshalJSON(data []byte) error {
 func (value *MutationStatus) UnmarshalJSON(data []byte) error {
 	parsed, err := decodeClosedEnum(data, "mutation status", mutationStatuses)
 	*value = MutationStatus(parsed)
+	return err
+}
+
+func (value *MutationAdmission) UnmarshalJSON(data []byte) error {
+	parsed, err := decodeClosedEnum(data, "mutation admission", []string{"unknown", "admitted"})
+	*value = MutationAdmission(parsed)
+	return err
+}
+
+func (value *MutationDisposition) UnmarshalJSON(data []byte) error {
+	parsed, err := decodeClosedEnum(data, "mutation disposition", []string{"unknown", "not_mutation", "pending", "succeeded", "not_dispatched", "indeterminate"})
+	*value = MutationDisposition(parsed)
 	return err
 }
 

@@ -1,4 +1,5 @@
 /.cache/
+/.codex/config.toml
 /bin/
 /coverage.out
 /dist/
@@ -7,6 +8,7 @@ fixtures/native/macos/.build/
 sdk/python/build/
 sdk/python/dist/
 sdk/python/src/*.egg-info/
+sdk/typescript/node_modules/
 **/__pycache__/
 *.log
 .DS_Store

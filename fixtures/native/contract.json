@@ -2,7 +2,7 @@
   "contract_version": "nexus.cua.fixture.v1",
   "application_name": "Nexus CUA Native Fixture",
   "window_title_prefix": "Nexus CUA Native Fixture · Generation ",
-  "initial_state": "Fixture State: generation=1; counter=0; text=ready; checked=false; selection=none; expanded=false; dropped=false",
+  "initial_state": "Fixture State: generation=1; counter=0; text=ready; checked=false; selection=none; level=50; expanded=false; pressed=false; dropped=false",
   "secure_sentinel": "fixture-secret",
   "controls": {
     "increment": {
@@ -19,6 +19,11 @@
       "name": "Fixture Secure Text",
       "roles_by_platform": {"macos": ["textfield"], "windows": ["edit"]},
       "required_actions": ["focus", "set_value"]
+    },
+    "range": {
+      "name": "Fixture Range",
+      "roles_by_platform": {"macos": ["slider"], "windows": ["slider"]},
+      "required_actions": ["focus", "set_range_value"]
     },
     "toggle": {
       "name": "Enable Feature",
@@ -52,6 +57,11 @@
     },
     "drag_token": {
       "name": "Drag Token",
+      "roles_by_platform": {"macos": ["group"], "windows": ["button"]},
+      "required_actions": []
+    },
+    "long_press_target": {
+      "name": "Long Press Target",
       "roles_by_platform": {"macos": ["group"], "windows": ["button"]},
       "required_actions": []
     },

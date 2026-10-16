@@ -4,8 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppRef, ArtifactRef, ElementRef, ObservationId, ScreenRect, ScreenshotMapping, SessionId,
-    WindowRef,
+    AppRef, ArtifactRef, DisplayRef, ElementRef, ObservationId, ScreenRect, ScreenshotMapping,
+    SessionId, WindowRef,
 };
 
 /// One running application visible to the selected session.
@@ -52,6 +52,28 @@ pub struct ListWindowsInput {
     pub app_ref: Option<AppRef>,
 }
 
+/// One physical display available to an explicitly authorized session.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplaySummary {
+    /// Session-scoped opaque display reference.
+    pub display_ref: DisplayRef,
+    /// Logical top-left bounds in the multi-display desktop coordinate space.
+    pub screen_bounds: ScreenRect,
+    /// Whether this display contains the operating-system primary origin.
+    pub primary: bool,
+}
+
+/// Input for capturing one exact physical display.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObserveDisplayInput {
+    /// Runtime-issued session identity.
+    pub session_id: SessionId,
+    /// Session-scoped target returned by display enumeration.
+    pub display_ref: DisplayRef,
+}
+
 /// Input for capturing one exact window.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -96,6 +118,24 @@ pub struct ScreenshotArtifact {
     pub sha256: String,
 }
 
+/// Numeric accessibility range metadata from one immutable observation.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccessibilityRangeValue {
+    /// Current finite value.
+    pub value: f64,
+    /// Inclusive finite minimum.
+    pub minimum: f64,
+    /// Inclusive finite maximum.
+    pub maximum: f64,
+    /// Preferred small adjustment when the platform exposes one.
+    pub small_change: Option<f64>,
+    /// Preferred large adjustment when the platform exposes one.
+    pub large_change: Option<f64>,
+    /// Whether the native provider reports the range as read-only.
+    pub read_only: bool,
+}
+
 /// Normalized accessibility element from one immutable observation.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -110,12 +150,20 @@ pub struct AccessibilityElement {
     pub name: String,
     /// Non-sensitive display value when safely available.
     pub value: Option<String>,
+    /// Numeric range metadata for sliders, spinners, and similar controls.
+    pub range_value: Option<AccessibilityRangeValue>,
     /// Element bounds in logical top-left screen coordinates.
     pub screen_bounds: Option<ScreenRect>,
     /// Whether the element can receive actions.
     pub enabled: bool,
     /// Whether the element currently owns keyboard focus.
     pub focused: bool,
+    /// Whether the element is selected, when the platform exposes that state.
+    pub selected: Option<bool>,
+    /// Whether the element is checked, when the platform exposes a binary state.
+    pub checked: Option<bool>,
+    /// Whether the element is expanded, when the platform exposes that state.
+    pub expanded: Option<bool>,
     /// Normalized semantic actions supported by the element.
     pub actions: Vec<String>,
 }
@@ -166,4 +214,20 @@ pub struct WindowObservation {
     pub elements_complete: bool,
     /// Present exactly when the semantic tree is partial.
     pub elements_truncation: Option<ObservationTruncation>,
+}
+
+/// Immutable read-only overview of one exact physical display.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayObservation {
+    /// Runtime identity for observation correlation only; it cannot guard actions.
+    pub observation_id: ObservationId,
+    /// Exact physical display captured.
+    pub display_ref: DisplayRef,
+    /// RFC 3339 capture timestamp.
+    pub captured_at: String,
+    /// Logical display bounds at capture time.
+    pub display_screen_bounds: ScreenRect,
+    /// Transient full-display screenshot.
+    pub screenshot: ScreenshotArtifact,
 }

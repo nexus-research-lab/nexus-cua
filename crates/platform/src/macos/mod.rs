@@ -1,8 +1,10 @@
 //! macOS `ScreenCaptureKit`, `AXUIElement`, and `CGEvent` driver.
 
 mod capture;
+mod clipboard;
 mod input;
-mod provenance;
+mod launch;
+pub(crate) mod provenance;
 mod semantic;
 
 use std::collections::HashMap;
@@ -11,19 +13,23 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use core_graphics::access::ScreenCaptureAccess;
 use nexus_cua_protocol::{
-    AccessibilityMode, ActionKind, ApplicationProvenance, CaptureMode, DeliveryMode,
-    DriverCapabilities, InputRoute, PROTOCOL_VERSION, PermissionState, PermissionStatus, Platform,
-    StatePredicate,
+    AccessibilityMode, ActionEffectStatus, ActionEvidenceKind, ActionKind,
+    ApplicationLifecycleOperation, ApplicationProvenance, CaptureMode, ClipboardOperation,
+    DeliveryMode, DeliveryPreference, DriverCapabilities, ElementState,
+    ForegroundRestorationStatus, InputRoute, PROTOCOL_VERSION, PermissionState, PermissionStatus,
+    Platform, PointerButton, SensitiveText, StatePredicate,
 };
 use nexus_cua_runtime::{
-    DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverError,
-    DriverErrorKind, DriverObservation, DriverVerification, DriverWindow,
+    DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverClipboardSnapshot,
+    DriverClipboardWriteOutput, DriverDisplay, DriverError, DriverErrorKind, DriverLaunchOutput,
+    DriverLaunchableApplication, DriverObservation, DriverVerification, DriverWindow,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_core_graphics::CGPreflightPostEventAccess;
 
 use capture::{CaptureActor, NativeWindow};
+use clipboard::ClipboardActor;
 use input::{InputAction, InputActor};
 use semantic::{SemanticAction, SemanticActor};
 use tokio::sync::Semaphore;
@@ -35,6 +41,7 @@ pub struct MacosDriver {
     capture: CaptureActor,
     semantic: SemanticActor,
     input: InputActor,
+    clipboard: ClipboardActor,
     provenance_workers: Arc<Semaphore>,
     provenance_cache: Arc<Mutex<provenance::Cache>>,
 }
@@ -49,6 +56,7 @@ impl MacosDriver {
             capture: CaptureActor::spawn(),
             semantic: SemanticActor::spawn(),
             input: InputActor::spawn()?,
+            clipboard: ClipboardActor::spawn()?,
             provenance_workers: Arc::new(Semaphore::new(PROVENANCE_WORKERS)),
             provenance_cache: Arc::new(Mutex::new(provenance::Cache::default())),
         })
@@ -96,15 +104,27 @@ impl DesktopDriver for MacosDriver {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
             platform: Platform::Macos,
-            capture_modes: vec![CaptureMode::Window],
+            capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
             accessibility_tree: true,
-            input_routes: vec![InputRoute::Semantic, InputRoute::Foreground],
+            input_routes: vec![
+                InputRoute::Semantic,
+                InputRoute::System,
+                InputRoute::Background,
+                InputRoute::Foreground,
+            ],
+            application_lifecycle: vec![ApplicationLifecycleOperation::Launch],
+            clipboard: vec![ClipboardOperation::ReadText, ClipboardOperation::WriteText],
             actions: vec![
                 ActionKind::FocusWindow,
+                ActionKind::SetWindowBounds,
+                ActionKind::SetWindowMinimized,
+                ActionKind::TerminateApplication,
                 ActionKind::FocusElement,
                 ActionKind::InvokeElement,
                 ActionKind::ClickPoint,
+                ActionKind::PressPoint,
                 ActionKind::SetValue,
+                ActionKind::SetRangeValue,
                 ActionKind::ToggleElement,
                 ActionKind::SelectElement,
                 ActionKind::SetExpanded,
@@ -175,6 +195,92 @@ impl DesktopDriver for MacosDriver {
         })?
     }
 
+    async fn list_launchable_applications(
+        &self,
+    ) -> Result<Vec<DriverLaunchableApplication>, DriverError> {
+        let permit = Arc::clone(&self.provenance_workers)
+            .try_acquire_owned()
+            .map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::Busy,
+                    "macOS launch discovery worker capacity is exhausted",
+                )
+                .retryable("retry_with_backoff")
+            })?;
+        let provenance_cache = Arc::clone(&self.provenance_cache);
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut cache = provenance_cache.lock().map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::Platform,
+                    "macOS provenance cache is unavailable",
+                )
+            })?;
+            launch::discover(&mut cache)
+        })
+        .await
+        .map_err(|_| {
+            DriverError::new(
+                DriverErrorKind::Platform,
+                "macOS launch discovery worker stopped unexpectedly",
+            )
+        })?
+    }
+
+    async fn launch_application(
+        &self,
+        application: &DriverLaunchableApplication,
+        allow_foreground_activation: bool,
+    ) -> Result<DriverLaunchOutput, DriverError> {
+        let window = self
+            .capture
+            .launch_application(
+                application.launch_target.clone(),
+                application.application_id.clone(),
+                allow_foreground_activation,
+            )
+            .await?;
+        let foreground = window.foreground;
+        let permit = Arc::clone(&self.provenance_workers)
+            .try_acquire_owned()
+            .map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::Busy,
+                    "macOS provenance worker capacity is exhausted after launch",
+                )
+                .retryable("discover_applications")
+                .mutation_indeterminate()
+            })?;
+        let provenance_cache = Arc::clone(&self.provenance_cache);
+        let launched = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut cache = provenance_cache.lock().map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::Platform,
+                    "macOS provenance cache is unavailable after launch",
+                )
+                .mutation_indeterminate()
+            })?;
+            Ok(discovered_application(&window, &mut cache))
+        })
+        .await
+        .map_err(|_| {
+            DriverError::new(
+                DriverErrorKind::Platform,
+                "macOS provenance worker stopped after launch",
+            )
+            .mutation_indeterminate()
+        })??;
+        Ok(DriverLaunchOutput {
+            application: launched,
+            delivery_mode: if foreground {
+                DeliveryMode::Foreground
+            } else {
+                DeliveryMode::System
+            },
+        })
+    }
+
     async fn list_windows(
         &self,
         application_key: Option<&str>,
@@ -184,8 +290,46 @@ impl DesktopDriver for MacosDriver {
             .await?
             .into_iter()
             .filter(|window| application_key.is_none_or(|key| key == window.application_key))
+            .filter(|window| window.visible || !window.title.is_empty())
             .map(driver_window)
             .collect())
+    }
+
+    async fn list_displays(&self) -> Result<Vec<DriverDisplay>, DriverError> {
+        if !ScreenCaptureAccess.preflight() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS screen-recording permission is required for display discovery",
+            )
+            .retryable("grant_screen_recording_permission"));
+        }
+        Ok(self
+            .capture
+            .list_displays()
+            .await?
+            .into_iter()
+            .map(|display| DriverDisplay {
+                key: display.key,
+                screen_bounds: display.screen_bounds,
+                primary: display.primary,
+            })
+            .collect())
+    }
+
+    async fn observe_display(
+        &self,
+        display: &DriverDisplay,
+    ) -> Result<(nexus_cua_runtime::RgbaImage, nexus_cua_protocol::ScreenRect), DriverError> {
+        if !ScreenCaptureAccess.preflight() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS screen-recording permission is required for display capture",
+            )
+            .retryable("grant_screen_recording_permission"));
+        }
+        self.capture
+            .capture_display(display.key.clone(), display.screen_bounds)
+            .await
     }
 
     async fn observe_window(
@@ -277,6 +421,28 @@ impl DesktopDriver for MacosDriver {
         })
     }
 
+    async fn read_clipboard(
+        &self,
+        max_text_bytes: usize,
+    ) -> Result<DriverClipboardSnapshot, DriverError> {
+        self.clipboard.read(max_text_bytes).await
+    }
+
+    async fn write_clipboard(
+        &self,
+        expected_change_marker: &str,
+        text: &SensitiveText,
+        max_text_bytes: usize,
+    ) -> Result<DriverClipboardWriteOutput, DriverError> {
+        self.clipboard
+            .write(
+                expected_change_marker.to_owned(),
+                text.clone(),
+                max_text_bytes,
+            )
+            .await
+    }
+
     async fn observation_is_current(
         &self,
         window: &DriverWindow,
@@ -305,11 +471,16 @@ impl DesktopDriver for MacosDriver {
         window: &DriverWindow,
         action: DriverAction,
         allow_foreground: bool,
+        restore_foreground: bool,
     ) -> Result<DriverActionOutput, DriverError> {
         let foreground = matches!(
             &action,
             DriverAction::FocusWindow
-                | DriverAction::ClickPoint { .. }
+                | DriverAction::ClickPoint {
+                    delivery: DeliveryPreference::Foreground,
+                    ..
+                }
+                | DriverAction::PressPoint { .. }
                 | DriverAction::MovePointer { .. }
                 | DriverAction::TypeText { .. }
                 | DriverAction::PressKeys { .. }
@@ -330,11 +501,40 @@ impl DesktopDriver for MacosDriver {
             )
             .mutation_not_dispatched());
         }
+        if matches!(&action, DriverAction::ClickPoint { .. }) && !CGPreflightPostEventAccess() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS event-synthesis permission is required",
+            )
+            .mutation_not_dispatched());
+        }
         let current = self
             .current_window(&window.key)
             .await
             .map_err(DriverError::mutation_not_dispatched)?;
-        self.dispatch_action(&current, action).await
+        let restore = restore_foreground && action.supports_foreground_restoration();
+        let previous = if restore {
+            self.capture
+                .foreground_owner()
+                .await
+                .map_err(DriverError::mutation_not_dispatched)?
+        } else {
+            None
+        };
+        let result = self.dispatch_action(&current, action).await;
+        let restoration = if restore {
+            match previous {
+                Some(owner) => self
+                    .capture
+                    .restore_foreground_owner(owner, current.application_key.clone())
+                    .await
+                    .unwrap_or(ForegroundRestorationStatus::Failed),
+                None => ForegroundRestorationStatus::TargetUnavailable,
+            }
+        } else {
+            ForegroundRestorationStatus::NotRequested
+        };
+        result.map(|output| output.with_foreground_restoration(restoration))
     }
 
     async fn verify_state(
@@ -370,6 +570,36 @@ impl DesktopDriver for MacosDriver {
                     "fresh bounded accessibility snapshot".to_owned(),
                 )
             }
+            StatePredicate::ElementState {
+                role,
+                name,
+                state,
+                value,
+            } => {
+                let snapshot = self
+                    .semantic
+                    .snapshot(
+                        current.pid,
+                        current.screen_bounds,
+                        current.title.clone(),
+                        AccessibilityMode::Interactive,
+                    )
+                    .await?;
+                (
+                    snapshot.elements.iter().any(|element| {
+                        role.as_ref().is_none_or(|role| role == &element.role)
+                            && name.as_ref().is_none_or(|name| name == &element.name)
+                            && match state {
+                                ElementState::Enabled => element.enabled == *value,
+                                ElementState::Focused => element.focused == *value,
+                                ElementState::Selected => element.selected == Some(*value),
+                                ElementState::Checked => element.checked == Some(*value),
+                                ElementState::Expanded => element.expanded == Some(*value),
+                            }
+                    }),
+                    "fresh bounded accessibility state comparison".to_owned(),
+                )
+            }
         };
         Ok(DriverVerification { matched, evidence })
     }
@@ -381,30 +611,96 @@ impl MacosDriver {
         current: &NativeWindow,
         action: DriverAction,
     ) -> Result<DriverActionOutput, DriverError> {
-        let delivery_mode = match action {
+        let (delivery_mode, effect_status, evidence_kind) = match action {
             DriverAction::FocusWindow => {
                 self.semantic
                     .raise_window(current.pid, current.screen_bounds, current.title.clone())
                     .await?;
-                DeliveryMode::Foreground
+                (
+                    DeliveryMode::Foreground,
+                    ActionEffectStatus::Unverified,
+                    ActionEvidenceKind::DispatchAcceptance,
+                )
+            }
+            DriverAction::SetWindowBounds { bounds } => {
+                self.semantic
+                    .set_window_bounds(
+                        current.pid,
+                        current.screen_bounds,
+                        current.title.clone(),
+                        bounds,
+                    )
+                    .await?;
+                (
+                    DeliveryMode::System,
+                    ActionEffectStatus::Confirmed,
+                    ActionEvidenceKind::NativeReadback,
+                )
+            }
+            DriverAction::SetWindowMinimized { minimized } => {
+                self.semantic
+                    .set_window_minimized(
+                        current.pid,
+                        current.screen_bounds,
+                        current.title.clone(),
+                        minimized,
+                    )
+                    .await?;
+                (
+                    DeliveryMode::System,
+                    ActionEffectStatus::Confirmed,
+                    ActionEvidenceKind::NativeReadback,
+                )
+            }
+            DriverAction::TerminateApplication => {
+                self.capture
+                    .terminate_application(current.application_key.clone())
+                    .await?;
+                (
+                    DeliveryMode::System,
+                    ActionEffectStatus::Confirmed,
+                    ActionEvidenceKind::NativeReadback,
+                )
+            }
+            background_click @ DriverAction::ClickPoint {
+                delivery: DeliveryPreference::Background,
+                ..
+            } => {
+                return self
+                    .dispatch_background_click(current, background_click)
+                    .await;
             }
             semantic_action @ (DriverAction::FocusElement { .. }
             | DriverAction::InvokeElement { .. }
             | DriverAction::SetValue { .. }
+            | DriverAction::SetRangeValue { .. }
             | DriverAction::ToggleElement { .. }
             | DriverAction::SelectElement { .. }
             | DriverAction::SetExpanded { .. }) => {
                 self.dispatch_semantic_action(semantic_action).await?;
-                DeliveryMode::Semantic
+                (
+                    DeliveryMode::Semantic,
+                    ActionEffectStatus::Unverified,
+                    ActionEvidenceKind::DispatchAcceptance,
+                )
             }
             input_action => {
                 self.focus_for_input(current).await?;
                 self.dispatch_input_action(current.pid, input_action)
                     .await?;
-                DeliveryMode::Foreground
+                (
+                    DeliveryMode::Foreground,
+                    ActionEffectStatus::Unverified,
+                    ActionEvidenceKind::DispatchAcceptance,
+                )
             }
         };
-        Ok(DriverActionOutput { delivery_mode })
+        Ok(DriverActionOutput {
+            delivery_mode,
+            effect_status,
+            evidence_kind,
+            foreground_restoration: ForegroundRestorationStatus::NotRequested,
+        })
     }
 
     async fn dispatch_semantic_action(&self, action: DriverAction) -> Result<(), DriverError> {
@@ -413,6 +709,9 @@ impl MacosDriver {
             DriverAction::InvokeElement { element_key } => (element_key, SemanticAction::Invoke),
             DriverAction::SetValue { element_key, value } => {
                 (element_key, SemanticAction::SetValue(value))
+            }
+            DriverAction::SetRangeValue { element_key, value } => {
+                (element_key, SemanticAction::SetRangeValue(value))
             }
             DriverAction::ToggleElement { element_key } => (element_key, SemanticAction::Toggle),
             DriverAction::SelectElement { element_key } => (element_key, SemanticAction::Select),
@@ -431,6 +730,37 @@ impl MacosDriver {
         self.semantic.perform(element_key, action).await
     }
 
+    async fn dispatch_background_click(
+        &self,
+        current: &NativeWindow,
+        action: DriverAction,
+    ) -> Result<DriverActionOutput, DriverError> {
+        let semantic_point = match &action {
+            DriverAction::ClickPoint {
+                point,
+                button: PointerButton::Left,
+                count: 1,
+                delivery: DeliveryPreference::Background,
+            } => Some(*point),
+            _ => None,
+        };
+        if let Some(point) = semantic_point
+            && self
+                .semantic
+                .invoke_at_point(
+                    current.pid,
+                    current.screen_bounds,
+                    current.title.clone(),
+                    point,
+                )
+                .await?
+        {
+            return Ok(DriverActionOutput::unverified(DeliveryMode::Semantic));
+        }
+        self.dispatch_input_action(current.pid, action).await?;
+        Ok(DriverActionOutput::unverified(DeliveryMode::Background))
+    }
+
     async fn dispatch_input_action(
         &self,
         pid: i32,
@@ -441,10 +771,21 @@ impl MacosDriver {
                 point,
                 button,
                 count,
+                delivery,
             } => InputAction::Click {
                 point,
                 button,
                 count,
+                background: delivery == DeliveryPreference::Background,
+            },
+            DriverAction::PressPoint {
+                point,
+                button,
+                duration_ms,
+            } => InputAction::Press {
+                point,
+                button,
+                duration_ms,
             },
             DriverAction::MovePointer { point, duration_ms } => {
                 InputAction::Move { point, duration_ms }

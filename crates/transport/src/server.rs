@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use nexus_cua_protocol::{ErrorCode, RequestEnvelope, RequestId, ResponseEnvelope};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::dispatcher::{failure, public_error};
@@ -42,13 +42,45 @@ pub async fn serve_until<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    serve_until_inner(dispatcher, config, None, shutdown).await
+}
+
+/// Serves until shutdown and signals only after the private endpoint is bound
+/// and its owner-only access policy has been applied.
+///
+/// # Errors
+///
+/// Returns an error when configuration is invalid or the private local
+/// endpoint cannot be created or accepted. The ready channel closes without a
+/// value if startup fails before the endpoint is safe to connect.
+pub async fn serve_until_ready<F>(
+    dispatcher: Arc<Dispatcher>,
+    config: ServerConfig,
+    ready: oneshot::Sender<()>,
+    shutdown: F,
+) -> Result<(), TransportError>
+where
+    F: Future<Output = ()> + Send,
+{
+    serve_until_inner(dispatcher, config, Some(ready), shutdown).await
+}
+
+async fn serve_until_inner<F>(
+    dispatcher: Arc<Dispatcher>,
+    config: ServerConfig,
+    ready: Option<oneshot::Sender<()>>,
+    shutdown: F,
+) -> Result<(), TransportError>
+where
+    F: Future<Output = ()> + Send,
+{
     config.validate()?;
 
     #[cfg(unix)]
-    return serve_unix(dispatcher, config, shutdown).await;
+    return serve_unix(dispatcher, config, ready, shutdown).await;
 
     #[cfg(windows)]
-    return serve_windows(dispatcher, config, shutdown).await;
+    return serve_windows(dispatcher, config, ready, shutdown).await;
 
     #[cfg(not(any(unix, windows)))]
     Err(TransportError::InvalidConfiguration(
@@ -96,6 +128,7 @@ fn malformed_response() -> ResponseEnvelope {
 async fn serve_unix<F>(
     dispatcher: Arc<Dispatcher>,
     config: ServerConfig,
+    ready: Option<oneshot::Sender<()>>,
     shutdown: F,
 ) -> Result<(), TransportError>
 where
@@ -117,6 +150,9 @@ where
     let _guard = UnixSocketGuard(path.to_path_buf());
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     info!(endpoint = %config.endpoint, "local Computer Use service ready");
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -148,6 +184,7 @@ where
 async fn serve_windows<F>(
     dispatcher: Arc<Dispatcher>,
     config: ServerConfig,
+    ready: Option<oneshot::Sender<()>>,
     shutdown: F,
 ) -> Result<(), TransportError>
 where
@@ -160,6 +197,9 @@ where
     let mut security = PipeSecurity::owner_only()?;
     let mut server = security.create_pipe(config.endpoint.as_str(), first, MAX_CONNECTIONS + 1)?;
     info!(endpoint = %config.endpoint, "local Computer Use service ready");
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     tokio::pin!(shutdown);
     loop {
         tokio::select! {

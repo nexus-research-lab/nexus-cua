@@ -27,6 +27,8 @@ pub enum ErrorCode {
     ReferenceNotFound,
     /// Observation expired, was invalidated, or no longer matches platform state.
     StaleObservation,
+    /// Clipboard contents changed after the supplied guard was issued.
+    StaleClipboard,
     /// Required operating-system permission is missing.
     PermissionRequired,
     /// Driver cannot perform the operation on this platform or target.

@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::DiscoveryRef;
+use crate::{DeliveryMode, DiscoveryRef, LaunchRef};
 
 /// Best-effort executable signature state reported by a native driver.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
@@ -76,4 +76,52 @@ pub struct DiscoverApplicationsOutput {
     pub applications: Vec<DiscoveredApplication>,
     /// False when the configured discovery result bound truncated the snapshot.
     pub complete: bool,
+}
+
+/// One installed application selected from bounded native discovery.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchableApplication {
+    /// Short-lived, single-use runtime reference. It is not a filesystem path.
+    pub launch_ref: LaunchRef,
+    /// Human-readable installed application name.
+    pub name: String,
+    /// Stable bundle, package, or executable identity used for policy review.
+    pub application_id: String,
+    /// Non-authoritative provenance summary captured during discovery.
+    pub provenance: ApplicationProvenance,
+    /// RFC 3339 deadline after which the application must be rediscovered.
+    pub expires_at: String,
+}
+
+/// Bounded result of trusted-host installed-application discovery.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoverLaunchableApplicationsOutput {
+    /// Runtime-issued descriptors ordered by stable application identity.
+    pub applications: Vec<LaunchableApplication>,
+    /// False when the configured discovery result bound truncated the snapshot.
+    pub complete: bool,
+}
+
+/// Explicit host authority for one cold application launch.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchApplicationInput {
+    /// Fresh opaque identity from installed-application discovery.
+    pub launch_ref: LaunchRef,
+    /// Whether the launched application may become the foreground owner.
+    pub allow_foreground_activation: bool,
+}
+
+/// Successful cold-launch result and fresh running-generation reference.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplicationLaunchOutput {
+    /// Newly launched exact process generation, usable to open a bounded session.
+    pub application: DiscoveredApplication,
+    /// Native route observed for the launch.
+    pub delivery_mode: DeliveryMode,
+    /// Whether the platform reported successful dispatch and generation discovery.
+    pub dispatched: bool,
 }

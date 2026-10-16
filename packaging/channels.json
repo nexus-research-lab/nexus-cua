@@ -1,0 +1,36 @@
+{
+  "contract": "nexus.cua.distribution-channels.v1",
+  "npm": {
+    "meta_package": "nexus-cua",
+    "platforms": {
+      "darwin-arm64": {
+        "package": "@nexus-research-lab/nexus-cua-darwin-arm64",
+        "os": "darwin",
+        "cpu": "arm64",
+        "runtime": "bin/nexuscua",
+        "archive_platform": "macos-universal",
+        "manifest_platform": "macos",
+        "manifest_architecture": "universal2",
+        "acceptance_architecture": "aarch64"
+      },
+      "win32-x64": {
+        "package": "@nexus-research-lab/nexus-cua-win32-x64",
+        "os": "win32",
+        "cpu": "x64",
+        "runtime": "bin/nexuscua.exe",
+        "archive_platform": "windows-x86_64",
+        "manifest_platform": "windows",
+        "manifest_architecture": "x86_64",
+        "acceptance_architecture": "x86_64"
+      }
+    }
+  },
+  "homebrew": {
+    "formula": "nexus-cua",
+    "class": "NexusCua"
+  },
+  "winget": {
+    "package_identifier": "NexusResearchLab.NexusCUA",
+    "manifest_version": "1.10.0"
+  }
+}

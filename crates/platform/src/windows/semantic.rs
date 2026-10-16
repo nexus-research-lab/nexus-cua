@@ -7,7 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nexus_cua_protocol::{
-    AccessibilityMode, ObservationTruncation, ScreenRect, SensitiveText, TruncationReason,
+    AccessibilityMode, AccessibilityRangeValue, ObservationTruncation, ScreenRect, SensitiveText,
+    TruncationReason,
 };
 use nexus_cua_runtime::{DriverElement, DriverError, DriverErrorKind};
 use sha2::{Digest, Sha256};
@@ -17,28 +18,30 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 use windows::Win32::UI::Accessibility::{
-    AutomationElementMode_Full, CUIAutomation8, IUIAutomation, IUIAutomation2,
-    IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationElementArray,
-    IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern,
+    AutomationElementMode_Full, CUIAutomation8, ExpandCollapseState_Collapsed,
+    ExpandCollapseState_Expanded, ExpandCollapseState_PartiallyExpanded, IUIAutomation,
+    IUIAutomation2, IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationElementArray,
+    IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern, IUIAutomationRangeValuePattern,
     IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern, IUIAutomationValuePattern,
-    TreeScope_Element, TreeScope_Subtree, UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId,
-    UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_ControlTypePropertyId,
-    UIA_CustomControlTypeId, UIA_DataGridControlTypeId, UIA_DataItemControlTypeId,
-    UIA_DocumentControlTypeId, UIA_E_TIMEOUT, UIA_EditControlTypeId, UIA_ExpandCollapsePatternId,
-    UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId, UIA_HeaderControlTypeId,
-    UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
-    UIA_InvokePatternId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
-    UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId, UIA_ListControlTypeId,
-    UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId, UIA_MenuControlTypeId,
-    UIA_MenuItemControlTypeId, UIA_NamePropertyId, UIA_PaneControlTypeId,
-    UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId,
-    UIA_SelectionItemPatternId, UIA_SemanticZoomControlTypeId, UIA_SeparatorControlTypeId,
-    UIA_SliderControlTypeId, UIA_SpinnerControlTypeId, UIA_SplitButtonControlTypeId,
-    UIA_StatusBarControlTypeId, UIA_TabControlTypeId, UIA_TabItemControlTypeId,
-    UIA_TableControlTypeId, UIA_TextControlTypeId, UIA_ThumbControlTypeId,
-    UIA_TitleBarControlTypeId, UIA_TogglePatternId, UIA_ToolBarControlTypeId,
-    UIA_ToolTipControlTypeId, UIA_TreeControlTypeId, UIA_TreeItemControlTypeId, UIA_ValuePatternId,
-    UIA_ValueValuePropertyId, UIA_WindowControlTypeId,
+    ToggleState_Off, ToggleState_On, TreeScope_Element, TreeScope_Subtree,
+    UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
+    UIA_ComboBoxControlTypeId, UIA_ControlTypePropertyId, UIA_CustomControlTypeId,
+    UIA_DataGridControlTypeId, UIA_DataItemControlTypeId, UIA_DocumentControlTypeId, UIA_E_TIMEOUT,
+    UIA_EditControlTypeId, UIA_ExpandCollapsePatternId, UIA_GroupControlTypeId,
+    UIA_HasKeyboardFocusPropertyId, UIA_HeaderControlTypeId, UIA_HeaderItemControlTypeId,
+    UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId, UIA_InvokePatternId,
+    UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
+    UIA_IsPasswordPropertyId, UIA_ListControlTypeId, UIA_ListItemControlTypeId,
+    UIA_MenuBarControlTypeId, UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_NamePropertyId,
+    UIA_PaneControlTypeId, UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId,
+    UIA_RangeValuePatternId, UIA_ScrollBarControlTypeId, UIA_SelectionItemPatternId,
+    UIA_SemanticZoomControlTypeId, UIA_SeparatorControlTypeId, UIA_SliderControlTypeId,
+    UIA_SpinnerControlTypeId, UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId,
+    UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId,
+    UIA_ThumbControlTypeId, UIA_TitleBarControlTypeId, UIA_TogglePatternId,
+    UIA_ToolBarControlTypeId, UIA_ToolTipControlTypeId, UIA_TreeControlTypeId,
+    UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_ValueValuePropertyId,
+    UIA_WindowControlTypeId,
 };
 use windows::core::{BOOL, BSTR, Interface};
 
@@ -62,6 +65,7 @@ pub(super) enum SemanticAction {
     Focus,
     Invoke,
     SetValue(SensitiveText),
+    SetRangeValue(f64),
     Toggle,
     Select,
     SetExpanded(bool),
@@ -167,7 +171,11 @@ struct NodeValues {
     role: String,
     name: String,
     value: Option<String>,
+    range_value: Option<AccessibilityRangeValue>,
     state: NodeState,
+    selected: Option<bool>,
+    checked: Option<bool>,
+    expanded: Option<bool>,
     bounds: Option<ScreenRect>,
 }
 
@@ -307,7 +315,7 @@ impl SemanticState {
                 truncation = Some(TruncationReason::ProviderFailure);
                 break;
             };
-            let actions = normalized_actions(&values.role);
+            let actions = normalized_actions(&values.role, values.range_value);
             let emit = mode == AccessibilityMode::Full
                 || !actions.is_empty()
                 || values.state.focusable()
@@ -330,9 +338,13 @@ impl SemanticState {
                     role: values.role,
                     name: values.name,
                     value: values.value,
+                    range_value: values.range_value,
                     screen_bounds: values.bounds,
                     enabled: values.state.enabled(),
                     focused: values.state.focused(),
+                    selected: values.selected,
+                    checked: values.checked,
+                    expanded: values.expanded,
                     actions,
                 });
                 stored.insert(
@@ -398,6 +410,11 @@ impl SemanticState {
                     .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
                     .map_err(|_| stale_element().mutation_not_dispatched())?
                     .SetValue(&BSTR::from(value.expose()))
+                    .map_err(|error| action_error(&error)),
+                SemanticAction::SetRangeValue(value) => current
+                    .GetCurrentPatternAs::<IUIAutomationRangeValuePattern>(UIA_RangeValuePatternId)
+                    .map_err(|_| stale_element().mutation_not_dispatched())?
+                    .SetValue(value)
                     .map_err(|error| action_error(&error)),
                 SemanticAction::Toggle => current
                     .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
@@ -476,6 +493,16 @@ unsafe fn cache_request(
                 .AddProperty(property)
                 .map_err(|_| provider_failure("failed to add UIA cached property"))?;
         }
+        for pattern in [
+            UIA_RangeValuePatternId,
+            UIA_TogglePatternId,
+            UIA_SelectionItemPatternId,
+            UIA_ExpandCollapsePatternId,
+        ] {
+            request
+                .AddPattern(pattern)
+                .map_err(|_| provider_failure("failed to add UIA cached pattern"))?;
+        }
         Ok(request)
     }
 }
@@ -499,16 +526,58 @@ fn cached_values(element: &IUIAutomationElement) -> Result<NodeValues, DriverErr
                 .and_then(|value| BSTR::try_from(&value).ok())
                 .map(|value| bounded_string(value.to_string()))
         };
+        let range_value = element
+            .GetCachedPatternAs::<IUIAutomationRangeValuePattern>(UIA_RangeValuePatternId)
+            .ok()
+            .and_then(|pattern| cached_range_value(&pattern));
+        let value = value.or_else(|| range_value.map(|range| range.value.to_string()));
+        let selected = element
+            .GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
+            .ok()
+            .and_then(|pattern| pattern.CachedIsSelected().ok())
+            .map(BOOL::as_bool);
+        let checked = element
+            .GetCachedPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+            .ok()
+            .and_then(|pattern| pattern.CachedToggleState().ok())
+            .and_then(|state| {
+                if state == ToggleState_On {
+                    Some(true)
+                } else if state == ToggleState_Off {
+                    Some(false)
+                } else {
+                    None
+                }
+            });
+        let expanded = element
+            .GetCachedPatternAs::<IUIAutomationExpandCollapsePattern>(UIA_ExpandCollapsePatternId)
+            .ok()
+            .and_then(|pattern| pattern.CachedExpandCollapseState().ok())
+            .and_then(|state| {
+                if state == ExpandCollapseState_Expanded
+                    || state == ExpandCollapseState_PartiallyExpanded
+                {
+                    Some(true)
+                } else if state == ExpandCollapseState_Collapsed {
+                    Some(false)
+                } else {
+                    None
+                }
+            });
         Ok(NodeValues {
             role: normalize_control_type(control_type),
             name: bounded_string(name),
             value,
+            range_value,
             state: NodeState::from_flags([
                 element.CachedIsEnabled().map_or(true, BOOL::as_bool),
                 element.CachedHasKeyboardFocus().is_ok_and(BOOL::as_bool),
                 element.CachedIsKeyboardFocusable().is_ok_and(BOOL::as_bool),
                 element.CachedIsOffscreen().is_ok_and(BOOL::as_bool),
             ]),
+            selected,
+            checked,
+            expanded,
             bounds: screen_rect(rectangle),
         })
     }
@@ -655,7 +724,41 @@ fn normalize_control_type(
     role.to_owned()
 }
 
-fn normalized_actions(role: &str) -> Vec<String> {
+fn cached_range_value(pattern: &IUIAutomationRangeValuePattern) -> Option<AccessibilityRangeValue> {
+    // SAFETY: The pattern was materialized in the immutable cache owned by
+    // this MTA actor; all reads below are cache-only accessors.
+    unsafe {
+        let value = pattern.CachedValue().ok()?;
+        let minimum = pattern.CachedMinimum().ok()?;
+        let maximum = pattern.CachedMaximum().ok()?;
+        if !value.is_finite()
+            || !minimum.is_finite()
+            || !maximum.is_finite()
+            || minimum > maximum
+            || value < minimum
+            || value > maximum
+        {
+            return None;
+        }
+        Some(AccessibilityRangeValue {
+            value,
+            minimum,
+            maximum,
+            small_change: finite_positive(pattern.CachedSmallChange().ok()),
+            large_change: finite_positive(pattern.CachedLargeChange().ok()),
+            read_only: pattern.CachedIsReadOnly().map_or(true, BOOL::as_bool),
+        })
+    }
+}
+
+fn finite_positive(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn normalized_actions(role: &str, range_value: Option<AccessibilityRangeValue>) -> Vec<String> {
+    if range_value.is_some_and(|range| !range.read_only) {
+        return vec!["focus".to_owned(), "set_range_value".to_owned()];
+    }
     match role {
         "button" | "link" | "menuitem" | "splitbutton" => vec!["invoke".to_owned()],
         "checkbox" => vec!["toggle".to_owned()],
@@ -676,6 +779,12 @@ fn element_signature(values: &NodeValues) -> [u8; 32] {
     if let Some(value) = &values.value {
         digest.update([0]);
         digest.update(value.as_bytes());
+    }
+    if let Some(range) = values.range_value {
+        digest.update(range.value.to_bits().to_be_bytes());
+        digest.update(range.minimum.to_bits().to_be_bytes());
+        digest.update(range.maximum.to_bits().to_be_bytes());
+        digest.update([u8::from(range.read_only)]);
     }
     // Keyboard focus can move between cache construction and pattern dispatch
     // without changing the target element. Keep stable enabled/focusable/
