@@ -94,10 +94,21 @@ def select_application(
 def select_window(
     windows: Iterable[WindowSummary], selector: str
 ) -> WindowSummary:
-    """Select one top-level window without relying on platform ordering."""
+    """Select one top-level window by ref or title without relying on ordering."""
     if not selector.strip():
         raise ValueError("window selector is required")
     candidates = tuple(windows)
+    exact_ref = tuple(
+        window
+        for window in candidates
+        if str(getattr(window, "window_ref", "")) == selector
+    )
+    if len(exact_ref) == 1:
+        return exact_ref[0]
+    if len(exact_ref) > 1:
+        raise ValueError(
+            f"window ref {selector!r} has {len(exact_ref)} matches"
+        )
     exact = tuple(window for window in candidates if window.title == selector)
     if len(exact) == 1:
         return exact[0]
@@ -114,7 +125,7 @@ def select_window(
         )
     raise ValueError(
         f"window selector {selector!r} is ambiguous across {len(partial)} "
-        "matches; use an exact title"
+        "matches; use an exact window_ref or title"
     )
 
 

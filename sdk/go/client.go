@@ -124,12 +124,25 @@ func SelectApplication(applications []DiscoveredApplication, selector string) (*
 	return nil, fmt.Errorf("nexus-cua: application selector %q is ambiguous across %d matches; use an exact name or stable application ID", selector, len(partial))
 }
 
-// SelectWindow resolves a trusted-host title selector without relying on the
-// platform's window ordering. Exact titles take precedence; a substring must
-// identify exactly one top-level window.
+// SelectWindow resolves a trusted-host window reference or title without
+// relying on the platform's window ordering. Exact window references take
+// precedence, followed by exact titles; a title substring must identify
+// exactly one top-level window.
 func SelectWindow(windows []WindowSummary, selector string) (*WindowSummary, error) {
 	if strings.TrimSpace(selector) == "" {
 		return nil, errors.New("nexus-cua: window selector is required")
+	}
+	exactRef := make([]int, 0, 1)
+	for index := range windows {
+		if string(windows[index].WindowRef) == selector {
+			exactRef = append(exactRef, index)
+		}
+	}
+	if len(exactRef) == 1 {
+		return &windows[exactRef[0]], nil
+	}
+	if len(exactRef) > 1 {
+		return nil, fmt.Errorf("nexus-cua: window ref %q has %d matches", selector, len(exactRef))
 	}
 	exact := make([]int, 0, 1)
 	for index := range windows {
@@ -155,7 +168,7 @@ func SelectWindow(windows []WindowSummary, selector string) (*WindowSummary, err
 	if len(partial) == 0 {
 		return nil, fmt.Errorf("nexus-cua: window selector %q did not match the selected application", selector)
 	}
-	return nil, fmt.Errorf("nexus-cua: window selector %q is ambiguous across %d matches; use an exact title", selector, len(partial))
+	return nil, fmt.Errorf("nexus-cua: window selector %q is ambiguous across %d matches; use an exact window_ref or title", selector, len(partial))
 }
 
 func (client *Client) OpenSession(ctx context.Context, input OpenSessionInput, timeout time.Duration) (OpenSessionOutput, error) {

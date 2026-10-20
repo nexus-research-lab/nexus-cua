@@ -254,7 +254,11 @@ test("selectors prefer exact matches and reject ambiguous substrings", () => {
   ];
   assert.equal(selectApplication(applications, "Fixture").application_id, "dev.example.fixture");
   assert.throws(() => selectApplication(applications, "example"), /ambiguous/);
-  const windows = [{ title: "Fixture Help" }, { title: "Fixture" }];
+  const windows = [
+    { window_ref: "window_help", title: "Fixture Help" },
+    { window_ref: "window_fixture", title: "Fixture" },
+  ];
+  assert.equal(selectWindow(windows, "window_fixture").title, "Fixture");
   assert.equal(selectWindow(windows, "Fixture").title, "Fixture");
   assert.throws(() => selectWindow(windows, "Fixt"), /ambiguous/);
 });

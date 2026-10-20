@@ -191,10 +191,14 @@ class ClientTests(unittest.TestCase):
 
     def test_window_selection_does_not_depend_on_platform_ordering(self) -> None:
         windows = (
-            SimpleNamespace(title=""),
-            SimpleNamespace(title="Fixture · Generation 1"),
-            SimpleNamespace(title="Fixture Help"),
+            SimpleNamespace(window_ref="window_helper", title=""),
+            SimpleNamespace(
+                window_ref="window_fixture", title="Fixture · Generation 1"
+            ),
+            SimpleNamespace(window_ref="window_help", title="Fixture Help"),
         )
+        selected = nexus_cua.select_window(windows, "window_fixture")
+        self.assertEqual(selected.title, "Fixture · Generation 1")
         selected = nexus_cua.select_window(windows, "Generation 1")
         self.assertEqual(selected.title, "Fixture · Generation 1")
         with self.assertRaises(ValueError):

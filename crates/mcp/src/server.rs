@@ -302,10 +302,24 @@ impl NexusCuaMcp {
                 Some("stop_adapter_and_reauthorize"),
             ));
         }
-        self.runtime
-            .execute(command)
-            .await
-            .map_err(|error| cua_tool_error(&error))
+        match self.runtime.execute(command).await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                // Runtime sessions are finite and may be reaped by TTL or
+                // invalidated by a sidecar/application-generation restart.
+                // Do not keep advertising the dead local session as active;
+                // all its opaque refs are invalid as well.
+                if error.code == nexus_cua_protocol::ErrorCode::SessionUnavailable {
+                    self.invalidate_local_session().await;
+                }
+                Err(cua_tool_error(&error))
+            }
+        }
+    }
+
+    async fn invalidate_local_session(&self) {
+        self.session.lock().await.take();
+        self.image_mappings.lock().await.clear();
     }
 
     async fn execute_mutation(

@@ -241,11 +241,18 @@ func TestSelectApplicationPrefersExactAndRejectsAmbiguity(t *testing.T) {
 
 func TestSelectWindowDoesNotDependOnPlatformOrdering(t *testing.T) {
 	windows := []WindowSummary{
-		{Title: "", Minimized: true},
-		{Title: "Fixture · Generation 1"},
-		{Title: "Fixture Help"},
+		{WindowRef: "window_helper", Title: "", Minimized: true},
+		{WindowRef: "window_fixture", Title: "Fixture · Generation 1"},
+		{WindowRef: "window_help", Title: "Fixture Help"},
 	}
-	selected, err := SelectWindow(windows, "Generation 1")
+	selected, err := SelectWindow(windows, "window_fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Title != "Fixture · Generation 1" {
+		t.Fatalf("selected by ref %q, want fixture window", selected.Title)
+	}
+	selected, err = SelectWindow(windows, "Generation 1")
 	if err != nil {
 		t.Fatal(err)
 	}

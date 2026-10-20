@@ -17,6 +17,12 @@ file.
 
 ### Changed
 
+- SDK window selectors now accept the opaque `window_ref` returned by
+  `list_windows` before falling back to exact or unique title matches.
+
+- MCP adapters now clear expired or reaped runtime sessions from their local
+  active-session state, so status cannot report a dead session as active.
+
 - The current execution snapshot is macOS Apple Silicon first. Windows x64
   implementation and platform evidence remain in the global M0–M6 contract
   and are assigned to a separate continuation.

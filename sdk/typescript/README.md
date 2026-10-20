@@ -29,6 +29,9 @@ string formatting and object inspection remain redacted. Screenshots are
 private transient files described by the protocol; the host must consume them
 under its own policy and never log their content or path.
 
+`selectWindow` accepts the opaque `window_ref` returned by `listWindows` before
+falling back to exact or unique title matches.
+
 Clipboard access has independent read/write authority. `readClipboard` returns
 a redacted value plus a fresh opaque guard; `writeClipboard` consumes that guard
 for a bounded compare-and-replace operation and never accepts a plain string.

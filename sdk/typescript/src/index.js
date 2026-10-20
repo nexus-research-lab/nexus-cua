@@ -399,13 +399,16 @@ export function selectApplication(applications, selector) {
 
 export function selectWindow(windows, selector) {
   requiredString(selector, "selector");
+  const exactRef = windows.filter((window) => window.window_ref === selector);
+  if (exactRef.length === 1) return exactRef[0];
+  if (exactRef.length > 1) throw new Error(`window ref ${JSON.stringify(selector)} has ${exactRef.length} matches`);
   const exact = windows.filter((window) => window.title === selector);
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) throw new Error(`window selector ${JSON.stringify(selector)} has ${exact.length} exact matches`);
   const partial = windows.filter((window) => window.title.includes(selector));
   if (partial.length === 1) return partial[0];
   if (partial.length === 0) throw new Error(`window selector ${JSON.stringify(selector)} did not match discovery`);
-  throw new Error(`window selector ${JSON.stringify(selector)} is ambiguous across ${partial.length} matches`);
+  throw new Error(`window selector ${JSON.stringify(selector)} is ambiguous across ${partial.length} matches; use an exact window_ref or title`);
 }
 
 function readPrivateToken(path) {
