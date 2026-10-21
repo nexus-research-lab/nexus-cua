@@ -256,6 +256,9 @@ jobs:
 
   windows:
     name: Maintained Windows 11 x64
+    # Windows x64 is not supported yet; set the repository variable
+    # NEXUS_CUA_WINDOWS_ENABLED=true once a maintained Windows runner exists.
+    if: ${{ vars.NEXUS_CUA_WINDOWS_ENABLED == 'true' }}
     runs-on: [self-hosted, nexus-cua, windows, x64]
     timeout-minutes: 720
     steps:

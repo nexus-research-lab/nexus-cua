@@ -26,6 +26,9 @@ file.
 - Added the manual `macOS signing preflight` workflow. It imports the Developer
   ID certificate, checks the configured identity and team, signs and verifies a
   throwaway binary, and authenticates notary credentials without publishing.
+- Windows x64 native evidence and candidate signing jobs are disabled until a
+  maintained Windows runner exists; set the repository variable
+  `NEXUS_CUA_WINDOWS_ENABLED=true` to re-enable them.
 
 - SDK window selectors now accept the opaque `window_ref` returned by
   `list_windows` before falling back to exact or unique title matches.

@@ -69,10 +69,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --name nexus-cua-macos-native-evidence \
             --dir evidence/macos
-          gh run download "$NATIVE_EVIDENCE_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name nexus-cua-windows-native-evidence \
-            --dir evidence/windows
       - name: Reject incomplete, stale, or rebuilt evidence
         shell: bash
         run: |
@@ -85,6 +81,18 @@ jobs:
             --architecture aarch64 \
             --required-class "$REQUIRED_EVIDENCE_CLASS" \
             --runner-manifest benchmarks/runners/macos-apple-silicon.json
+      - name: Bind Windows x64 evidence
+        # Windows x64 is not supported yet; see NEXUS_CUA_WINDOWS_ENABLED.
+        if: ${{ vars.NEXUS_CUA_WINDOWS_ENABLED == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "$NATIVE_EVIDENCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name nexus-cua-windows-native-evidence \
+            --dir evidence/windows
           python scripts/release_candidate.py validate-evidence \
             --evidence evidence/windows/summary.json \
             --runtime evidence/windows/tested-runtime/nexuscua.exe \
@@ -278,6 +286,8 @@ jobs:
   windows:
     name: Sign Windows x64 candidate
     needs: evidence
+    # Windows x64 is not supported yet; see NEXUS_CUA_WINDOWS_ENABLED.
+    if: ${{ vars.NEXUS_CUA_WINDOWS_ENABLED == 'true' }}
     runs-on: windows-2022
     permissions:
       contents: read
