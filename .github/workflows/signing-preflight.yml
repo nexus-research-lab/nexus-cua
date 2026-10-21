@@ -1,0 +1,133 @@
+name: macOS signing preflight (no publish)
+
+# Proves the configured Developer ID and notarization secrets are usable
+# without building, signing, or submitting any nexus-cua payload.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Verify Developer ID and notary credentials
+    runs-on: macos-14
+    timeout-minutes: 15
+    env:
+      MACOS_DEVELOPER_ID_APPLICATION: ${{ vars.MACOS_DEVELOPER_ID_APPLICATION || secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+      APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+    steps:
+      - name: Require signing and notary secrets
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for variable in \
+            MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 \
+            MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD \
+            MACOS_DEVELOPER_ID_APPLICATION \
+            APPLE_NOTARY_APPLE_ID \
+            APPLE_NOTARY_TEAM_ID \
+            APPLE_NOTARY_PASSWORD; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error::$variable is not configured"
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - name: Import Developer ID identity
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/nexus-cua-preflight.keychain-db"
+          certificate="$RUNNER_TEMP/nexus-cua-preflight.p12"
+          keychain_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$keychain_password"
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          printf '%s' "$MACOS_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          if ! security import "$certificate" -k "$keychain" \
+            -P "$MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD" -T /usr/bin/codesign; then
+            echo "::error::Certificate import failed; check the .p12 base64 and its password"
+            exit 1
+          fi
+          rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain"
+      - name: Match configured signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          identities="$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN")"
+          echo "$identities" | sed -E 's/[0-9A-F]{40}/<sha1>/'
+          if ! grep -Fq "\"$MACOS_DEVELOPER_ID_APPLICATION\"" <<<"$identities"; then
+            echo "::error::MACOS_DEVELOPER_ID_APPLICATION does not name a valid identity in the imported certificate"
+            exit 1
+          fi
+          if [[ "$MACOS_DEVELOPER_ID_APPLICATION" != "Developer ID Application:"* ]]; then
+            echo "::error::MACOS_DEVELOPER_ID_APPLICATION is not a Developer ID Application identity"
+            exit 1
+          fi
+          if [[ "$MACOS_DEVELOPER_ID_APPLICATION" != *"($APPLE_NOTARY_TEAM_ID)" ]]; then
+            echo "::error::Signing identity team does not match APPLE_NOTARY_TEAM_ID"
+            exit 1
+          fi
+      - name: Sign and verify a throwaway binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          workdir="$RUNNER_TEMP/preflight"
+          mkdir -p "$workdir"
+          printf 'int main(void) { return 0; }\n' > "$workdir/main.c"
+          clang -arch arm64 -arch x86_64 -o "$workdir/nexuscua-preflight" "$workdir/main.c"
+          codesign --force --options runtime --timestamp \
+            --identifier io.nexus.cua.signing-preflight \
+            --sign "$MACOS_DEVELOPER_ID_APPLICATION" \
+            "$workdir/nexuscua-preflight"
+          codesign --verify --strict --verbose=2 "$workdir/nexuscua-preflight"
+          details="$(codesign -dvv "$workdir/nexuscua-preflight" 2>&1)"
+          grep -E '^(Authority|TeamIdentifier|Timestamp|Runtime Version)' <<<"$details"
+          grep -Fq "TeamIdentifier=$APPLE_NOTARY_TEAM_ID" <<<"$details" || {
+            echo "::error::Signed binary TeamIdentifier does not match APPLE_NOTARY_TEAM_ID"
+            exit 1
+          }
+          "$workdir/nexuscua-preflight"
+      - name: Authenticate notary credentials
+        shell: bash
+        env:
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if ! xcrun notarytool history \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" \
+            --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" \
+            --output-format json > "$RUNNER_TEMP/notary-history.json"; then
+            echo "::error::notarytool rejected the Apple ID, team ID, or app-specific password"
+            exit 1
+          fi
+          python3 - "$RUNNER_TEMP/notary-history.json" <<'PY'
+          import json
+          import sys
+          history = json.load(open(sys.argv[1]))
+          print(f"notary credentials accepted; {len(history.get('history', []))} prior submissions visible")
+          PY
+      - name: Remove temporary keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi

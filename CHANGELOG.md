@@ -23,6 +23,9 @@ file.
   `APPLE_NOTARY_APPLE_ID`, `APPLE_NOTARY_TEAM_ID`, `APPLE_NOTARY_PASSWORD`) and
   generates its temporary keychain password per run instead of requiring a
   secret.
+- Added the manual `macOS signing preflight` workflow. It imports the Developer
+  ID certificate, checks the configured identity and team, signs and verifies a
+  throwaway binary, and authenticates notary credentials without publishing.
 
 - SDK window selectors now accept the opaque `window_ref` returned by
   `list_windows` before falling back to exact or unique title matches.
