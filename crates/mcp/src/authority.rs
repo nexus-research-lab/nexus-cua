@@ -553,6 +553,7 @@ fn validate_file_permissions(metadata: &std::fs::Metadata) -> Result<(), Authori
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn validate_file_permissions(_metadata: &std::fs::Metadata) -> Result<(), AuthorityError> {
     Ok(())
 }

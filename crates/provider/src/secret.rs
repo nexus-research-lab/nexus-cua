@@ -48,7 +48,7 @@ impl SystemSecretStore {
         {
             let root = state_root.join("secrets");
             crate::private_fs::secure_directory(&root).map_err(SecretStoreError::Io)?;
-            return Ok(Self { root });
+            Ok(Self { root })
         }
         #[cfg(not(target_os = "windows"))]
         {
