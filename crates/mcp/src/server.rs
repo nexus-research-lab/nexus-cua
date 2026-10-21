@@ -1864,7 +1864,7 @@ impl NexusCuaMcp {
     }
 }
 
-#[allow(clippy::unused_async_trait_impl)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)]
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for NexusCuaMcp {
     fn get_info(&self) -> ServerInfo {
