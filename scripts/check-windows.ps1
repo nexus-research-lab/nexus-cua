@@ -15,7 +15,7 @@ if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) {
 }
 
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$CargoPrefix = if ($RustToolchain) { @("+$RustToolchain") } else { @() }
+[string[]]$CargoPrefix = @(if ($RustToolchain) { "+$RustToolchain" })
 
 function Invoke-External {
     param(
