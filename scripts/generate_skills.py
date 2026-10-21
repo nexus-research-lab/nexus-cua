@@ -18,6 +18,7 @@ MCP_OUTPUT = ROOT / "skills" / "mcp" / "SKILL.md"
 CLI_OUTPUT = ROOT / "skills" / "cli" / "SKILL.md"
 CLI_MCP_OUTPUT = ROOT / "crates" / "cli" / "assets" / "mcp-skill.md"
 CLI_ASSET_OUTPUT = ROOT / "crates" / "cli" / "assets" / "cli-skill.md"
+CLI_CATALOGUE_OUTPUT = ROOT / "crates" / "cli" / "assets" / "catalogue.json"
 MCP_SERVER = ROOT / "crates" / "mcp" / "src" / "server.rs"
 LEAF = re.compile(r"^[a-z][a-z0-9_]*$")
 TOOL_ANNOTATION = re.compile(r'name\s*=\s*"([a-z][a-z0-9_]*)"')
@@ -202,6 +203,7 @@ def main() -> int:
         common = COMMON.read_text(encoding="utf-8")
         rendered_mcp = render_mcp(catalogue, common)
         rendered_cli = render_cli(catalogue, common)
+        catalogue_bytes = CATALOGUE.read_bytes()
         if args.check:
             if (
                 not MCP_OUTPUT.is_file()
@@ -212,8 +214,10 @@ def main() -> int:
                 or CLI_OUTPUT.read_text(encoding="utf-8") != rendered_cli
                 or not CLI_ASSET_OUTPUT.is_file()
                 or CLI_ASSET_OUTPUT.read_text(encoding="utf-8") != rendered_cli
+                or not CLI_CATALOGUE_OUTPUT.is_file()
+                or CLI_CATALOGUE_OUTPUT.read_bytes() != catalogue_bytes
             ):
-                raise ValueError("generated MCP/CLI Skill is missing or stale")
+                raise ValueError("generated MCP/CLI Skill or CLI catalogue is missing or stale")
         else:
             MCP_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
             MCP_OUTPUT.write_text(rendered_mcp, encoding="utf-8")
@@ -223,6 +227,7 @@ def main() -> int:
             CLI_OUTPUT.write_text(rendered_cli, encoding="utf-8")
             CLI_ASSET_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
             CLI_ASSET_OUTPUT.write_text(rendered_cli, encoding="utf-8")
+            CLI_CATALOGUE_OUTPUT.write_bytes(catalogue_bytes)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"skill generation failed: {error}", file=sys.stderr)
         return 1

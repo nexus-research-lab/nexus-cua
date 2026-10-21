@@ -195,6 +195,9 @@ file.
 
 ### Fixed
 
+- The packaged `nexus-cua` CLI crate now embeds its own copy of the Skill
+  catalogue, and `make package-verify` covers `nexus-cua-provider`, so the
+  published crate graph builds outside the repository checkout.
 - MCP screenshot responses no longer expose runtime-local artifact paths. The
   adapter now atomically verifies and consumes each PNG from disk, retains only
   a 32 MiB aggregate-bounded in-memory cache for normalized actions and zoom,

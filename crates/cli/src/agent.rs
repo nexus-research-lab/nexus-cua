@@ -9,7 +9,7 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 const MAX_INPUT_BYTES: u64 = 256 * 1024;
-const CATALOGUE: &[u8] = include_bytes!("../../../skills/catalogue.json");
+const CATALOGUE: &[u8] = include_bytes!("../assets/catalogue.json");
 
 #[derive(Debug, Error)]
 pub(crate) enum AgentError {

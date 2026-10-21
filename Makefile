@@ -16,6 +16,7 @@ PLATFORM_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-platform-0.1.0
 TRANSPORT_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-transport-0.1.0
 CLI_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-0.1.0
 MCP_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-mcp-0.1.0
+PROVIDER_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-provider-0.1.0
 NATIVE_HARNESS_MANIFEST := tools/native-harness/Cargo.toml
 NATIVE_ENDPOINT ?=
 NATIVE_TOKEN_FILE ?=
@@ -82,13 +83,14 @@ package: ## Build publishable crate source archives
 
 package-verify: package ## Compile each archive against this workspace's packaged dependencies
 	rm -rf "$(PROTOCOL_PACKAGE)" "$(RUNTIME_PACKAGE)" "$(PLATFORM_PACKAGE)" \
-		"$(TRANSPORT_PACKAGE)" "$(CLI_PACKAGE)" "$(MCP_PACKAGE)"
+		"$(TRANSPORT_PACKAGE)" "$(CLI_PACKAGE)" "$(MCP_PACKAGE)" "$(PROVIDER_PACKAGE)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-protocol-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-runtime-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-platform-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-transport-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-mcp-0.1.0.crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-provider-0.1.0.crate" -C "$(PACKAGE_ROOT)"
 	cp Cargo.lock "$(PROTOCOL_PACKAGE)/Cargo.lock"
 	$(CARGO) check --manifest-path "$(PROTOCOL_PACKAGE)/Cargo.toml" --offline
 	$(CARGO) check --manifest-path "$(PROTOCOL_PACKAGE)/Cargo.toml" --locked --offline
@@ -122,15 +124,30 @@ package-verify: package ## Compile each archive against this workspace's package
 		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
+	cp Cargo.lock "$(PROVIDER_PACKAGE)/Cargo.lock"
+	$(CARGO) check --manifest-path "$(PROVIDER_PACKAGE)/Cargo.toml" --offline \
+		--config 'patch.crates-io.nexus-cua-mcp.path="$(MCP_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
+	$(CARGO) check --manifest-path "$(PROVIDER_PACKAGE)/Cargo.toml" --locked --offline \
+		--config 'patch.crates-io.nexus-cua-mcp.path="$(MCP_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
 	cp Cargo.lock "$(CLI_PACKAGE)/Cargo.lock"
 	$(CARGO) check --manifest-path "$(CLI_PACKAGE)/Cargo.toml" --offline \
 		--config 'patch.crates-io.nexus-cua-mcp.path="$(MCP_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-provider.path="$(PROVIDER_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-transport.path="$(TRANSPORT_PACKAGE)"'
 	$(CARGO) check --manifest-path "$(CLI_PACKAGE)/Cargo.toml" --locked --offline \
 		--config 'patch.crates-io.nexus-cua-mcp.path="$(MCP_PACKAGE)"' \
+		--config 'patch.crates-io.nexus-cua-provider.path="$(PROVIDER_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-platform.path="$(PLATFORM_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-protocol.path="$(PROTOCOL_PACKAGE)"' \
 		--config 'patch.crates-io.nexus-cua-runtime.path="$(RUNTIME_PACKAGE)"' \

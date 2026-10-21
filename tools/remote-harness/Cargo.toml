@@ -14,8 +14,8 @@ async-trait.workspace = true
 base64.workspace = true
 clap.workspace = true
 hex.workspace = true
-nexus-cua-host = { path = "../../crates/host" }
-nexus-cua-protocol = { path = "../../crates/protocol" }
+nexus-cua-host = { version = "0.1.0", path = "../../crates/host" }
+nexus-cua-protocol = { version = "0.1.0", path = "../../crates/protocol" }
 rcgen.workspace = true
 rustls.workspace = true
 serde.workspace = true
