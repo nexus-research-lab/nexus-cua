@@ -186,7 +186,7 @@ fn parent_executable_path() -> Result<PathBuf, HostIdentityError> {
         TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetCurrentProcessId, OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
         QueryFullProcessImageNameW,
     };
     use windows::core::PWSTR;
@@ -219,7 +219,7 @@ fn parent_executable_path() -> Result<PathBuf, HostIdentityError> {
     let queried = unsafe {
         QueryFullProcessImageNameW(
             process,
-            Default::default(),
+            PROCESS_NAME_FORMAT::default(),
             PWSTR(buffer.as_mut_ptr()),
             &raw mut length,
         )

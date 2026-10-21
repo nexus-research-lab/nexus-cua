@@ -364,7 +364,7 @@ fn read_open_clipboard(max_text_bytes: usize) -> Result<Option<Zeroizing<String>
             let text = String::from_utf16(&copied)
                 .map_err(|_| clipboard_failure("Windows clipboard text is not valid UTF-16"))?;
             let text = Zeroizing::new(text);
-            if text.as_bytes().len() > max_text_bytes {
+            if text.len() > max_text_bytes {
                 return Err(clipboard_failure(
                     "Windows clipboard text exceeds the configured byte bound",
                 ));
