@@ -17,6 +17,13 @@ file.
 
 ### Changed
 
+- The macOS release candidate now reads the same Developer ID and notarization
+  secrets as Nexus (`MACOS_DEVELOPER_ID_CERTIFICATE_BASE64`,
+  `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `MACOS_DEVELOPER_ID_APPLICATION`,
+  `APPLE_NOTARY_APPLE_ID`, `APPLE_NOTARY_TEAM_ID`, `APPLE_NOTARY_PASSWORD`) and
+  generates its temporary keychain password per run instead of requiring a
+  secret.
+
 - SDK window selectors now accept the opaque `window_ref` returned by
   `list_windows` before falling back to exact or unique title matches.
 
