@@ -39,7 +39,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Validate candidate version
@@ -101,7 +101,7 @@ jobs:
             --architecture x86_64 \
             --required-class "$REQUIRED_EVIDENCE_CLASS" \
             --runner-manifest benchmarks/runners/windows-x64.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unaccepted-legacy-${{ inputs.candidate_kind }}-native-evidence-${{ github.sha }}
           path: evidence
@@ -114,10 +114,10 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unaccepted-legacy-${{ inputs.candidate_kind }}-native-evidence-${{ github.sha }}
           path: evidence
@@ -239,7 +239,7 @@ jobs:
             dist/package/nexuscua doctor --compact
           } > dist/package/smoke-evidence.txt
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: dist/package
           format: spdx-json
@@ -267,7 +267,7 @@ jobs:
           archive="nexus-cua-v${CANDIDATE_VERSION}-macos-universal-${CANDIDATE_KIND}-unaccepted-legacy.tar.gz"
           tar -czf "dist/$archive" -C dist/package .
           (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nexus-cua-v${{ inputs.version }}-macos-universal-${{ inputs.candidate_kind }}-unaccepted-legacy
           path: |
@@ -294,10 +294,10 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unaccepted-legacy-${{ inputs.candidate_kind }}-native-evidence-${{ github.sha }}
           path: evidence
@@ -342,7 +342,7 @@ jobs:
             }
           }
       - name: Azure login with OIDC
-        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -389,7 +389,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           @("version=$runtimeVersion", $doctor) | Set-Content -Encoding utf8 dist/package/smoke-evidence.txt
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: dist/package
           format: spdx-json
@@ -419,7 +419,7 @@ jobs:
           Compress-Archive -Path dist/package/* -DestinationPath "dist/$archive"
           $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
           "$hash  $archive" | Set-Content -Encoding ascii "dist/$archive.sha256"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nexus-cua-v${{ inputs.version }}-windows-x86_64-${{ inputs.candidate_kind }}-unaccepted-legacy
           path: |
