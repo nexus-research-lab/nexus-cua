@@ -127,6 +127,7 @@ export interface CapabilityManifest {
 export interface OpenSessionOutput { session_id: string; expires_at: string }
 export interface ApplicationSummary { app_ref: string; name: string; application_id: string; foreground: boolean }
 export interface ScreenRect { x: number; y: number; width: number; height: number }
+/** Finite coordinates in [0, 1000]; fractions preserve crop precision. */
 export interface NormalizedPoint { x: number; y: number }
 export interface PixelSize { width: number; height: number }
 export interface ScreenshotMapping { screen_bounds: ScreenRect; pixel_size: PixelSize }

@@ -1047,16 +1047,16 @@
       "type": "object",
       "properties": {
         "x": {
-          "description": "Horizontal normalized coordinate.",
-          "type": "integer",
-          "format": "uint32",
+          "description": "Finite horizontal coordinate in the inclusive range 0..1000.",
+          "type": "number",
+          "format": "double",
           "maximum": 1000,
           "minimum": 0
         },
         "y": {
-          "description": "Vertical normalized coordinate.",
-          "type": "integer",
-          "format": "uint32",
+          "description": "Finite vertical coordinate in the inclusive range 0..1000.",
+          "type": "number",
+          "format": "double",
           "maximum": 1000,
           "minimum": 0
         }

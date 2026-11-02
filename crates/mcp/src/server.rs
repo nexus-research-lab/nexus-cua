@@ -1528,8 +1528,8 @@ impl NexusCuaMcp {
             ));
         };
         let point = NormalizedPoint {
-            x: u32::from(args.x),
-            y: u32::from(args.y),
+            x: f64::from(args.x),
+            y: f64::from(args.y),
         };
         self.dispatch_action(
             RequestId::new(args.request_id),
@@ -1665,8 +1665,8 @@ impl NexusCuaMcp {
             ObservationId::new(args.observation_id),
             Action::Scroll {
                 point: NormalizedPoint {
-                    x: args.x,
-                    y: args.y,
+                    x: f64::from(args.x),
+                    y: f64::from(args.y),
                 },
                 delta_x: args.delta_x,
                 delta_y: args.delta_y,
@@ -1725,12 +1725,12 @@ impl NexusCuaMcp {
             observation_id,
             Action::Drag {
                 from: NormalizedPoint {
-                    x: u32::from(args.from_x),
-                    y: u32::from(args.from_y),
+                    x: f64::from(args.from_x),
+                    y: f64::from(args.from_y),
                 },
                 to: NormalizedPoint {
-                    x: u32::from(args.to_x),
-                    y: u32::from(args.to_y),
+                    x: f64::from(args.to_x),
+                    y: f64::from(args.to_y),
                 },
                 duration_ms: args.duration_ms.unwrap_or(500),
             },

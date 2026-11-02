@@ -548,12 +548,12 @@ class ScreenRect:
 
 @dataclass(frozen=True)
 class NormalizedPoint:
-    x: int
-    y: int
+    x: float
+    y: float
 
-    def to_wire(self) -> dict[str, int]:
-        if not (type(self.x) is int and type(self.y) is int and 0 <= self.x <= 1000 and 0 <= self.y <= 1000):
-            raise ValueError("normalized point must use integer coordinates in 0..1000")
+    def to_wire(self) -> dict[str, float]:
+        if not all(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1000 for value in (self.x, self.y)):
+            raise ValueError("normalized point must use finite coordinates in 0..1000")
         return {"x": self.x, "y": self.y}
 
 

@@ -184,7 +184,7 @@ func marshalAction(action Action) (map[string]any, error) {
 	case InvokeElement:
 		kind = string(ActionInvokeElement)
 	case ClickPoint:
-		if value.Point.X > 1000 || value.Point.Y > 1000 {
+		if !validNormalizedPoint(value.Point) {
 			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
 		}
 		if !contains([]string{"left", "middle", "right"}, string(value.Button)) || value.Count == 0 {
@@ -199,7 +199,7 @@ func marshalAction(action Action) (map[string]any, error) {
 		action = value
 		kind = string(ActionClickPoint)
 	case PressPoint:
-		if value.Point.X > 1000 || value.Point.Y > 1000 {
+		if !validNormalizedPoint(value.Point) {
 			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
 		}
 		if !contains([]string{"left", "middle", "right"}, string(value.Button)) {
@@ -220,7 +220,7 @@ func marshalAction(action Action) (map[string]any, error) {
 	case SetExpanded:
 		kind = string(ActionSetExpanded)
 	case MovePointer:
-		if value.Point.X > 1000 || value.Point.Y > 1000 {
+		if !validNormalizedPoint(value.Point) {
 			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
 		}
 		kind = string(ActionMovePointer)
@@ -237,12 +237,12 @@ func marshalAction(action Action) (map[string]any, error) {
 		}
 		kind = string(ActionPressKeys)
 	case Scroll:
-		if value.Point.X > 1000 || value.Point.Y > 1000 {
+		if !validNormalizedPoint(value.Point) {
 			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
 		}
 		kind = string(ActionScroll)
 	case Drag:
-		if value.From.X > 1000 || value.From.Y > 1000 || value.To.X > 1000 || value.To.Y > 1000 {
+		if !validNormalizedPoint(value.From) || !validNormalizedPoint(value.To) {
 			return nil, fmt.Errorf("nexus-cua: drag points must be in 0..1000")
 		}
 		kind = string(ActionDrag)
@@ -308,4 +308,9 @@ func contains(values []string, candidate string) bool {
 		}
 	}
 	return false
+}
+
+func validNormalizedPoint(point NormalizedPoint) bool {
+	return !math.IsNaN(point.X) && !math.IsInf(point.X, 0) && point.X >= 0 && point.X <= 1000 &&
+		!math.IsNaN(point.Y) && !math.IsInf(point.Y, 0) && point.Y >= 0 && point.Y <= 1000
 }

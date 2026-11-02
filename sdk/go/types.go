@@ -346,8 +346,8 @@ type ScreenRect struct {
 }
 
 type NormalizedPoint struct {
-	X uint32 `json:"x"`
-	Y uint32 `json:"y"`
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type PixelSize struct {

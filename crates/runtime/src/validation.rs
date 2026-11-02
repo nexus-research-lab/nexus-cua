@@ -346,29 +346,36 @@ mod tests {
             delta_y: 300.0,
         };
         assert!(
-            validate_action(&scroll(NormalizedPoint { x: 500, y: 500 }), Some(mapping())).is_ok()
+            validate_action(
+                &scroll(NormalizedPoint { x: 500.0, y: 500.0 }),
+                Some(mapping())
+            )
+            .is_ok()
         );
         assert!(
             validate_action(
-                &scroll(NormalizedPoint { x: 1001, y: 500 }),
+                &scroll(NormalizedPoint {
+                    x: 1001.0,
+                    y: 500.0
+                }),
                 Some(mapping())
             )
             .is_err()
         );
-        assert!(validate_action(&scroll(NormalizedPoint { x: 500, y: 500 }), None).is_err());
+        assert!(validate_action(&scroll(NormalizedPoint { x: 500.0, y: 500.0 }), None).is_err());
     }
 
     #[test]
     fn pointer_hold_is_bounded_and_requires_a_guarded_point() {
         let valid = Action::PressPoint {
-            point: NormalizedPoint { x: 50, y: 50 },
+            point: NormalizedPoint { x: 50.0, y: 50.0 },
             button: PointerButton::Left,
             duration_ms: MAX_DRAG_DURATION_MS,
         };
         assert!(validate_action(&valid, Some(mapping())).is_ok());
 
         let too_long = Action::PressPoint {
-            point: NormalizedPoint { x: 50, y: 50 },
+            point: NormalizedPoint { x: 50.0, y: 50.0 },
             button: PointerButton::Left,
             duration_ms: MAX_DRAG_DURATION_MS + 1,
         };

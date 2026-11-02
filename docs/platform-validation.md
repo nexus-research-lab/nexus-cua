@@ -442,3 +442,7 @@ this native discovery profile remain pending; tests do not establish acceptance.
 C2: deterministic stream-state tests cover static cached frames, delegate-style
 stop invalidation and first-frame fallback selection. Native five-second idle,
 content-update latency, p95 latency, and window-close release remain pending.
+
+C8: exhaustive per-axis round trips cover 3840×2160, 1366×768 and 1×1 images.
+Nonfinite/out-of-bounds rejection is tested. Native 4× zoom on a 4×4 pixel
+target is pending; arithmetic tests alone do not establish input acceptance.

@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=87fbc06952d1ad618e24b8af937821a0aba95c8180512cf90341b4149a5044f8 -->
+<!-- generated: product=0.1.0 catalogue_sha256=48de36d875857b1985f9870dc0fe2eedbb5a57659e2b07c958f9e115619b8a66 -->
 
 ## Operating contract
 
@@ -50,6 +50,11 @@ observation does not require accessibility permission.
 C7: `scroll` accepts an explicit normalized point and deltas only. The removed
 `element_ref` field is rejected, even when null. Semantic scrolling is not
 implemented; do not supply an element reference as a scroll target.
+
+C8: Protocol/SDK normalized coordinates are finite numbers in `[0, 1000]`.
+Fractional coordinates preserve crop/zoom precision; runtime rounds once at the
+final pixel mapping. Dedicated model-facing normalized tools retain integer
+inputs. NaN, infinity, negative, and out-of-range coordinates are rejected.
 
 ## CLI binding
 

@@ -581,9 +581,9 @@ function actionWire(action) {
   const points = value.kind === "drag" ? [value.from, value.to]
     : ["click_point", "press_point", "move_pointer", "scroll"].includes(value.kind) ? [value.point] : [];
   for (const point of points) {
-    if (!point || !Number.isInteger(point.x) || !Number.isInteger(point.y)
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)
         || point.x < 0 || point.x > 1000 || point.y < 0 || point.y > 1000) {
-      throw new RangeError("action point must use integer coordinates in 0..1000");
+      throw new RangeError("action point must use finite coordinates in 0..1000");
     }
   }
   if (value.kind === "click_point") {

@@ -780,7 +780,7 @@ async fn validate_session(
         &window,
         &after_type,
         Action::MovePointer {
-            point: NormalizedPoint { x: 10, y: 10 },
+            point: NormalizedPoint { x: 10.0, y: 10.0 },
             duration_ms: 60,
         },
         ActionKind::MovePointer,
@@ -1748,10 +1748,7 @@ fn screen_rect_center_to_screenshot(
     let y = (((top + bottom) * 0.5 - screen.y) * 1000.0 / screen.height)
         .floor()
         .clamp(0.0, 1000.0);
-    Some(NormalizedPoint {
-        x: x as u32,
-        y: y as u32,
-    })
+    Some(NormalizedPoint { x, y })
 }
 
 fn select_window(

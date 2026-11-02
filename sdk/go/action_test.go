@@ -103,3 +103,14 @@ func TestMarshalSetRangeValueRejectsNonFiniteValue(t *testing.T) {
 		t.Fatal("expected non-finite numeric range value to be rejected")
 	}
 }
+
+func TestNormalizedPointAcceptsFractionsAndRejectsNonfinite(t *testing.T) {
+	if _, err := marshalAction(MovePointer{Point: NormalizedPoint{X: 0.25, Y: 999.75}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []float64{math.NaN(), math.Inf(1), -0.1, 1000.1} {
+		if _, err := marshalAction(MovePointer{Point: NormalizedPoint{X: value}}); err == nil {
+			t.Fatal("accepted invalid coordinate")
+		}
+	}
+}

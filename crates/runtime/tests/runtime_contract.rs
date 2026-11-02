@@ -903,7 +903,7 @@ async fn foreground_click_input(
         window_ref,
         observation_id: observation.observation_id,
         action: Action::ClickPoint {
-            point: NormalizedPoint { x: 1, y: 1 },
+            point: NormalizedPoint { x: 1.0, y: 1.0 },
             button: nexus_cua_protocol::PointerButton::Left,
             count: 1,
             delivery: DeliveryPreference::Foreground,
@@ -1014,7 +1014,7 @@ async fn runtime_policy_denies_before_observation_consumption() {
             window_ref: window_ref.clone(),
             observation_id: observation.observation_id.clone(),
             action: Action::ClickPoint {
-                point: NormalizedPoint { x: 1, y: 1 },
+                point: NormalizedPoint { x: 1.0, y: 1.0 },
                 button: nexus_cua_protocol::PointerButton::Left,
                 count,
                 delivery: DeliveryPreference::Background,
@@ -1624,7 +1624,10 @@ async fn coordinates_outside_observed_window_fail_before_dispatch() {
                 window_ref,
                 observation_id,
                 action: Action::ClickPoint {
-                    point: NormalizedPoint { x: 1001, y: 500 },
+                    point: NormalizedPoint {
+                        x: 1001.0,
+                        y: 500.0,
+                    },
                     button: nexus_cua_protocol::PointerButton::Left,
                     count: 1,
                     delivery: nexus_cua_protocol::DeliveryPreference::Foreground,
@@ -1897,7 +1900,7 @@ async fn background_click_does_not_require_foreground_authority() {
                 window_ref,
                 observation_id,
                 action: Action::ClickPoint {
-                    point: NormalizedPoint { x: 1, y: 1 },
+                    point: NormalizedPoint { x: 1.0, y: 1.0 },
                     button: nexus_cua_protocol::PointerButton::Left,
                     count: 1,
                     delivery: DeliveryPreference::Background,

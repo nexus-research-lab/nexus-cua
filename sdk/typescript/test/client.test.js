@@ -262,3 +262,21 @@ test("selectors prefer exact matches and reject ambiguous substrings", () => {
   assert.equal(selectWindow(windows, "Fixture").title, "Fixture");
   assert.throws(() => selectWindow(windows, "Fixt"), /ambiguous/);
 });
+
+test("normalized fractions survive transport and nonfinite values are rejected", async () => {
+  let calls = 0;
+  const client = fixtureClient(async (_endpoint, payload) => {
+    const request = JSON.parse(payload.toString("utf8"));
+    assert.deepEqual(request.command.input.action.point, {x: 0.25, y: 999.75});
+    calls++;
+    throw new Error("fixture transport stop");
+  }, ["fraction"]);
+  const input = {session_id: "s", window_ref: "w", observation_id: "o",
+    action: {kind: "move_pointer", point: {x: 0.25, y: 999.75}, duration_ms: 0}};
+  await assert.rejects(client.performAction(input));
+  assert.equal(calls, 1);
+  for (const x of [NaN, Infinity, -Infinity, -0.1, 1000.1]) {
+    await assert.rejects(client.performAction({...input, action: {...input.action, point: {x, y: 0}}}), /finite coordinates/);
+  }
+  assert.equal(calls, 1);
+});

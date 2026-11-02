@@ -544,7 +544,7 @@ mod tests {
         assert!(
             stack
                 .authorize(&action_command(Action::ClickPoint {
-                    point: NormalizedPoint { x: 0, y: 0 },
+                    point: NormalizedPoint { x: 0.0, y: 0.0 },
                     button: PointerButton::Left,
                     count: 1,
                     delivery: DeliveryPreference::Background,

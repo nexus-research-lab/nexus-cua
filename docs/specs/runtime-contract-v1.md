@@ -203,15 +203,14 @@ text is redacted from debug output and forbidden from logs and artifacts.
 Window and accessibility bounds use `screen_points`: logical top-left screen
 coordinates, possibly fractional or negative on secondary displays.
 
-All pointer action points use `normalized` integer coordinates in inclusive
+All pointer action points use finite `normalized` coordinates in inclusive
 `0..1000`, including click, hold, move, scroll and both drag endpoints. Each
 point is mapped by the runtime through the guarded screenshot's exact pixel
 size and affine screen mapping; 1000 maps to the last pixel, never beyond the
 surface. SDKs and adapters must not first convert these points into pixels.
 Physical `screenshot_pixels` remain image/crop metadata, not action inputs.
 
-Scroll requires a point and a fresh screenshot even when an element ref is
-provided. Native dispatch hit-tests that point and rejects an unrelated
+Scroll requires a point and a fresh screenshot; element refs are rejected. Native dispatch hit-tests that point and rejects an unrelated
 covering window before wheel input. Positive delta_y means down; positive
 delta_x means right. Deltas express logical-pixel intent. Windows converts
 using the configured wheel line/character count and a 16-logical-pixel unit;
@@ -420,3 +419,8 @@ a subsequent observation can rebuild it. This changes no public wire fields.
 C7: `scroll` accepts an explicit normalized point and deltas only. The removed
 `element_ref` field is rejected, even when null. Semantic scrolling is not
 implemented; do not supply an element reference as a scroll target.
+
+C8: Protocol/SDK normalized coordinates are finite numbers in `[0, 1000]`.
+Fractional coordinates preserve crop/zoom precision; runtime rounds once at the
+final pixel mapping. Dedicated model-facing normalized tools retain integer
+inputs. NaN, infinity, negative, and out-of-range coordinates are rejected.

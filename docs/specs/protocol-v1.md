@@ -272,3 +272,8 @@ a subsequent observation can rebuild it. This changes no public wire fields.
 C7: `scroll` accepts an explicit normalized point and deltas only. The removed
 `element_ref` field is rejected, even when null. Semantic scrolling is not
 implemented; do not supply an element reference as a scroll target.
+
+C8: Protocol/SDK normalized coordinates are finite numbers in `[0, 1000]`.
+Fractional coordinates preserve crop/zoom precision; runtime rounds once at the
+final pixel mapping. Dedicated model-facing normalized tools retain integer
+inputs. NaN, infinity, negative, and out-of-range coordinates are rejected.

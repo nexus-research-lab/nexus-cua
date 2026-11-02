@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C8: Preserve fractional normalized coordinates through SDKs and zoom projection; round only when resolving the final pixel and reject nonfinite values.
+
 - C7: Remove ignored scroll element references from the protocol and all SDKs; reject old requests instead of silently ignoring the target.
 
 - C2: Reuse complete frames on running static streams, invalidate stopped streams via delegate, and fall back to one-shot capture while waiting for a first stream frame.
