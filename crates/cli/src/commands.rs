@@ -255,9 +255,6 @@ struct RequestArgs {
     /// Stable retry identity; generated when omitted.
     #[arg(long)]
     request_id: Option<String>,
-    /// Maximum model think time before a guarded observation must be refreshed.
-    #[arg(long, default_value_t = DEFAULT_MAX_OBSERVATION_AGE_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
-    max_observation_age_seconds: u64,
     /// Maximum encoded request or response size.
     #[arg(long, default_value_t = 1024 * 1024)]
     max_frame_bytes: usize,
@@ -299,9 +296,6 @@ struct ReconcileArgs {
     /// Maximum wait for an already-admitted mutation, in milliseconds.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=120_000))]
     wait_ms: u32,
-    /// Maximum model think time before a guarded observation must be refreshed.
-    #[arg(long, default_value_t = DEFAULT_MAX_OBSERVATION_AGE_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
-    max_observation_age_seconds: u64,
     /// Maximum encoded request or response size.
     #[arg(long, default_value_t = 1024 * 1024)]
     max_frame_bytes: usize,
@@ -715,6 +709,36 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    #[test]
+    fn request_and_reconcile_reject_service_only_observation_age() {
+        for args in [
+            vec![
+                "nexuscua",
+                "request",
+                "--endpoint",
+                "test",
+                "--token-file",
+                "token",
+                "--command-stdin",
+            ],
+            vec![
+                "nexuscua",
+                "mutation",
+                "reconcile",
+                "--registration",
+                "host",
+                "--request-id",
+                "mutation",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args.clone()).is_ok());
+            let mut invalid = args;
+            invalid.extend(["--max-observation-age-seconds", "90"]);
+            let error = Cli::try_parse_from(invalid).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
 
     #[test]
     fn service_observation_age_matches_mcp_and_runtime_defaults() {

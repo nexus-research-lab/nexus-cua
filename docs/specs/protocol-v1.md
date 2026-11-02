@@ -244,3 +244,7 @@ types and fails on drift. Compatibility fixtures under
 stable error code plus unknown fields, unknown tagged variants, protocol
 mismatch, and frame boundaries. See [compatibility policy](../compatibility.md)
 for versioning rules.
+
+Observation lifetime is configured by the service (`serve` or MCP), not by a
+`request` or `mutation reconcile` CLI caller. Those callers reject
+`--max-observation-age-seconds` (C10); the wire protocol is unchanged.

@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C10: Reject the ineffective observation-age option on request and mutation reconciliation; configure it on serve or MCP.
+
 - C5: Wake macOS capture on commands, session revocation, or stream expiry instead of polling while idle.
 
 - Reset the test-only v1 pointer contract to `NormalizedPoint` (0..1000) in

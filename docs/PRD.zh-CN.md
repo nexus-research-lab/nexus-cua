@@ -2216,6 +2216,8 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C10 删除无效 CLI 参数（低）
 
+实施状态：源码已修复；两个子命令的解析回归测试拒绝此参数，serve/MCP 保留配置。
+
 - **问题**：`nexuscua request` 与 `mutation reconcile` 新增的
   `--max-observation-age-seconds` 没有任何效果
   （[commands.rs](../crates/cli/src/commands.rs) `RequestArgs`、`ReconcileArgs`）。
