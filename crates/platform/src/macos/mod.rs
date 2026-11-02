@@ -403,13 +403,13 @@ impl DesktopDriver for MacosDriver {
 
     async fn list_windows(
         &self,
-        application_key: Option<&str>,
+        application_keys: &[String],
     ) -> Result<Vec<DriverWindow>, DriverError> {
         let windows: Vec<_> = self
             .windows()
             .await?
             .into_iter()
-            .filter(|window| application_key.is_none_or(|key| key == window.application_key))
+            .filter(|window| application_keys.contains(&window.application_key))
             .filter(|window| window.visible || !window.title.is_empty())
             .collect();
         let states = window_state::enhance(

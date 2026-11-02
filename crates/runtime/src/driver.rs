@@ -470,10 +470,10 @@ pub trait DesktopDriver: Send + Sync {
         .mutation_not_dispatched())
     }
 
-    /// Lists top-level windows, optionally for one driver application key.
+    /// Enumerates once, returning only windows owned by the authorized application keys.
     async fn list_windows(
         &self,
-        application_key: Option<&str>,
+        application_keys: &[String],
     ) -> Result<Vec<DriverWindow>, DriverError>;
 
     /// Lists physical displays available to the current interactive desktop.

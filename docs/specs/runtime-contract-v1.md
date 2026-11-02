@@ -424,3 +424,8 @@ C8: Protocol/SDK normalized coordinates are finite numbers in `[0, 1000]`.
 Fractional coordinates preserve crop/zoom precision; runtime rounds once at the
 final pixel mapping. Dedicated model-facing normalized tools retain integer
 inputs. NaN, infinity, negative, and out-of-range coordinates are rejected.
+
+C11: one `list_windows` request performs one driver enumeration with the full
+authorized application-key set (or its selected-app subset). Optional AX state
+enrichment applies after scope filtering. Empty authority never means all apps.
+The public request and SDK interfaces are unchanged.

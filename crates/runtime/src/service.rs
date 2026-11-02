@@ -939,22 +939,23 @@ impl Runtime {
         } else {
             None
         };
-        // Native state queries must stay within this session's authorized apps.
-        let mut windows = Vec::new();
-        for application in &session.allowed_applications {
-            if application_key
-                .as_ref()
-                .is_some_and(|key| key != &application.key)
-            {
-                continue;
-            }
-            windows.extend(
-                self.driver
-                    .list_windows(Some(&application.key))
-                    .await
-                    .map_err(CuaError::from)?,
-            );
-        }
+        // Pass the complete authorized scope to one native enumeration. Optional
+        // AX enrichment must not query unrelated applications.
+        let application_keys: Vec<_> = session
+            .allowed_applications
+            .iter()
+            .filter(|application| {
+                application_key
+                    .as_ref()
+                    .is_none_or(|key| key == &application.key)
+            })
+            .map(|application| application.key.clone())
+            .collect();
+        let windows = self
+            .driver
+            .list_windows(&application_keys)
+            .await
+            .map_err(CuaError::from)?;
         let mut state = session.state.lock().await;
         let mut output = Vec::new();
         for window in windows

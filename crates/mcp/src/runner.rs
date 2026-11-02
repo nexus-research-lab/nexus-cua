@@ -945,7 +945,7 @@ mod tests {
 
         async fn list_windows(
             &self,
-            _application_key: Option<&str>,
+            _application_keys: &[String],
         ) -> Result<Vec<DriverWindow>, DriverError> {
             Ok(Vec::new())
         }
@@ -1017,7 +1017,7 @@ mod tests {
 
         async fn list_windows(
             &self,
-            _application_key: Option<&str>,
+            _application_keys: &[String],
         ) -> Result<Vec<DriverWindow>, DriverError> {
             Ok(vec![Self::window()])
         }

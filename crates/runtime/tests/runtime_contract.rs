@@ -26,6 +26,8 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 struct MockDriver {
+    window_enumerations: AtomicUsize,
+    last_window_scope: Mutex<Vec<String>>,
     session_starts: AtomicUsize,
     session_closes: AtomicUsize,
     revision: Mutex<u64>,
@@ -49,6 +51,8 @@ struct ActionGate {
 impl MockDriver {
     fn new() -> Self {
         Self {
+            window_enumerations: AtomicUsize::new(0),
+            last_window_scope: Mutex::new(Vec::new()),
             session_starts: AtomicUsize::new(0),
             session_closes: AtomicUsize::new(0),
             revision: Mutex::new(1),
@@ -66,6 +70,8 @@ impl MockDriver {
 
     fn stale_once() -> Self {
         Self {
+            window_enumerations: AtomicUsize::new(0),
+            last_window_scope: Mutex::new(Vec::new()),
             session_starts: AtomicUsize::new(0),
             session_closes: AtomicUsize::new(0),
             revision: Mutex::new(1),
@@ -263,8 +269,10 @@ impl DesktopDriver for MockDriver {
 
     async fn list_windows(
         &self,
-        _application_key: Option<&str>,
+        application_keys: &[String],
     ) -> Result<Vec<DriverWindow>, DriverError> {
+        self.window_enumerations.fetch_add(1, Ordering::SeqCst);
+        *self.last_window_scope.lock().await = application_keys.to_vec();
         let generation = self.application_generation.load(Ordering::SeqCst);
         Ok(vec![Self::window_for_generation(generation)])
     }
@@ -2069,4 +2077,39 @@ fn dropping_runtime_removes_only_its_artifact_generation() {
         0
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn multi_application_window_listing_enumerates_once_with_full_authority_scope() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    driver.launches.store(1, Ordering::SeqCst);
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).unwrap();
+    let CommandResult::ApplicationsDiscovered(discovery) = runtime
+        .execute(Command::DiscoverApplications)
+        .await
+        .unwrap()
+    else {
+        panic!("expected discovery")
+    };
+    assert_eq!(discovery.applications.len(), 2);
+    let refs: Vec<_> = discovery
+        .applications
+        .into_iter()
+        .map(|app| app.discovery_ref)
+        .collect();
+    let mut grant = manifest(PermissionMode::ReadOnly, refs[0].clone());
+    grant.application_refs = refs;
+    let session_id = open_session_with_manifest(&runtime, grant).await;
+    runtime
+        .execute(Command::ListWindows(ListWindowsInput {
+            session_id,
+            app_ref: None,
+        }))
+        .await
+        .unwrap();
+    assert_eq!(driver.window_enumerations.load(Ordering::SeqCst), 1);
+    assert_eq!(driver.last_window_scope.lock().await.len(), 2);
+    runtime.shutdown().await;
+    std::fs::remove_dir_all(root).unwrap();
 }

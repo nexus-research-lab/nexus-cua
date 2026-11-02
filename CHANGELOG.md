@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C11: Enumerate native windows once per request, filtering the complete authorized application set before optional state queries.
+
 - C8: Preserve fractional normalized coordinates through SDKs and zoom projection; round only when resolving the final pixel and reject nonfinite values.
 
 - C7: Remove ignored scroll element references from the protocol and all SDKs; reject old requests instead of silently ignoring the target.
