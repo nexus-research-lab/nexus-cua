@@ -246,7 +246,7 @@ export type Action =
   | { kind: "move_pointer"; point: NormalizedPoint; duration_ms: number }
   | { kind: "type_text"; text: SensitiveText }
   | { kind: "press_keys"; keys: string[] }
-  | { kind: "scroll"; point: NormalizedPoint; element_ref: string | null; delta_x: number; delta_y: number }
+  | { kind: "scroll"; point: NormalizedPoint; delta_x: number; delta_y: number }
   | { kind: "drag"; from: NormalizedPoint; to: NormalizedPoint; duration_ms: number };
 
 export type StatePredicate =

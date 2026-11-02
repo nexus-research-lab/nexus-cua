@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the configured nexuscua MCP server when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=e3ce343cb2996b66875d5ca379b0ff0bcf75926036cace43668fa7100a1922ea -->
+<!-- generated: product=0.1.0 catalogue_sha256=77fb70b0e7c6bb90c5d5eee80df3a40ed712e2829444b0df929287902ff4f6e5 -->
 
 ## Operating contract
 
@@ -46,6 +46,10 @@ quote, or copy them outside the immediate authorized operation.
 Window lists report `state`: normal, minimized, offscreen, or unknown. Unknown
 is not proof of visibility or readiness; re-observe before input. Screenshot-only
 observation does not require accessibility permission.
+
+C7: `scroll` accepts an explicit normalized point and deltas only. The removed
+`element_ref` field is rejected, even when null. Semantic scrolling is not
+implemented; do not supply an element reference as a scroll target.
 
 ## MCP binding
 

@@ -342,7 +342,6 @@ mod tests {
     fn scroll_requires_a_valid_normalized_point_and_screenshot() {
         let scroll = |point| Action::Scroll {
             point,
-            element_ref: None,
             delta_x: 0.0,
             delta_y: 300.0,
         };

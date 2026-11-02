@@ -795,7 +795,6 @@ async fn validate_session(
         &before_scroll,
         Action::Scroll {
             point: scroll_point,
-            element_ref: None,
             delta_x: 0.0,
             delta_y: 180.0,
         },

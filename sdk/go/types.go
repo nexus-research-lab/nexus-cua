@@ -638,10 +638,9 @@ type PressKeys struct {
 func (PressKeys) closedAction() {}
 
 type Scroll struct {
-	Point      NormalizedPoint `json:"point"`
-	ElementRef *ElementRef     `json:"element_ref"`
-	DeltaX     float64         `json:"delta_x"`
-	DeltaY     float64         `json:"delta_y"`
+	Point  NormalizedPoint `json:"point"`
+	DeltaX float64         `json:"delta_x"`
+	DeltaY float64         `json:"delta_y"`
 }
 
 func (Scroll) closedAction() {}

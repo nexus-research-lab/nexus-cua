@@ -1668,7 +1668,6 @@ impl NexusCuaMcp {
                     x: args.x,
                     y: args.y,
                 },
-                element_ref: None,
                 delta_x: args.delta_x,
                 delta_y: args.delta_y,
             },

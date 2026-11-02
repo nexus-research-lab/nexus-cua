@@ -1239,13 +1239,11 @@ class Scroll(Action):
     point: NormalizedPoint
     delta_x: float
     delta_y: float
-    element_ref: ElementRef | None = None
 
     def to_wire(self) -> dict[str, Any]:
         return {
             "kind": "scroll",
             "point": self.point.to_wire(),
-            "element_ref": self.element_ref,
             "delta_x": self.delta_x,
             "delta_y": self.delta_y,
         }

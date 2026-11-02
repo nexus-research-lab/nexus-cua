@@ -173,3 +173,17 @@ fn result_name(result: &CommandResult) -> &'static str {
         CommandResult::StateVerified(_) => "state_verified",
     }
 }
+
+#[test]
+fn scroll_rejects_removed_semantic_target_even_when_null() {
+    let invalid = include_str!(
+        "../../../fixtures/compatibility/nexus.cua.v1/invalid/scroll-element-ref.json"
+    );
+    assert!(serde_json::from_str::<RequestEnvelope>(invalid).is_err());
+    let mut valid: serde_json::Value = serde_json::from_str(invalid).unwrap();
+    valid["command"]["input"]["action"]
+        .as_object_mut()
+        .unwrap()
+        .remove("element_ref");
+    assert!(serde_json::from_value::<RequestEnvelope>(valid).is_ok());
+}

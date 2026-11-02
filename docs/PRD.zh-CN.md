@@ -2183,6 +2183,8 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C7 删除被忽略的 `Scroll.element_ref`（中）
 
+实施状态：源码已修复；字段已删除，兼容性 invalid fixture 验证即使传 null 也拒绝。
+
 - **问题**：协议仍接受并解析 `Scroll.element_ref`，但两个平台驱动都直接丢弃，
   文档未说明。
 - **修复**：本轮协议允许重置，直接从 protocol、schema、三套 SDK、MCP、CLI 和

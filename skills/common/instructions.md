@@ -39,3 +39,7 @@ quote, or copy them outside the immediate authorized operation.
 Window lists report `state`: normal, minimized, offscreen, or unknown. Unknown
 is not proof of visibility or readiness; re-observe before input. Screenshot-only
 observation does not require accessibility permission.
+
+C7: `scroll` accepts an explicit normalized point and deltas only. The removed
+`element_ref` field is rejected, even when null. Semantic scrolling is not
+implemented; do not supply an element reference as a scroll target.

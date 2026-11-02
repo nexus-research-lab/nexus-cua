@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=5a70a4f9be7fe0a9c271530c5b43e306870093cce9a167e8e6f7608567b7d78c -->
+<!-- generated: product=0.1.0 catalogue_sha256=87fbc06952d1ad618e24b8af937821a0aba95c8180512cf90341b4149a5044f8 -->
 
 ## Operating contract
 
@@ -46,6 +46,10 @@ quote, or copy them outside the immediate authorized operation.
 Window lists report `state`: normal, minimized, offscreen, or unknown. Unknown
 is not proof of visibility or readiness; re-observe before input. Screenshot-only
 observation does not require accessibility permission.
+
+C7: `scroll` accepts an explicit normalized point and deltas only. The removed
+`element_ref` field is rejected, even when null. Semantic scrolling is not
+implemented; do not supply an element reference as a scroll target.
 
 ## CLI binding
 

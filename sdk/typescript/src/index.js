@@ -576,6 +576,7 @@ function validateResultData(resultType, value) {
 function actionWire(action) {
   const value = objectValue(action, "action");
   if (!ACTION_KINDS.has(value.kind)) throw new TypeError(`unsupported action kind ${String(value.kind)}`);
+  if (value.kind === "scroll" && "element_ref" in value) throw new TypeError("scroll does not accept element_ref");
   if (value.kind === "set_window_bounds") validateRect(value.bounds);
   const points = value.kind === "drag" ? [value.from, value.to]
     : ["click_point", "press_point", "move_pointer", "scroll"].includes(value.kind) ? [value.point] : [];

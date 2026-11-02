@@ -298,12 +298,10 @@ pub enum DriverAction {
         /// Normalized key names forming one chord or key sequence.
         keys: Vec<String>,
     },
-    /// Scroll either a semantic element or the foreground surface.
+    /// Scroll the foreground surface at the explicit target point.
     Scroll {
         /// Resolved target point in logical screen coordinates.
         point: ScreenPoint,
-        /// Optional guarded semantic scroll target.
-        element_key: Option<String>,
         /// Horizontal logical scroll delta.
         delta_x: f64,
         /// Vertical logical scroll delta.

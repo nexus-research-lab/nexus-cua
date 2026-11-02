@@ -313,12 +313,10 @@ pub(crate) fn resolve_action(
         Action::PressKeys { keys } => DriverAction::PressKeys { keys: keys.clone() },
         Action::Scroll {
             point,
-            element_ref,
             delta_x,
             delta_y,
         } => DriverAction::Scroll {
             point: resolve_screenshot_point(*point, observation)?,
-            element_key: element_ref.as_ref().map(element_key).transpose()?,
             delta_x: *delta_x,
             delta_y: *delta_y,
         },

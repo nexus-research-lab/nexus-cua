@@ -190,8 +190,6 @@ pub enum Action {
     Scroll {
         /// Required normalized target point; dispatch verifies native hit-test ownership.
         point: NormalizedPoint,
-        /// Optional semantic target.
-        element_ref: Option<ElementRef>,
         /// Horizontal delta.
         delta_x: f64,
         /// Vertical delta.

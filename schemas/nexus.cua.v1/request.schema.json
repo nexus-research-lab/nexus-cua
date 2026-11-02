@@ -423,17 +423,6 @@
               "type": "number",
               "format": "double"
             },
-            "element_ref": {
-              "description": "Optional semantic target.",
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ElementRef"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
             "kind": {
               "type": "string",
               "const": "scroll"

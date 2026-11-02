@@ -268,3 +268,7 @@ without a new-callback wait, alongside target identity/geometry validation. A
 first-frame timeout after one second falls back to one-shot capture for that
 request while retaining the stream. A stopped/unavailable stream is removed and
 a subsequent observation can rebuild it. This changes no public wire fields.
+
+C7: `scroll` accepts an explicit normalized point and deltas only. The removed
+`element_ref` field is rejected, even when null. Semantic scrolling is not
+implemented; do not supply an element reference as a scroll target.
