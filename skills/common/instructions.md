@@ -48,3 +48,12 @@ C8: Protocol/SDK normalized coordinates are finite numbers in `[0, 1000]`.
 Fractional coordinates preserve crop/zoom precision; runtime rounds once at the
 final pixel mapping. Dedicated model-facing normalized tools retain integer
 inputs. NaN, infinity, negative, and out-of-range coordinates are rejected.
+
+C6: Foreground click, hold, scroll and both drag endpoints are checked on the
+serialized input actor before pointer dispatch. macOS uses front-to-back on-screen
+window ownership across layers, excluding runtime-owned windows; Windows checks
+the process owning WindowFromPoint, permitting same-process popups. Pointer
+actions do not first raise the target and erase evidence of foreign occlusion.
+Move-only and explicit background clicks are exempt from this foreground check.
+Scroll first moves the cursor to its target. Unowned points fail not_dispatched
+with observe_window guidance. This does not implement application-scene capture.

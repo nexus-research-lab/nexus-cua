@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C6: Check foreground pointer ownership on the input actor for click, hold, scroll and drag, allow same-process popups, and move the macOS cursor before scrolling.
+
 - C11: Enumerate native windows once per request, filtering the complete authorized application set before optional state queries.
 
 - C8: Preserve fractional normalized coordinates through SDKs and zoom projection; round only when resolving the final pixel and reject nonfinite values.

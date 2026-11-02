@@ -697,6 +697,66 @@ fn terminate_application(
     Ok(())
 }
 
+// Called on the input actor immediately before dispatch. All temporary CG/CF
+// objects are created and released on that same thread; AX is never consulted.
+pub(super) fn validate_pointer_owner(
+    pid: i32,
+    point: nexus_cua_protocol::ScreenPoint,
+) -> Result<(), DriverError> {
+    let dictionaries = window::copy_window_info(
+        window::kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    )
+    .ok_or_else(|| {
+        native_failure("native pointer ownership is unavailable").mutation_not_dispatched()
+    })?;
+    let windows = dictionaries.iter().take(4096).filter_map(|pointer| {
+        let pointer = *pointer as CFTypeRef;
+        if pointer.is_null() {
+            return None;
+        }
+        let value = unsafe { CFType::wrap_under_get_rule(pointer) };
+        let dictionary = value.downcast::<CFDictionary>()?;
+        let owner =
+            i32::try_from(dictionary_i64(&dictionary, unsafe { kCGWindowOwnerPID })?).ok()?;
+        let bounds = dictionary_rect(&dictionary, unsafe { kCGWindowBounds })?;
+        Some((
+            owner,
+            ScreenRect {
+                x: bounds.origin.x,
+                y: bounds.origin.y,
+                width: bounds.size.width,
+                height: bounds.size.height,
+            },
+        ))
+    });
+    if pointer_owner(point, std::process::id(), windows) != Some(pid) {
+        return Err(DriverError::new(
+            DriverErrorKind::TargetUnavailable,
+            "pointer point is not owned by the authorized application",
+        )
+        .retryable("observe_window")
+        .mutation_not_dispatched());
+    }
+    Ok(())
+}
+
+fn pointer_owner(
+    point: nexus_cua_protocol::ScreenPoint,
+    own_pid: u32,
+    windows: impl Iterator<Item = (i32, ScreenRect)>,
+) -> Option<i32> {
+    windows
+        .filter(|(pid, _)| u32::try_from(*pid).ok() != Some(own_pid))
+        .find(|(_, bounds)| {
+            point.x >= bounds.x
+                && point.y >= bounds.y
+                && point.x < bounds.x + bounds.width
+                && point.y < bounds.y + bounds.height
+        })
+        .map(|(pid, _)| pid)
+}
+
 fn load_windows(applications: &mut ApplicationCache) -> Result<Vec<NativeWindow>, DriverError> {
     let dictionaries = window::copy_window_info(
         kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements,
@@ -1380,5 +1440,37 @@ mod wake_tests {
             receive_command(&receiver, None),
             Ok(CaptureCommand::Prune)
         ));
+    }
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    #[test]
+    fn topmost_owner_wins_across_layers_and_own_overlay_is_skipped() {
+        let point = nexus_cua_protocol::ScreenPoint { x: 20.0, y: 20.0 };
+        let bounds = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        assert_eq!(
+            pointer_owner(
+                point,
+                99,
+                [(99, bounds), (2, bounds), (1, bounds)].into_iter()
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            pointer_owner(
+                point,
+                99,
+                [(99, bounds), (1, bounds), (1, bounds)].into_iter()
+            ),
+            Some(1)
+        );
+        assert_eq!(pointer_owner(point, 99, [(99, bounds)].into_iter()), None);
     }
 }

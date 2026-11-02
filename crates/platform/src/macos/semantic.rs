@@ -9,8 +9,7 @@ use std::time::{Duration, Instant};
 
 use accessibility_sys::{
     AXUIElementCopyActionNames, AXUIElementCopyAttributeValue, AXUIElementCopyElementAtPosition,
-    AXUIElementCopyMultipleAttributeValues, AXUIElementCreateApplication,
-    AXUIElementCreateSystemWide, AXUIElementGetPid, AXUIElementGetTypeID,
+    AXUIElementCopyMultipleAttributeValues, AXUIElementCreateApplication, AXUIElementGetTypeID,
     AXUIElementIsAttributeSettable, AXUIElementPerformAction, AXUIElementRef,
     AXUIElementSetAttributeValue, AXUIElementSetMessagingTimeout, AXValueCreate, AXValueGetType,
     AXValueGetValue, AXValueRef, kAXChildrenAttribute, kAXDescriptionAttribute,
@@ -104,25 +103,6 @@ impl SemanticActor {
             title,
             reply,
         })?;
-        receiver.await.map_err(actor_stopped)?
-    }
-
-    pub(super) async fn validate_pointer_owner(
-        &self,
-        pid: i32,
-        point: ScreenPoint,
-        bounds: ScreenRect,
-        title: String,
-    ) -> Result<(), DriverError> {
-        let (reply, receiver) = oneshot::channel();
-        self.admit(SemanticCommand::ValidatePointerOwner {
-            pid,
-            point,
-            bounds,
-            title,
-            reply,
-        })
-        .map_err(DriverError::mutation_not_dispatched)?;
         receiver.await.map_err(actor_stopped)?
     }
 
@@ -260,13 +240,6 @@ enum SemanticCommand {
         title: String,
         reply: oneshot::Sender<Result<bool, DriverError>>,
     },
-    ValidatePointerOwner {
-        pid: i32,
-        point: ScreenPoint,
-        bounds: ScreenRect,
-        title: String,
-        reply: oneshot::Sender<Result<(), DriverError>>,
-    },
     Snapshot {
         pid: i32,
         window_bounds: ScreenRect,
@@ -384,18 +357,6 @@ impl SemanticState {
                 } => {
                     let result = self.window_minimized(&key, pid, bounds, &title);
                     let _ = reply.send(result);
-                }
-                SemanticCommand::ValidatePointerOwner {
-                    pid,
-                    point,
-                    bounds,
-                    title,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        validate_pointer_owner(pid, point, bounds, &title)
-                            .map_err(DriverError::mutation_not_dispatched),
-                    );
                 }
                 SemanticCommand::Snapshot {
                     pid,
@@ -602,37 +563,6 @@ impl SemanticState {
             }
         }
     }
-}
-
-fn validate_pointer_owner(
-    pid: i32,
-    point: ScreenPoint,
-    bounds: ScreenRect,
-    title: &str,
-) -> Result<(), DriverError> {
-    ensure_accessibility_permission()?;
-    // SAFETY: The system-wide AX object and hit-test result are created, used
-    // and released on the owning semantic actor. No native object crosses it.
-    let system = unsafe { AxElement::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-    system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)?;
-    let element = element_at_position(&system, point.x, point.y)?;
-    let mut owner = 0;
-    let status = unsafe { AXUIElementGetPid(element.as_concrete_TypeRef(), &raw mut owner) };
-    if status != kAXErrorSuccess || owner != pid {
-        return Err(DriverError::new(
-            DriverErrorKind::TargetUnavailable,
-            "pointer hit-test did not resolve to the authorized application",
-        ));
-    }
-    let window = copy_element(&element, kAXWindowAttribute)?;
-    let (actual_title, actual_bounds) = read_window_identity(&window)?;
-    if !window_identity_matches(actual_bounds, actual_title.as_deref(), bounds, title) {
-        return Err(DriverError::new(
-            DriverErrorKind::TargetUnavailable,
-            "pointer hit-test did not resolve to the authorized window",
-        ));
-    }
-    Ok(())
 }
 
 fn invoke_at_point(

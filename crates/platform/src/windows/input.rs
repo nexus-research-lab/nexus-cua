@@ -247,7 +247,9 @@ fn perform_foreground(
         )
         .mutation_not_dispatched());
     }
-    if unsafe { GetForegroundWindow() } != target {
+    if matches!(action, InputAction::TypeText(_) | InputAction::PressKeys(_))
+        && unsafe { GetForegroundWindow() } != target
+    {
         activate(target)?;
     }
     let action_result = perform(raw_hwnd, action);
@@ -334,8 +336,25 @@ fn process_generation(pid: u32) -> Option<u64> {
         .map(|()| (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
+fn pointer_targets(action: &InputAction) -> [Option<ScreenPoint>; 2] {
+    match action {
+        InputAction::Click {
+            point,
+            background: false,
+            ..
+        }
+        | InputAction::Press { point, .. }
+        | InputAction::Scroll { point, .. } => [Some(*point), None],
+        InputAction::Drag { from, to, .. } => [Some(*from), Some(*to)],
+        _ => [None, None],
+    }
+}
+
 fn perform(raw_hwnd: isize, action: InputAction) -> Result<(), DriverError> {
     let hwnd = hwnd(raw_hwnd);
+    for point in pointer_targets(&action).into_iter().flatten() {
+        validate_pointer_owner(hwnd, point)?;
+    }
     match action {
         InputAction::Activate => activate(hwnd),
         InputAction::SetWindowBounds(bounds) => set_window_bounds(hwnd, bounds),
@@ -369,7 +388,7 @@ fn perform(raw_hwnd: isize, action: InputAction) -> Result<(), DriverError> {
             point,
             delta_x,
             delta_y,
-        } => scroll(hwnd, point, delta_x, delta_y),
+        } => scroll(point, delta_x, delta_y),
         InputAction::Drag {
             from,
             to,
@@ -850,26 +869,30 @@ fn press_keys(target: HWND, keys: &[String]) -> Result<(), DriverError> {
     send(&inputs)
 }
 
-fn scroll(target: HWND, point: ScreenPoint, delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
+fn validate_pointer_owner(target: HWND, point: ScreenPoint) -> Result<(), DriverError> {
     let native_point = POINT {
-        x: checked_i32(point.x.round(), "scroll x")?,
-        y: checked_i32(point.y.round(), "scroll y")?,
+        x: checked_i32(point.x.round(), "pointer x")?,
+        y: checked_i32(point.y.round(), "pointer y")?,
     };
-    // SAFETY: Read-only hit test immediately before serialized pointer dispatch.
     let hit = unsafe { windows::Win32::UI::WindowsAndMessaging::WindowFromPoint(native_point) };
-    let root = unsafe {
-        windows::Win32::UI::WindowsAndMessaging::GetAncestor(
-            hit,
-            windows::Win32::UI::WindowsAndMessaging::GA_ROOT,
-        )
-    };
-    if root != target {
+    let mut target_pid = 0;
+    let mut hit_pid = 0;
+    unsafe {
+        GetWindowThreadProcessId(target, Some(&raw mut target_pid));
+        GetWindowThreadProcessId(hit, Some(&raw mut hit_pid));
+    }
+    if target_pid == 0 || hit_pid != target_pid {
         return Err(DriverError::new(
             DriverErrorKind::TargetUnavailable,
-            "scroll point is covered by another window",
+            "pointer point is not owned by the authorized application",
         )
+        .retryable("observe_window")
         .mutation_not_dispatched());
     }
+    Ok(())
+}
+
+fn scroll(point: ScreenPoint, delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
     let mut inputs = Vec::with_capacity(3);
     inputs.push(absolute_mouse(point, MOUSEEVENTF_MOVE)?);
     if delta_y != 0.0 {
@@ -1147,6 +1170,60 @@ mod tests {
             !unsafe { backspace.Anonymous.ki }
                 .dwFlags
                 .contains(KEYEVENTF_EXTENDEDKEY)
+        );
+    }
+}
+
+#[cfg(test)]
+mod pointer_target_tests {
+    use super::*;
+    #[test]
+    fn guarded_pixel_actions_cover_both_drag_endpoints_but_not_background_or_move() {
+        let point = ScreenPoint { x: 1.0, y: 2.0 };
+        let end = ScreenPoint { x: 3.0, y: 4.0 };
+        assert_eq!(
+            pointer_targets(&InputAction::Drag {
+                from: point,
+                to: end,
+                duration_ms: 10
+            }),
+            [Some(point), Some(end)]
+        );
+        for action in [
+            InputAction::Click {
+                point,
+                button: PointerButton::Left,
+                count: 1,
+                background: false,
+            },
+            InputAction::Press {
+                point,
+                button: PointerButton::Left,
+                duration_ms: 1,
+            },
+            InputAction::Scroll {
+                point,
+                delta_x: 0.0,
+                delta_y: 1.0,
+            },
+        ] {
+            assert_eq!(pointer_targets(&action), [Some(point), None]);
+        }
+        assert_eq!(
+            pointer_targets(&InputAction::Move {
+                point,
+                duration_ms: 1
+            }),
+            [None, None]
+        );
+        assert_eq!(
+            pointer_targets(&InputAction::Click {
+                point,
+                button: PointerButton::Left,
+                count: 1,
+                background: true
+            }),
+            [None, None]
         );
     }
 }

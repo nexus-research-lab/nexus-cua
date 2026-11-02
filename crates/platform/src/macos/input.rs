@@ -91,6 +91,20 @@ impl InputActor {
     }
 }
 
+fn pointer_targets(action: &InputAction) -> [Option<ScreenPoint>; 2] {
+    match action {
+        InputAction::Click {
+            point,
+            background: false,
+            ..
+        }
+        | InputAction::Press { point, .. }
+        | InputAction::Scroll { point, .. } => [Some(*point), None],
+        InputAction::Drag { from, to, .. } => [Some(*from), Some(*to)],
+        _ => [None, None],
+    }
+}
+
 struct InputCommand {
     pid: i32,
     action: InputAction,
@@ -116,6 +130,9 @@ impl InputState {
     }
 
     fn perform(&self, pid: i32, action: InputAction) -> Result<(), DriverError> {
+        for point in pointer_targets(&action).into_iter().flatten() {
+            super::capture::validate_pointer_owner(pid, point)?;
+        }
         match action {
             InputAction::Click {
                 point,
@@ -381,6 +398,13 @@ impl InputState {
         )
         .map_err(|()| input_failure("failed to create scroll event"))?;
         event.set_location(cg_point(point));
+        self.mouse_event(
+            CGEventType::MouseMoved,
+            cg_point(point),
+            CGMouseButton::Left,
+        )?
+        .post(CGEventTapLocation::HID);
+        thread::sleep(FRAME_INTERVAL);
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -484,5 +508,59 @@ mod tests {
         assert_eq!(key_code("backspace"), Some(KeyCode::DELETE));
         assert_eq!(key_code("delete"), Some(KeyCode::FORWARD_DELETE));
         assert_ne!(key_code("delete"), key_code("backspace"));
+    }
+}
+
+#[cfg(test)]
+mod pointer_target_tests {
+    use super::*;
+    #[test]
+    fn guarded_pixel_actions_cover_both_drag_endpoints_but_not_background_or_move() {
+        let point = ScreenPoint { x: 1.0, y: 2.0 };
+        let end = ScreenPoint { x: 3.0, y: 4.0 };
+        assert_eq!(
+            pointer_targets(&InputAction::Drag {
+                from: point,
+                to: end,
+                duration_ms: 10
+            }),
+            [Some(point), Some(end)]
+        );
+        for action in [
+            InputAction::Click {
+                point,
+                button: PointerButton::Left,
+                count: 1,
+                background: false,
+            },
+            InputAction::Press {
+                point,
+                button: PointerButton::Left,
+                duration_ms: 1,
+            },
+            InputAction::Scroll {
+                point,
+                delta_x: 0.0,
+                delta_y: 1.0,
+            },
+        ] {
+            assert_eq!(pointer_targets(&action), [Some(point), None]);
+        }
+        assert_eq!(
+            pointer_targets(&InputAction::Move {
+                point,
+                duration_ms: 1
+            }),
+            [None, None]
+        );
+        assert_eq!(
+            pointer_targets(&InputAction::Click {
+                point,
+                button: PointerButton::Left,
+                count: 1,
+                background: true
+            }),
+            [None, None]
+        );
     }
 }

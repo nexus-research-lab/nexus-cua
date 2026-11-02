@@ -775,7 +775,12 @@ impl MacosDriver {
                 )
             }
             input_action => {
-                self.focus_for_input(current).await?;
+                if matches!(
+                    input_action,
+                    DriverAction::TypeText { .. } | DriverAction::PressKeys { .. }
+                ) {
+                    self.focus_for_input(current).await?;
+                }
                 self.dispatch_input_action(current, input_action).await?;
                 (
                     DeliveryMode::Foreground,
@@ -908,16 +913,6 @@ impl MacosDriver {
                 .mutation_not_dispatched());
             }
         };
-        if let InputAction::Scroll { point, .. } = &action {
-            self.semantic
-                .validate_pointer_owner(
-                    window.pid,
-                    *point,
-                    window.screen_bounds,
-                    window.title.clone(),
-                )
-                .await?;
-        }
         self.input.perform(window.pid, action).await
     }
 
