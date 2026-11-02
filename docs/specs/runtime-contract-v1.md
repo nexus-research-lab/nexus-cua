@@ -406,3 +406,13 @@ AX enrichment covers at most the first 16 authorized windows in z-order within a
 shared 750 ms budget. Failures preserve windows as unknown (or offscreen when
 invisible). Screenshot-only observation works without AX permission; an invisible
 target with no trustworthy state is rejected with restore/activation guidance.
+
+### Static macOS streams (C2)
+
+An active stream retains its last complete frame. Observation waits at most one
+100 ms frame interval for a refresh before reusing that frame; native stop/error
+notifications invalidate it immediately. Preflight uses the latest available frame
+without a new-callback wait, alongside target identity/geometry validation. A
+first-frame timeout after one second falls back to one-shot capture for that
+request while retaining the stream. A stopped/unavailable stream is removed and
+a subsequent observation can rebuild it. This changes no public wire fields.

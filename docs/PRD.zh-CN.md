@@ -2102,6 +2102,8 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C2 热流在静态画面下必须可用（高）
 
+实施状态：源码已修复；增加静态完整帧复用、停止后拒绝缓存、首帧超时回退的确定性测试。刷新等待上限 100ms；原生静止 5 秒、内容更新与 p95 验收待执行。
+
 - **问题**：`CaptureStream::snapshot` 要求请求之后收到新的帧回调，否则 1 秒后
   报错并拆除流（[stream.rs](../crates/platform/src/macos/stream.rs)、
   [capture.rs](../crates/platform/src/macos/capture.rs) `stream_capture`）。

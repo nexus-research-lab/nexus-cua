@@ -438,3 +438,7 @@ C1: permission-free enrichment, 80-window retention, identity failure and shared
 timeout are covered deterministically. Set `NEXUS_CUA_FIXTURE_DISCOVERY=1` to
 create 80 extra windows with different AX titles. Real permission-revocation and
 this native discovery profile remain pending; tests do not establish acceptance.
+
+C2: deterministic stream-state tests cover static cached frames, delegate-style
+stop invalidation and first-frame fallback selection. Native five-second idle,
+content-update latency, p95 latency, and window-close release remain pending.

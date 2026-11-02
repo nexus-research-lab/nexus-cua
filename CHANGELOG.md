@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C2: Reuse complete frames on running static streams, invalidate stopped streams via delegate, and fall back to one-shot capture while waiting for a first stream frame.
+
 - C1: Keep macOS discovery available without AX, bound optional state enrichment, and replace window minimized booleans with explicit state in all SDKs.
 
 - C10: Reject the ineffective observation-age option on request and mutation reconciliation; configure it on serve or MCP.

@@ -330,6 +330,7 @@ fn actor_loop(
                         session_id.as_deref(),
                         &target_key,
                         expected_bounds,
+                        recycle_sender,
                     )
                 } else {
                     capture_target(
@@ -454,6 +455,7 @@ fn stream_capture(
     session_id: Option<&str>,
     target_key: &str,
     bounds: ScreenRect,
+    recycle_sender: &SyncSender<Vec<u8>>,
 ) -> Result<(RgbaImage, ScreenRect), DriverError> {
     let authorized = || {
         session_id.is_none_or(|id| {
@@ -507,8 +509,12 @@ fn stream_capture(
         stream.owners.insert(id.to_owned());
     }
     stream.last_used = Instant::now();
-    let image = match stream.stream.snapshot() {
-        Ok(image) => image,
+    let image = match stream.stream.snapshot(session_id.is_none()) {
+        Ok(Some(image)) => image,
+        Ok(None) => {
+            let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
+            capture_with_filter(&filter.filter, bounds, None, recycle_sender.clone())?
+        }
         Err(error) => {
             streams.retain(|stream| stream.target_key != target_key);
             return Err(error);

@@ -22,11 +22,12 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCStream, SCStreamConfiguration, SCStreamFrameInfoStatus, SCStreamOutput,
-    SCStreamOutputType,
+    SCContentFilter, SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamFrameInfoStatus,
+    SCStreamOutput, SCStreamOutputType,
 };
 
 const FRAME_WAIT: Duration = Duration::from_secs(1);
+const REFRESH_WAIT: Duration = Duration::from_millis(100);
 const CALLBACK_WAIT: Duration = Duration::from_secs(3);
 const MAX_PIXELS: usize = 16_777_216;
 
@@ -35,6 +36,7 @@ struct LatestFrame {
     image: Option<RgbaImage>,
     callback_at: Option<Instant>,
     unavailable: bool,
+    stopped: bool,
 }
 
 #[derive(Default)]
@@ -51,6 +53,12 @@ define_class!(
     struct FrameOutput;
 
     unsafe impl NSObjectProtocol for FrameOutput {}
+    unsafe impl SCStreamDelegate for FrameOutput {
+        #[unsafe(method(stream:didStopWithError:))]
+        unsafe fn stopped(&self, _stream: &SCStream, _error: &objc2_foundation::NSError) {
+            self.ivars().stop();
+        }
+    }
     unsafe impl SCStreamOutput for FrameOutput {
         #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
         unsafe fn output(&self, _stream: &SCStream, sample: &CMSampleBuffer, kind: SCStreamOutputType) {
@@ -58,6 +66,7 @@ define_class!(
             let status = frame_status(sample);
             let image = if status == Some(0) { copy_sample(sample) } else { None };
             let Ok(mut latest) = self.ivars().latest.lock() else { return; };
+            if latest.stopped { return; }
             match status {
                 Some(0) => {
                     latest.unavailable = image.is_none();
@@ -178,7 +187,7 @@ impl CaptureStream {
                 SCStream::alloc(),
                 filter,
                 &configuration,
-                None,
+                Some(ProtocolObject::from_ref(&*output)),
             )
         };
         unsafe {
@@ -208,33 +217,51 @@ impl CaptureStream {
         Ok(capture)
     }
 
-    pub(super) fn snapshot(&self) -> Result<RgbaImage, DriverError> {
+    pub(super) fn snapshot(&self, latest_only: bool) -> Result<Option<RgbaImage>, DriverError> {
+        self.slot.snapshot(latest_only)
+    }
+}
+
+impl FrameSlot {
+    fn stop(&self) {
+        if let Ok(mut latest) = self.latest.lock() {
+            latest.image = None;
+            latest.stopped = true;
+        }
+        self.changed.notify_all();
+    }
+
+    fn snapshot(&self, latest_only: bool) -> Result<Option<RgbaImage>, DriverError> {
         let requested = Instant::now();
-        let deadline = requested + FRAME_WAIT;
         let mut latest = self
-            .slot
             .latest
             .lock()
             .map_err(|_| unavailable("capture frame state is unavailable"))?;
+        let deadline = requested
+            + if latest.image.is_some() {
+                REFRESH_WAIT
+            } else {
+                FRAME_WAIT
+            };
         loop {
-            if latest.callback_at.is_some_and(|time| time >= requested) {
-                if latest.unavailable {
-                    return Err(unavailable("capture stream target is unavailable"));
-                }
+            if latest.stopped || latest.unavailable {
+                return Err(unavailable("capture stream target is unavailable"));
+            }
+            let refreshed = latest.callback_at.is_some_and(|time| time >= requested);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if latest_only || refreshed || remaining.is_zero() {
                 if let Some(image) = &latest.image {
-                    return Ok(RgbaImage::new(
+                    return Ok(Some(RgbaImage::new(
                         image.width,
                         image.height,
                         image.pixels.clone(),
-                    ));
+                    )));
+                }
+                if remaining.is_zero() {
+                    return Ok(None);
                 }
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(unavailable("capture stream did not deliver a fresh frame"));
-            }
             latest = self
-                .slot
                 .changed
                 .wait_timeout(latest, remaining)
                 .map_err(|_| unavailable("capture frame wait failed"))?
@@ -254,12 +281,51 @@ impl Drop for CaptureStream {
                 .stopCaptureWithCompletionHandler(Some(&completion));
         }
         let _ = receiver.recv_timeout(Duration::from_secs(1));
-        if let Ok(mut latest) = self.slot.latest.lock() {
-            latest.image = None;
-        }
+        self.slot.stop();
     }
 }
 
 fn unavailable(message: &str) -> DriverError {
     DriverError::new(DriverErrorKind::TargetUnavailable, message).retryable("observe_window")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn static_slot() -> FrameSlot {
+        FrameSlot {
+            latest: Mutex::new(LatestFrame {
+                image: Some(RgbaImage::new(1, 1, vec![1, 2, 3, 255])),
+                callback_at: Instant::now().checked_sub(Duration::from_secs(5)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unchanged_running_stream_keeps_its_complete_frame() {
+        let slot = static_slot();
+        assert_eq!(
+            slot.snapshot(false).unwrap().unwrap().pixels,
+            vec![1, 2, 3, 255]
+        );
+        assert!(slot.snapshot(true).unwrap().is_some());
+    }
+
+    #[test]
+    fn stopped_stream_never_reuses_a_complete_frame() {
+        let slot = static_slot();
+        slot.stop();
+        assert!(slot.snapshot(true).is_err());
+        assert!(slot.snapshot(false).is_err());
+    }
+
+    #[test]
+    fn missing_first_frame_requests_fallback_without_stopping_stream() {
+        let slot = FrameSlot::default();
+        assert!(slot.snapshot(false).unwrap().is_none());
+        assert!(!slot.latest.lock().unwrap().stopped);
+    }
 }
