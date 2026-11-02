@@ -5,6 +5,9 @@ file.
 
 ## [Unreleased]
 
+- Make the remote conformance fixture honor bounded reconciliation waits so
+  worker-epoch rotation cannot race an unfinished disconnected mutation.
+
 ### Added
 
 - Add session-owned macOS ScreenCaptureKit window streams with bounded frame
