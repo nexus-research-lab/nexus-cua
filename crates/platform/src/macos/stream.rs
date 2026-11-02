@@ -1,5 +1,9 @@
 //! One bounded `ScreenCaptureKit` stream; all native samples stay on its capture queue.
 
+use objc2_core_foundation::CFRetained;
+use objc2_core_video::CVPixelBuffer;
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -33,7 +37,7 @@ const MAX_PIXELS: usize = 16_777_216;
 
 #[derive(Default)]
 struct LatestFrame {
-    image: Option<RgbaImage>,
+    has_frame: bool,
     callback_at: Option<Instant>,
     unavailable: bool,
     stopped: bool,
@@ -43,11 +47,39 @@ struct LatestFrame {
 struct FrameSlot {
     latest: Mutex<LatestFrame>,
     changed: Condvar,
+    frame: QueueFrame,
+    conversion_pending: AtomicBool,
+}
+
+// The allocation is shared as an opaque handle. Only SCStream's serial output
+// queue reads, replaces or drops this native reference. All cross-queue payloads
+// are Rust metadata or owned pixel bytes. Drop schedules clear() on that queue.
+#[derive(Default)]
+struct QueueFrame(UnsafeCell<Option<CFRetained<CVPixelBuffer>>>);
+// SAFETY: Access to the cell is confined to the one serial dispatch queue;
+// cloning the enclosing Arc does not move or expose the native buffer.
+unsafe impl Send for QueueFrame {}
+unsafe impl Sync for QueueFrame {}
+
+impl QueueFrame {
+    // SAFETY contract: caller must execute on this stream's output queue.
+    unsafe fn replace(&self, frame: Option<CFRetained<CVPixelBuffer>>) {
+        unsafe {
+            *self.0.get() = frame;
+        }
+    }
+    unsafe fn copy_pixels(&self) -> Option<RgbaImage> {
+        unsafe {
+            (&*self.0.get())
+                .as_ref()
+                .and_then(|frame| copy_buffer(frame))
+        }
+    }
 }
 
 define_class!(
     // NSObject has no additional subclassing requirements. Native sample buffers
-    // are borrowed only on the serial handler queue; ivars contain synchronized Rust data.
+    // are retained only in queue-confined storage; other threads see Rust metadata.
     #[unsafe(super = NSObject)]
     #[ivars = Arc<FrameSlot>]
     struct FrameOutput;
@@ -64,18 +96,20 @@ define_class!(
         unsafe fn output(&self, _stream: &SCStream, sample: &CMSampleBuffer, kind: SCStreamOutputType) {
             if kind != SCStreamOutputType::Screen { return; }
             let status = frame_status(sample);
-            let image = if status == Some(0) { copy_sample(sample) } else { None };
+            let frame = if status == Some(0) { unsafe { sample.image_buffer() } } else { None };
             let Ok(mut latest) = self.ivars().latest.lock() else { return; };
             if latest.stopped { return; }
             match status {
                 Some(0) => {
-                    latest.unavailable = image.is_none();
-                    latest.image = image;
+                    latest.unavailable = frame.is_none();
+                    latest.has_frame = frame.is_some();
+                    unsafe { self.ivars().frame.replace(frame); }
                     latest.callback_at = Some(Instant::now());
                 }
                 Some(1) => { latest.callback_at = Some(Instant::now()); }
                 Some(2 | 3 | 5) => {
-                    latest.image = None;
+                    latest.has_frame = false;
+                    unsafe { self.ivars().frame.replace(None); }
                     latest.unavailable = true;
                     latest.callback_at = Some(Instant::now());
                 }
@@ -101,23 +135,22 @@ fn frame_status(sample: &CMSampleBuffer) -> Option<i64> {
     })
 }
 
-fn copy_sample(sample: &CMSampleBuffer) -> Option<RgbaImage> {
-    let buffer = unsafe { sample.image_buffer() }?;
-    if CVPixelBufferGetPixelFormatType(&buffer) != u32::from_be_bytes(*b"BGRA") {
+fn copy_buffer(buffer: &CVPixelBuffer) -> Option<RgbaImage> {
+    if CVPixelBufferGetPixelFormatType(buffer) != u32::from_be_bytes(*b"BGRA") {
         return None;
     }
-    let width = CVPixelBufferGetWidth(&buffer);
-    let height = CVPixelBufferGetHeight(&buffer);
+    let width = CVPixelBufferGetWidth(buffer);
+    let height = CVPixelBufferGetHeight(buffer);
     let bytes = width.checked_mul(height)?.checked_mul(4)?;
     if width == 0 || height == 0 || bytes > MAX_PIXELS * 4 {
         return None;
     }
     let flags = CVPixelBufferLockFlags::ReadOnly;
-    if unsafe { CVPixelBufferLockBaseAddress(&buffer, flags) } != 0 {
+    if unsafe { CVPixelBufferLockBaseAddress(buffer, flags) } != 0 {
         return None;
     }
-    let base = CVPixelBufferGetBaseAddress(&buffer).cast::<u8>();
-    let pitch = CVPixelBufferGetBytesPerRow(&buffer);
+    let base = CVPixelBufferGetBaseAddress(buffer).cast::<u8>();
+    let pitch = CVPixelBufferGetBytesPerRow(buffer);
     let result = if base.is_null() || pitch < width * 4 {
         None
     } else {
@@ -147,14 +180,14 @@ fn copy_sample(sample: &CMSampleBuffer) -> Option<RgbaImage> {
             pixels,
         ))
     };
-    let _ = unsafe { CVPixelBufferUnlockBaseAddress(&buffer, flags) };
+    let _ = unsafe { CVPixelBufferUnlockBaseAddress(buffer, flags) };
     result
 }
 
 pub(super) struct CaptureStream {
     stream: Retained<SCStream>,
     _output: Retained<FrameOutput>,
-    _queue: DispatchRetained<DispatchQueue>,
+    queue: DispatchRetained<DispatchQueue>,
     slot: Arc<FrameSlot>,
 }
 
@@ -208,7 +241,7 @@ impl CaptureStream {
         let capture = Self {
             stream,
             _output: output,
-            _queue: queue,
+            queue,
             slot,
         };
         if receiver.recv_timeout(CALLBACK_WAIT) != Ok(true) {
@@ -218,27 +251,53 @@ impl CaptureStream {
     }
 
     pub(super) fn snapshot(&self, latest_only: bool) -> Result<Option<RgbaImage>, DriverError> {
-        self.slot.snapshot(latest_only)
+        if !self.slot.wait_for_frame(latest_only)? {
+            return Ok(None);
+        }
+        if self.slot.conversion_pending.swap(true, Ordering::AcqRel) {
+            return Err(unavailable("capture conversion is still pending"));
+        }
+        let slot = Arc::clone(&self.slot);
+        let (sender, receiver) = sync_channel(1);
+        self.queue.exec_async(move || {
+            let available = slot
+                .latest
+                .lock()
+                .is_ok_and(|state| !state.stopped && !state.unavailable);
+            let image = if available {
+                // SAFETY: This closure executes on the same serial queue as
+                // output(), and returns only owned Rust pixels.
+                unsafe { slot.frame.copy_pixels() }
+            } else {
+                None
+            };
+            slot.conversion_pending.store(false, Ordering::Release);
+            let _ = sender.send(image.ok_or_else(|| unavailable("capture pixels are unavailable")));
+        });
+        receiver
+            .recv_timeout(FRAME_WAIT)
+            .map_err(|_| unavailable("capture conversion exceeded its deadline"))?
+            .map(Some)
     }
 }
 
 impl FrameSlot {
     fn stop(&self) {
         if let Ok(mut latest) = self.latest.lock() {
-            latest.image = None;
+            latest.has_frame = false;
             latest.stopped = true;
         }
         self.changed.notify_all();
     }
 
-    fn snapshot(&self, latest_only: bool) -> Result<Option<RgbaImage>, DriverError> {
+    fn wait_for_frame(&self, latest_only: bool) -> Result<bool, DriverError> {
         let requested = Instant::now();
         let mut latest = self
             .latest
             .lock()
             .map_err(|_| unavailable("capture frame state is unavailable"))?;
         let deadline = requested
-            + if latest.image.is_some() {
+            + if latest.has_frame {
                 REFRESH_WAIT
             } else {
                 FRAME_WAIT
@@ -250,15 +309,11 @@ impl FrameSlot {
             let refreshed = latest.callback_at.is_some_and(|time| time >= requested);
             let remaining = deadline.saturating_duration_since(Instant::now());
             if latest_only || refreshed || remaining.is_zero() {
-                if let Some(image) = &latest.image {
-                    return Ok(Some(RgbaImage::new(
-                        image.width,
-                        image.height,
-                        image.pixels.clone(),
-                    )));
+                if latest.has_frame {
+                    return Ok(true);
                 }
                 if remaining.is_zero() {
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
             latest = self
@@ -272,6 +327,7 @@ impl FrameSlot {
 
 impl Drop for CaptureStream {
     fn drop(&mut self) {
+        self.slot.stop();
         let (sender, receiver) = sync_channel(1);
         let completion = RcBlock::new(move |_error: *mut objc2_foundation::NSError| {
             let _ = sender.send(());
@@ -281,7 +337,13 @@ impl Drop for CaptureStream {
                 .stopCaptureWithCompletionHandler(Some(&completion));
         }
         let _ = receiver.recv_timeout(Duration::from_secs(1));
-        self.slot.stop();
+        let slot = Arc::clone(&self.slot);
+        self.queue.exec_async(move || {
+            // SAFETY: Native frame release stays on its owning output queue.
+            unsafe {
+                slot.frame.replace(None);
+            }
+        });
     }
 }
 
@@ -296,7 +358,7 @@ mod tests {
     fn static_slot() -> FrameSlot {
         FrameSlot {
             latest: Mutex::new(LatestFrame {
-                image: Some(RgbaImage::new(1, 1, vec![1, 2, 3, 255])),
+                has_frame: true,
                 callback_at: Instant::now().checked_sub(Duration::from_secs(5)),
                 ..Default::default()
             }),
@@ -307,25 +369,22 @@ mod tests {
     #[test]
     fn unchanged_running_stream_keeps_its_complete_frame() {
         let slot = static_slot();
-        assert_eq!(
-            slot.snapshot(false).unwrap().unwrap().pixels,
-            vec![1, 2, 3, 255]
-        );
-        assert!(slot.snapshot(true).unwrap().is_some());
+        assert!(slot.wait_for_frame(false).unwrap());
+        assert!(slot.wait_for_frame(true).unwrap());
     }
 
     #[test]
     fn stopped_stream_never_reuses_a_complete_frame() {
         let slot = static_slot();
         slot.stop();
-        assert!(slot.snapshot(true).is_err());
-        assert!(slot.snapshot(false).is_err());
+        assert!(slot.wait_for_frame(true).is_err());
+        assert!(slot.wait_for_frame(false).is_err());
     }
 
     #[test]
     fn missing_first_frame_requests_fallback_without_stopping_stream() {
         let slot = FrameSlot::default();
-        assert!(slot.snapshot(false).unwrap().is_none());
+        assert!(!slot.wait_for_frame(false).unwrap());
         assert!(!slot.latest.lock().unwrap().stopped);
     }
 }

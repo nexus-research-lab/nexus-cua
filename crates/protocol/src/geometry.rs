@@ -108,6 +108,24 @@ pub struct PixelSize {
 }
 
 impl PixelSize {
+    /// Fits within a nonzero long-edge budget without upscaling.
+    pub fn fit_long_edge(self, edge: u32) -> Option<Self> {
+        if self.width == 0 || self.height == 0 || edge == 0 {
+            return None;
+        }
+        let longest = self.width.max(self.height);
+        if longest <= edge {
+            return Some(self);
+        }
+        let scale = |value: u32| {
+            u32::try_from((u64::from(value) * u64::from(edge)).div_ceil(u64::from(longest))).ok()
+        };
+        Some(Self {
+            width: scale(self.width)?.max(1),
+            height: scale(self.height)?.max(1),
+        })
+    }
+
     /// Returns whether a pixel coordinate addresses this image.
     pub fn contains(self, point: ScreenshotPoint) -> bool {
         point.x < self.width && point.y < self.height
@@ -200,6 +218,51 @@ mod normalized_tests {
 
 #[cfg(test)]
 mod precision_tests {
+    #[test]
+    fn image_budget_fits_4k_and_portrait_without_upscaling() {
+        assert_eq!(
+            PixelSize {
+                width: 3840,
+                height: 2160
+            }
+            .fit_long_edge(1568),
+            Some(PixelSize {
+                width: 1568,
+                height: 882
+            })
+        );
+        assert_eq!(
+            PixelSize {
+                width: 2160,
+                height: 3840
+            }
+            .fit_long_edge(1568),
+            Some(PixelSize {
+                width: 882,
+                height: 1568
+            })
+        );
+        assert_eq!(
+            PixelSize {
+                width: 2,
+                height: 1
+            }
+            .fit_long_edge(1568),
+            Some(PixelSize {
+                width: 2,
+                height: 1
+            })
+        );
+        assert!(
+            PixelSize {
+                width: 1,
+                height: 1
+            }
+            .fit_long_edge(0)
+            .is_none()
+        );
+    }
+
     use super::*;
     #[test]
     fn every_axis_pixel_round_trips_at_4k_and_laptop_resolution() {

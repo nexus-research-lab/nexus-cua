@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=badb4ae64834cda89057571af89b28b05b07f5657b740d68a4ccda0b1e6e394c -->
+<!-- generated: product=0.1.0 catalogue_sha256=1255e0cc46e2752ad55d7776dd7d9c7204d837763adc138cbf9c7ec680ccee89 -->
 
 ## Operating contract
 
@@ -64,6 +64,16 @@ actions do not first raise the target and erase evidence of foreign occlusion.
 Move-only and explicit background clicks are exempt from this foreground check.
 Scroll first moves the cursor to its target. Unowned points fail not_dispatched
 with observe_window guidance. This does not implement application-scene capture.
+
+C4: `serve` and `mcp serve` accept `--max-image-edge` (default 1568, range 1..4096).
+RuntimeConfig exposes the same model-image budget. macOS window streams and
+one-shot window/display capture request that output size natively. The native
+output queue retains only the latest pixel buffer and converts it on demand;
+only owned Rust pixels leave that queue. At most one conversion is pending per
+stream. PNG output is RGB, flattening transparency over white, and reports its
+actual dimensions in ScreenshotMapping. Drivers without native resizing use a
+bounded encoder-stage resize; Windows WGC still acquires native-size frames.
+Public SDK request shapes are unchanged; map points using returned dimensions.
 
 ## CLI binding
 

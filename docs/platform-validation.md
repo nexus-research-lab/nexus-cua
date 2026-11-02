@@ -451,3 +451,13 @@ C6: deterministic tests cover guarded action points, both drag endpoints,
 background/move exemptions, topmost process selection and runtime overlay exclusion.
 Native foreign occlusion, same-process popup, and AX-free custom-view scrolling
 remain pending. CG rectangle ordering does not prove click-through semantics.
+
+## C4 capture conversion and output budget (2026-11-02)
+
+Source changes retain only the latest native macOS pixel buffer on the serial
+output queue and convert pixels on demand. Both stream and one-shot macOS capture
+use the configured image edge (default 1568). The artifact encoder emits RGB PNG
+and applies a bounded resize fallback for Windows native-size capture.
+Deterministic tests cover output dimensions, RGB encoding, alpha compositing,
+and screen mapping. Native 60-second video CPU, 4K encoded size, and scaled
+coordinate hit acceptance are pending; source tests do not establish these.

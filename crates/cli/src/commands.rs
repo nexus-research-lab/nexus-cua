@@ -138,6 +138,9 @@ struct McpServeArgs {
     /// Largest PNG returned as one MCP image block.
     #[arg(long, default_value_t = DEFAULT_MAX_IMAGE_BYTES)]
     max_image_bytes: u64,
+    /// Model screenshot long edge; native capture scales before encoding where supported.
+    #[arg(long, default_value_t = 1568, value_parser = clap::value_parser!(u32).range(1..=4096))]
+    max_image_edge: u32,
     /// Maximum model think time before a guarded observation must be refreshed.
     #[arg(long, default_value_t = DEFAULT_MAX_OBSERVATION_AGE_SECONDS)]
     max_observation_age_seconds: u64,
@@ -206,6 +209,9 @@ struct ServeArgs {
     /// Private transient screenshot directory.
     #[arg(long, requires_all = ["endpoint", "token_file"])]
     artifact_root: Option<PathBuf>,
+    /// Model screenshot long edge; native capture scales before encoding where supported.
+    #[arg(long, default_value_t = 1568, value_parser = clap::value_parser!(u32).range(1..=4096))]
+    max_image_edge: u32,
     /// Maximum model think time before a guarded observation must be refreshed.
     #[arg(long, default_value_t = DEFAULT_MAX_OBSERVATION_AGE_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
     max_observation_age_seconds: u64,
@@ -387,6 +393,7 @@ async fn run_mcp(args: McpArgs) -> Result<(), CliError> {
             );
             config.max_image_bytes = args.max_image_bytes;
             config.max_observation_age_seconds = args.max_observation_age_seconds;
+            config.max_image_edge = args.max_image_edge;
             config.managed_policy_file = args.managed_policy_file;
             config.policy_file = args.policy_file;
             config.tool_profile = args.tool_profile;
@@ -537,6 +544,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     let driver = nexus_cua_platform::system_driver()?;
     let mut runtime_config = RuntimeConfig::new(&paths.artifact_root);
     runtime_config.policy = policy;
+    runtime_config.max_image_edge = args.max_image_edge;
     runtime_config.max_observation_age =
         std::time::Duration::from_secs(args.max_observation_age_seconds);
     let runtime = Arc::new(Runtime::new(driver, runtime_config).map_err(CliError::Runtime)?);
@@ -706,6 +714,37 @@ fn command_too_large() -> CliError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_image_edge_is_bounded_service_configuration() {
+        let cli = Cli::try_parse_from([
+            "nexuscua",
+            "serve",
+            "--dev-root",
+            "state",
+            "--max-image-edge",
+            "1024",
+        ])
+        .unwrap();
+        let CliCommand::Serve(args) = cli.command else {
+            panic!("expected serve")
+        };
+        assert_eq!(args.max_image_edge, 1024);
+        assert_eq!(RuntimeConfig::new("state").max_image_edge, 1568);
+        for edge in ["0", "4097"] {
+            assert!(
+                Cli::try_parse_from([
+                    "nexuscua",
+                    "serve",
+                    "--dev-root",
+                    "state",
+                    "--max-image-edge",
+                    edge
+                ])
+                .is_err()
+            );
+        }
+    }
+
     use std::io::Cursor;
 
     use super::*;

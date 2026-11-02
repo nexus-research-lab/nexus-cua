@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C4: Convert macOS stream pixels on demand, cap model images at a configurable 1568-pixel long edge by default, and encode RGB PNGs with accurate mappings.
+
 - C6: Check foreground pointer ownership on the input actor for click, hold, scroll and drag, allow same-process popups, and move the macOS cursor before scrolling.
 
 - C11: Enumerate native windows once per request, filtering the complete authorized application set before optional state queries.

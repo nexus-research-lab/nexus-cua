@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::mem::{MaybeUninit, size_of};
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -82,6 +83,7 @@ pub(super) struct ForegroundOwner {
 pub(super) struct CaptureActor {
     sender: SyncSender<CaptureCommand>,
     live_sessions: Arc<Mutex<HashSet<String>>>,
+    max_image_edge: Arc<AtomicU32>,
 }
 
 impl CaptureActor {
@@ -90,6 +92,8 @@ impl CaptureActor {
         let (recycle_sender, recycle_receiver) = sync_channel(RECYCLE_CAPACITY);
         let live_sessions = Arc::new(Mutex::new(HashSet::new()));
         let actor_sessions = Arc::clone(&live_sessions);
+        let max_image_edge = Arc::new(AtomicU32::new(0));
+        let actor_image_edge = Arc::clone(&max_image_edge);
         thread::Builder::new()
             .name("nexus-cua-macos-capture".to_owned())
             .spawn(move || {
@@ -98,12 +102,27 @@ impl CaptureActor {
                     &recycle_receiver,
                     &recycle_sender,
                     &actor_sessions,
+                    &actor_image_edge,
                 );
             })
             .expect("create CoreGraphics capture actor thread");
         Self {
             sender,
             live_sessions,
+            max_image_edge,
+        }
+    }
+
+    pub(super) fn configure_max_image_edge(&self, edge: u32) -> Result<(), DriverError> {
+        match self
+            .max_image_edge
+            .compare_exchange(0, edge, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => Ok(()),
+            Err(current) if current == edge => Ok(()),
+            Err(_) => Err(native_failure(
+                "capture size is immutable for this driver instance",
+            )),
         }
     }
 
@@ -299,12 +318,15 @@ fn actor_loop(
     recycle_receiver: &Receiver<Vec<u8>>,
     recycle_sender: &SyncSender<Vec<u8>>,
     live_sessions: &Mutex<HashSet<String>>,
+    configured_edge: &AtomicU32,
 ) {
     let mut recycled = VecDeque::with_capacity(RECYCLE_CAPACITY);
     let mut applications = ApplicationCache::default();
     let mut capture_filter = None;
     let mut streams: Vec<WarmStream> = Vec::new();
     while let Some(command) = next_capture_command(receiver, &mut streams, live_sessions) {
+        let edge = configured_edge.load(Ordering::Acquire);
+        let max_image_edge = if edge == 0 { 1568 } else { edge };
         let recycle_space = RECYCLE_CAPACITY - recycled.len();
         recycled.extend(recycle_receiver.try_iter().take(recycle_space));
         autoreleasepool(|_| match command {
@@ -331,6 +353,7 @@ fn actor_loop(
                         &target_key,
                         expected_bounds,
                         recycle_sender,
+                        max_image_edge,
                     )
                 } else {
                     capture_target(
@@ -339,6 +362,7 @@ fn actor_loop(
                         &mut capture_filter,
                         recycled.pop_front(),
                         recycle_sender.clone(),
+                        max_image_edge,
                     )
                 };
                 let _ = reply.send(result);
@@ -353,6 +377,7 @@ fn actor_loop(
                     expected_bounds,
                     recycled.pop_front(),
                     recycle_sender.clone(),
+                    max_image_edge,
                 ));
             }
             CaptureCommand::ResolveWindow { target_key, reply } => {
@@ -456,6 +481,7 @@ fn stream_capture(
     target_key: &str,
     bounds: ScreenRect,
     recycle_sender: &SyncSender<Vec<u8>>,
+    max_image_edge: u32,
 ) -> Result<(RgbaImage, ScreenRect), DriverError> {
     let authorized = || {
         session_id.is_none_or(|id| {
@@ -487,11 +513,8 @@ fn stream_capture(
         }
         let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
         let scale = f64::from(unsafe { filter.filter.pointPixelScale() }).max(1.0);
-        let stream = super::stream::CaptureStream::start(
-            &filter.filter,
-            capture_dimension(bounds.width * scale)?,
-            capture_dimension(bounds.height * scale)?,
-        )?;
+        let (width, height) = capture_size(bounds, scale, max_image_edge)?;
+        let stream = super::stream::CaptureStream::start(&filter.filter, width, height)?;
         streams.push(WarmStream {
             target_key: target_key.to_owned(),
             width: bounds.width,
@@ -513,7 +536,13 @@ fn stream_capture(
         Ok(Some(image)) => image,
         Ok(None) => {
             let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
-            capture_with_filter(&filter.filter, bounds, None, recycle_sender.clone())?
+            capture_with_filter(
+                &filter.filter,
+                bounds,
+                None,
+                recycle_sender.clone(),
+                max_image_edge,
+            )?
         }
         Err(error) => {
             streams.retain(|stream| stream.target_key != target_key);
@@ -819,6 +848,7 @@ fn capture_display(
     expected_bounds: ScreenRect,
     recycled: Option<Vec<u8>>,
     recycle_sender: SyncSender<Vec<u8>>,
+    max_image_edge: u32,
 ) -> Result<(RgbaImage, ScreenRect), DriverError> {
     let display_id = target_key
         .strip_prefix("sc-display:")
@@ -861,8 +891,14 @@ fn capture_display(
         )
         .retryable("list_displays_again"));
     }
-    capture_with_filter(&filter, expected_bounds, recycled, recycle_sender)
-        .map(|image| (image, expected_bounds))
+    capture_with_filter(
+        &filter,
+        expected_bounds,
+        recycled,
+        recycle_sender,
+        max_image_edge,
+    )
+    .map(|image| (image, expected_bounds))
 }
 
 fn load_shareable_content(context: &str) -> Result<Retained<SCShareableContent>, DriverError> {
@@ -961,6 +997,7 @@ fn capture_target(
     cached_filter: &mut Option<CaptureFilter>,
     recycled: Option<Vec<u8>>,
     recycle_sender: SyncSender<Vec<u8>>,
+    max_image_edge: u32,
 ) -> Result<(RgbaImage, ScreenRect), DriverError> {
     let window_id = target_window_id(target_key)?;
     if cached_filter
@@ -977,6 +1014,7 @@ fn capture_target(
         expected_bounds,
         recycled,
         recycle_sender,
+        max_image_edge,
     );
     if result.is_err() {
         *cached_filter = None;
@@ -1036,14 +1074,14 @@ fn capture_with_filter(
     expected_bounds: ScreenRect,
     recycled: Option<Vec<u8>>,
     recycle_sender: SyncSender<Vec<u8>>,
+    max_image_edge: u32,
 ) -> Result<RgbaImage, DriverError> {
     // SAFETY: The filter and configuration remain retained until the
     // completion fires. Pixel copying happens entirely on the native capture
     // queue before the Rust-owned image crosses back to the actor.
     unsafe {
         let scale = f64::from(filter.pointPixelScale()).max(1.0);
-        let width = capture_dimension(expected_bounds.width * scale)?;
-        let height = capture_dimension(expected_bounds.height * scale)?;
+        let (width, height) = capture_size(expected_bounds, scale, max_image_edge)?;
         let configuration = SCStreamConfiguration::new();
         configuration.setWidth(width);
         configuration.setHeight(height);
@@ -1282,6 +1320,18 @@ fn application_generation(pid: i32) -> Option<String> {
     ))
 }
 
+fn capture_size(bounds: ScreenRect, scale: f64, edge: u32) -> Result<(usize, usize), DriverError> {
+    let size = nexus_cua_protocol::PixelSize {
+        width: u32::try_from(capture_dimension(bounds.width * scale)?)
+            .map_err(|_| image_too_large())?,
+        height: u32::try_from(capture_dimension(bounds.height * scale)?)
+            .map_err(|_| image_too_large())?,
+    }
+    .fit_long_edge(edge)
+    .ok_or_else(image_too_large)?;
+    Ok((size.width as usize, size.height as usize))
+}
+
 fn capture_dimension(value: f64) -> Result<usize, DriverError> {
     if !value.is_finite() || value <= 0.0 || value > f64::from(u32::MAX) {
         return Err(image_too_large());
@@ -1433,6 +1483,7 @@ mod wake_tests {
         let actor = CaptureActor {
             sender,
             live_sessions: Arc::clone(&live_sessions),
+            max_image_edge: Arc::new(AtomicU32::new(0)),
         };
         actor.session_closed("session");
         assert!(live_sessions.lock().unwrap().is_empty());

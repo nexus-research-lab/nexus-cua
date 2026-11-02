@@ -415,6 +415,15 @@ pub struct DriverClipboardWriteOutput {
 /// Replaceable platform implementation beneath the authorization runtime.
 #[async_trait]
 pub trait DesktopDriver: Send + Sync {
+    /// Fixes the model capture size before sessions are admitted. Drivers that
+    /// cannot resize natively rely on the bounded artifact encoder fallback.
+    ///
+    /// # Errors
+    /// Returns an error if the driver cannot apply the configured image limit.
+    fn configure_max_image_edge(&self, _max_image_edge: u32) -> Result<(), DriverError> {
+        Ok(())
+    }
+
     /// Registers a bounded runtime session for native capture resource ownership.
     ///
     /// # Errors

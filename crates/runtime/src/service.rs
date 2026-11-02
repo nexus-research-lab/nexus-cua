@@ -65,6 +65,8 @@ pub struct RuntimeConfig {
     pub max_elements_per_observation: usize,
     /// Maximum physical displays projected into one session.
     pub max_displays_per_session: usize,
+    /// Maximum model image long edge, applied at native capture where supported.
+    pub max_image_edge: u32,
     /// Maximum decoded screenshot pixels.
     pub max_image_pixels: u64,
     /// Maximum screenshot files retained for one live session.
@@ -93,6 +95,7 @@ impl RuntimeConfig {
             max_launch_discovery_records: 2_048,
             max_elements_per_observation: 2_000,
             max_displays_per_session: 16,
+            max_image_edge: 1568,
             max_image_pixels: 100_000_000,
             max_artifacts_per_session: 32,
             max_artifact_workers: 2,
@@ -166,6 +169,7 @@ impl Runtime {
             || config.max_discovered_launchable_applications > config.max_launch_discovery_records
             || config.max_elements_per_observation == 0
             || config.max_displays_per_session == 0
+            || !(1..=4096).contains(&config.max_image_edge)
             || config.max_image_pixels == 0
             || config.max_artifacts_per_session == 0
             || config.max_artifact_workers == 0
@@ -179,10 +183,14 @@ impl Runtime {
                 None,
             ));
         }
+        driver
+            .configure_max_image_edge(config.max_image_edge)
+            .map_err(CuaError::from)?;
         let artifacts = Arc::new(ArtifactStore::new(
             &config.artifact_root,
             config.max_image_pixels,
             config.max_artifacts_per_session,
+            config.max_image_edge,
         )?);
         let artifact_workers = Arc::new(Semaphore::new(config.max_artifact_workers));
         Ok(Self {

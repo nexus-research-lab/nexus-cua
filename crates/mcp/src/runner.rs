@@ -109,6 +109,8 @@ pub struct McpServeConfig {
     pub artifact_root: PathBuf,
     /// Largest PNG returned as one MCP image block.
     pub max_image_bytes: u64,
+    /// Maximum model screenshot long edge (1..=4096).
+    pub max_image_edge: u32,
     /// Maximum age of an observation used to guard a mutation.
     pub max_observation_age_seconds: u64,
     /// Optional administrator-owned immutable runtime policy.
@@ -126,6 +128,7 @@ impl McpServeConfig {
             authority: AuthoritySource::UnsignedDevelopmentFile(authority_file),
             artifact_root,
             max_image_bytes: DEFAULT_MAX_IMAGE_BYTES,
+            max_image_edge: 1568,
             max_observation_age_seconds: DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
             managed_policy_file: None,
             policy_file: None,
@@ -146,6 +149,7 @@ impl McpServeConfig {
             },
             artifact_root,
             max_image_bytes: DEFAULT_MAX_IMAGE_BYTES,
+            max_image_edge: 1568,
             max_observation_age_seconds: DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
             managed_policy_file: None,
             policy_file: None,
@@ -159,7 +163,8 @@ impl McpServeConfig {
                 "max-image-bytes must be between 1 and 33554432".to_owned(),
             ));
         }
-        if self.max_observation_age_seconds == 0
+        if !(1..=4096).contains(&self.max_image_edge)
+            || self.max_observation_age_seconds == 0
             || self.max_observation_age_seconds > HARD_MAX_OBSERVATION_AGE_SECONDS
         {
             return Err(McpServeError::InvalidConfiguration(
@@ -686,6 +691,7 @@ async fn bootstrap_adapter(
     config.validate()?;
     let driver = nexus_cua_platform::system_driver()?;
     let mut runtime_config = RuntimeConfig::new(config.artifact_root);
+    runtime_config.max_image_edge = config.max_image_edge;
     runtime_config.max_observation_age = Duration::from_secs(config.max_observation_age_seconds);
     runtime_config.policy = RuntimePolicyStack::from_files(
         config.managed_policy_file.as_deref(),

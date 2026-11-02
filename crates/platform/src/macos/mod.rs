@@ -207,6 +207,10 @@ fn initialize_appkit() -> Result<(), DriverError> {
 
 #[async_trait]
 impl DesktopDriver for MacosDriver {
+    fn configure_max_image_edge(&self, edge: u32) -> Result<(), DriverError> {
+        self.capture.configure_max_image_edge(edge)
+    }
+
     fn session_started(
         &self,
         session_id: &nexus_cua_protocol::SessionId,

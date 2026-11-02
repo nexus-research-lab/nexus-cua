@@ -30,6 +30,7 @@ macos-accessibility-client = "0.0.2"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "block2", "NSApplication", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSWorkspace"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGImage"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
 objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMSampleBuffer", "CMTime", "objc2-core-video"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVReturn", "CVBuffer", "CVImageBuffer", "CVPixelBuffer"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDate", "NSEnumerator", "NSError", "NSString", "NSURL"] }

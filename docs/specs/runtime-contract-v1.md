@@ -438,3 +438,13 @@ actions do not first raise the target and erase evidence of foreign occlusion.
 Move-only and explicit background clicks are exempt from this foreground check.
 Scroll first moves the cursor to its target. Unowned points fail not_dispatched
 with observe_window guidance. This does not implement application-scene capture.
+
+C4: `serve` and `mcp serve` accept `--max-image-edge` (default 1568, range 1..4096).
+RuntimeConfig exposes the same model-image budget. macOS window streams and
+one-shot window/display capture request that output size natively. The native
+output queue retains only the latest pixel buffer and converts it on demand;
+only owned Rust pixels leave that queue. At most one conversion is pending per
+stream. PNG output is RGB, flattening transparency over white, and reports its
+actual dimensions in ScreenshotMapping. Drivers without native resizing use a
+bounded encoder-stage resize; Windows WGC still acquires native-size frames.
+Public SDK request shapes are unchanged; map points using returned dimensions.
