@@ -1008,7 +1008,14 @@ async fn send_and_disconnect(
     timeout(IO_TIMEOUT, async {
         stream.write_all(&length.to_be_bytes()).await?;
         stream.write_all(&payload).await?;
-        stream.flush().await
+        stream.flush().await?;
+        // A local TLS flush does not prove peer admission: dropping the socket
+        // immediately can discard the request on Windows. Wait for one byte of
+        // response framing, then disconnect without consuming a result. This
+        // establishes post-admission loss while leaving the controller unable
+        // to classify the effect without reconciliation.
+        let mut prefix_byte = [0_u8; 1];
+        stream.read_exact(&mut prefix_byte).await.map(|_| ())
     })
     .await
     .map_err(|_| HarnessError::BootstrapTimeout)??;

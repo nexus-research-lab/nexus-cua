@@ -6,7 +6,8 @@ file.
 ## [Unreleased]
 
 - Make the remote conformance fixture honor bounded reconciliation waits so
-  worker-epoch rotation cannot race an unfinished disconnected mutation.
+  worker-epoch rotation cannot race an unfinished disconnected mutation. Confirm
+  response framing before dropping the test connection to establish admission.
 
 ### Added
 

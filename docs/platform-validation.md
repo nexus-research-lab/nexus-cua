@@ -14,9 +14,10 @@ foreground input disabled. Set `NEXUS_CUA_FIXTURE_BACKGROUND=1` when launching t
 macOS fixture to avoid activating it; this diagnostic is partial evidence only.
 
 Windows GNU 1.88 workspace Clippy and platform tests pass with LLVM-MinGW
-`ld.lld` and `-C linker-flavor=ld.lld -C link-self-contained=yes`. The latest full
-workspace test run exposed a remote-harness reconciliation/epoch-rotation race;
-a bounded-wait fixture fix passes local tests, with Windows revalidation pending.
+`ld.lld` and `-C linker-flavor=ld.lld -C link-self-contained=yes`. The full
+workspace test rerun passes after the remote fixture honors reconciliation waits
+and confirms response framing before dropping the disconnected request. A TLS
+flush alone did not prove admission on Windows; no mutation replay was added.
 Interactive display capture
 still fails with WGC HRESULT `0x80070057`; `validate --window-only` isolates
 window capture and currently stops at missing fixture invocation semantics.
