@@ -26,7 +26,8 @@ use nexus_cua_runtime::{
     DriverLaunchableApplication, DriverObservation, DriverVerification, DriverWindow,
 };
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetDpiAwarenessContextForProcess, SetProcessDpiAwarenessContext,
 };
 
 use capture::CaptureActor;
@@ -57,11 +58,22 @@ const LAUNCH_CONFIRM_INTERVAL: Duration = Duration::from_millis(50);
 impl WindowsDriver {
     /// Creates the native actors without prompting or widening OS authority.
     pub fn new() -> Result<Self, DriverError> {
-        // SAFETY: This must run before creating platform windows. Failure means
-        // the host already selected a process DPI mode; screenshot mappings
-        // continue to make coordinate conversion explicit.
-        let _ =
-            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        // SAFETY: Configure before actors are created. A manifest may already
+        // have configured PMv2; verify the actual process context in either case.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let context = GetDpiAwarenessContextForProcess(
+                windows::Win32::System::Threading::GetCurrentProcess(),
+            );
+            if !AreDpiAwarenessContextsEqual(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                .as_bool()
+            {
+                return Err(DriverError::new(
+                    DriverErrorKind::Unsupported,
+                    "Windows driver requires process Per-Monitor-V2 DPI awareness",
+                ));
+            }
+        }
         Ok(Self {
             discovery: DiscoveryActor::spawn(),
             capture: CaptureActor::spawn()?,

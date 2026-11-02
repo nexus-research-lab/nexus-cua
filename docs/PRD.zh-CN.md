@@ -2248,6 +2248,8 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C12 Windows 显示器捕获 `0x80070057`（Windows）
 
+实施状态：已补当前拓扑解析、PMv2 验证、WGC 支持检查和无内容最小诊断程序。Windows 11 build 26300 上最小程序的窗口/显示器创建均成功；完整 runtime 已通过显示器观察，后续窗口 UIA 缓存构建超时，整体原生验收未通过。旧 `0x80070057` 根因尚未被单变量复现确认。
+
 - **问题**：活动控制台 session 中 `observe_display` 的 WGC `CreateForMonitor`
   返回 `E_INVALIDARG`，原生回归无法进入窗口动作阶段。
 - **修复步骤**：

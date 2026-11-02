@@ -18,9 +18,11 @@ Windows GNU 1.88 workspace Clippy and platform tests pass with LLVM-MinGW
 workspace test rerun passes after the remote fixture honors reconciliation waits
 and confirms response framing before dropping the disconnected request. A TLS
 flush alone did not prove admission on Windows; no mutation replay was added.
-Interactive display capture
-still fails with WGC HRESULT `0x80070057`; `validate --window-only` isolates
-window capture and currently stops at missing fixture invocation semantics.
+Interactive display capture now passes in the C12 candidate on Windows 11
+build 26300. Full validation stops at initial window observation with
+`TargetUnresponsive: UI Automation cache build failed`. Earlier window-only
+diagnostics also lacked fixture invocation semantics; Windows native acceptance
+remains open.
 Neither source tests nor the window-only diagnostic establish native acceptance.
 
 ## Codex MCP dogfood
@@ -466,3 +468,16 @@ and applies a bounded resize fallback for Windows native-size capture.
 Deterministic tests cover output dimensions, RGB encoding, alpha compositing,
 and screen mapping. Native 60-second video CPU, 4K encoded size, and scaled
 coordinate hit acceptance are pending; source tests do not establish these.
+
+## C12 Windows monitor diagnostics (2026-11-02)
+
+The driver re-enumerates at most 64 monitors on the capture actor, rejects
+changed bounds or absent handles, verifies process PMv2 DPI awareness and checks
+WGC support. It never falls back to a legacy capture API.
+`cargo run -p nexus-cua-platform --example wgc_probe` is a content-free diagnostic
+for an interactive console session. On Windows 11 build 26300 it reported PMv2
+and WGC supported, successful foreground-window creation (1734×927), and valid
+DISPLAY1 monitor creation (3840×2560). The full candidate passed display overview
+before failing initial UIA cache construction. This does not establish the
+original E_INVALIDARG root cause or acceptance of subsequent window actions.
+Local full make check and Windows GNU 1.88 workspace Clippy/tests passed.

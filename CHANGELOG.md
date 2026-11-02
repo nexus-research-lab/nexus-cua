@@ -5,6 +5,9 @@ file.
 
 ## [Unreleased]
 
+- C12: validate current Windows monitor topology, PMv2 awareness and WGC support;
+  add a content-free native interop diagnostic without legacy capture fallback.
+
 - Make the remote conformance fixture honor bounded reconciliation waits so
   worker-epoch rotation cannot race an unfinished disconnected mutation. Confirm
   response framing before dropping the test connection to establish admission.
