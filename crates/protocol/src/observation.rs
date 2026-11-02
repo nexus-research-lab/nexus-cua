@@ -22,6 +22,20 @@ pub struct ApplicationSummary {
     pub foreground: bool,
 }
 
+/// Best-effort native window state; unknown is never treated as normal.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowState {
+    /// Confirmed visible and not minimized.
+    Normal,
+    /// Confirmed minimized by the native provider.
+    Minimized,
+    /// Not currently visible; the reason may be unavailable.
+    Offscreen,
+    /// Native state could not be determined.
+    Unknown,
+}
+
 /// One top-level application window.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -34,8 +48,8 @@ pub struct WindowSummary {
     pub title: String,
     /// Logical top-left screen bounds.
     pub screen_bounds: ScreenRect,
-    /// Whether the window is minimized.
-    pub minimized: bool,
+    /// Best-effort native state, independent of discovery availability.
+    pub state: WindowState,
     /// Whether the window is currently visible on a display.
     pub visible: bool,
     /// Whether the window owns foreground input.
@@ -230,4 +244,23 @@ pub struct DisplayObservation {
     pub display_screen_bounds: ScreenRect,
     /// Transient full-display screenshot.
     pub screenshot: ScreenshotArtifact,
+}
+
+#[cfg(test)]
+mod window_state_tests {
+    use super::WindowState;
+    #[test]
+    fn window_state_is_closed_and_unknown_is_explicit() {
+        for state in [
+            WindowState::Normal,
+            WindowState::Minimized,
+            WindowState::Offscreen,
+            WindowState::Unknown,
+        ] {
+            let wire = serde_json::to_string(&state).unwrap();
+            assert_eq!(serde_json::from_str::<WindowState>(&wire).unwrap(), state);
+        }
+        assert!(serde_json::from_str::<WindowState>("true").is_err());
+        assert!(serde_json::from_str::<WindowState>(r#""hidden""#).is_err());
+    }
 }

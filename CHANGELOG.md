@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C1: Keep macOS discovery available without AX, bound optional state enrichment, and replace window minimized booleans with explicit state in all SDKs.
+
 - C10: Reject the ineffective observation-age option on request and mutation reconciliation; configure it on serve or MCP.
 
 - C5: Wake macOS capture on commands, session revocation, or stream expiry instead of polling while idle.

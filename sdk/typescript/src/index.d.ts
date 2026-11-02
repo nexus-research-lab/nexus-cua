@@ -130,7 +130,8 @@ export interface ScreenRect { x: number; y: number; width: number; height: numbe
 export interface NormalizedPoint { x: number; y: number }
 export interface PixelSize { width: number; height: number }
 export interface ScreenshotMapping { screen_bounds: ScreenRect; pixel_size: PixelSize }
-export interface WindowSummary { window_ref: string; app_ref: string; title: string; screen_bounds: ScreenRect; minimized: boolean; visible: boolean; foreground: boolean }
+export type WindowState = "normal" | "minimized" | "offscreen" | "unknown";
+export interface WindowSummary { window_ref: string; app_ref: string; title: string; screen_bounds: ScreenRect; state: WindowState; visible: boolean; foreground: boolean }
 export interface DisplaySummary { display_ref: string; screen_bounds: ScreenRect; primary: boolean }
 
 export interface ScreenshotArtifact {

@@ -507,6 +507,11 @@ function decodeCuaError(value) {
 function validateResultData(resultType, value) {
   if (["apps", "windows", "displays"].includes(resultType)) {
     if (!Array.isArray(value)) throw new TypeError(`${resultType} result data must be an array`);
+    if (resultType === "windows") {
+      for (const window of value) {
+        if (!new Set(["normal", "minimized", "offscreen", "unknown"]).has(window.state)) throw new Error("unknown window state");
+      }
+    }
     return;
   }
   const data = objectValue(value, `${resultType} data`);

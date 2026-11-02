@@ -1325,7 +1325,7 @@ async fn validate_desktop_session(
         .await?
         .into_iter()
         .find(|candidate| candidate.window_ref == window.window_ref)
-        .is_some_and(|candidate| candidate.minimized);
+        .is_some_and(|candidate| candidate.state == nexus_cua_protocol::WindowState::Minimized);
     if !still_minimized {
         return Err("minimized observation restored or lost the target implicitly".into());
     }
@@ -1343,7 +1343,9 @@ async fn wait_for_minimized(
         let current = windows
             .iter()
             .find(|candidate| candidate.window_ref == window.window_ref);
-        if current.is_some_and(|candidate| candidate.minimized) {
+        if current
+            .is_some_and(|candidate| candidate.state == nexus_cua_protocol::WindowState::Minimized)
+        {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {

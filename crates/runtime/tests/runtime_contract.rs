@@ -138,7 +138,7 @@ impl MockDriver {
                 width: 2.0,
                 height: 2.0,
             },
-            minimized: false,
+            state: nexus_cua_protocol::WindowState::Normal,
             visible: true,
             foreground: true,
         }

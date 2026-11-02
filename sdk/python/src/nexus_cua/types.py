@@ -582,13 +582,20 @@ class ScreenshotMapping:
         )
 
 
+class WindowState(ClosedString):
+    NORMAL = "normal"
+    MINIMIZED = "minimized"
+    OFFSCREEN = "offscreen"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class WindowSummary:
     window_ref: WindowRef
     app_ref: AppRef
     title: str
     screen_bounds: ScreenRect
-    minimized: bool
+    state: WindowState
     visible: bool
     foreground: bool
 
@@ -601,7 +608,7 @@ class WindowSummary:
                 "app_ref",
                 "title",
                 "screen_bounds",
-                "minimized",
+                "state",
                 "visible",
                 "foreground",
             },
@@ -611,7 +618,7 @@ class WindowSummary:
             AppRef(string_value(data["app_ref"])),
             string_value(data["title"]),
             ScreenRect.from_wire(data["screen_bounds"]),
-            bool_value(data["minimized"]),
+            WindowState(data["state"]),
             bool_value(data["visible"]),
             bool_value(data["foreground"]),
         )

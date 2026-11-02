@@ -35,3 +35,7 @@ clipboard, application, or action authority.
 Screenshots, accessibility content, clipboard values, typed text, tokens,
 grants, and request payloads are transient sensitive data. Do not log, persist,
 quote, or copy them outside the immediate authorized operation.
+
+Window lists report `state`: normal, minimized, offscreen, or unknown. Unknown
+is not proof of visibility or readiness; re-observe before input. Screenshot-only
+observation does not require accessibility permission.

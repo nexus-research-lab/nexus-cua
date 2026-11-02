@@ -968,7 +968,7 @@ impl Runtime {
                 app_ref,
                 title: window.title,
                 screen_bounds: window.screen_bounds,
-                minimized: window.minimized,
+                state: window.state,
                 visible: window.visible,
                 foreground: window.foreground,
             });

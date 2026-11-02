@@ -87,8 +87,8 @@ pub struct DriverWindow {
     pub title: String,
     /// Logical top-left screen bounds.
     pub screen_bounds: ScreenRect,
-    /// Whether the window is minimized.
-    pub minimized: bool,
+    /// Best-effort state; state-query failures must not remove discovered windows.
+    pub state: nexus_cua_protocol::WindowState,
     /// Whether the window is visible on a display.
     pub visible: bool,
     /// Whether the window owns foreground input.

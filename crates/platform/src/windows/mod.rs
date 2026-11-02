@@ -727,7 +727,13 @@ fn driver_window(window: NativeWindow) -> DriverWindow {
         application,
         title: window.title,
         screen_bounds: window.screen_bounds,
-        minimized: window.minimized,
+        state: if window.minimized {
+            nexus_cua_protocol::WindowState::Minimized
+        } else if window.visible {
+            nexus_cua_protocol::WindowState::Normal
+        } else {
+            nexus_cua_protocol::WindowState::Offscreen
+        },
         visible: window.visible,
         foreground: window.foreground,
     }

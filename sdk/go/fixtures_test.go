@@ -241,7 +241,7 @@ func TestSelectApplicationPrefersExactAndRejectsAmbiguity(t *testing.T) {
 
 func TestSelectWindowDoesNotDependOnPlatformOrdering(t *testing.T) {
 	windows := []WindowSummary{
-		{WindowRef: "window_helper", Title: "", Minimized: true},
+		{WindowRef: "window_helper", Title: "", State: WindowMinimized},
 		{WindowRef: "window_fixture", Title: "Fixture · Generation 1"},
 		{WindowRef: "window_help", Title: "Fixture Help"},
 	}

@@ -360,14 +360,37 @@ type ScreenshotMapping struct {
 	PixelSize    PixelSize  `json:"pixel_size"`
 }
 
+type WindowState string
+
+const (
+	WindowNormal    WindowState = "normal"
+	WindowMinimized WindowState = "minimized"
+	WindowOffscreen WindowState = "offscreen"
+	WindowUnknown   WindowState = "unknown"
+)
+
+func (s *WindowState) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	switch WindowState(value) {
+	case WindowNormal, WindowMinimized, WindowOffscreen, WindowUnknown:
+		*s = WindowState(value)
+		return nil
+	default:
+		return fmt.Errorf("unknown window state %q", value)
+	}
+}
+
 type WindowSummary struct {
-	WindowRef    WindowRef  `json:"window_ref"`
-	AppRef       AppRef     `json:"app_ref"`
-	Title        string     `json:"title"`
-	ScreenBounds ScreenRect `json:"screen_bounds"`
-	Minimized    bool       `json:"minimized"`
-	Visible      bool       `json:"visible"`
-	Foreground   bool       `json:"foreground"`
+	WindowRef    WindowRef   `json:"window_ref"`
+	AppRef       AppRef      `json:"app_ref"`
+	Title        string      `json:"title"`
+	ScreenBounds ScreenRect  `json:"screen_bounds"`
+	State        WindowState `json:"state"`
+	Visible      bool        `json:"visible"`
+	Foreground   bool        `json:"foreground"`
 }
 
 type DisplaySummary struct {

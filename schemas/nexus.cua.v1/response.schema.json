@@ -1988,6 +1988,31 @@
       "description": "Session-scoped opaque window reference.",
       "type": "string"
     },
+    "WindowState": {
+      "description": "Best-effort native window state; unknown is never treated as normal.",
+      "oneOf": [
+        {
+          "description": "Confirmed visible and not minimized.",
+          "type": "string",
+          "const": "normal"
+        },
+        {
+          "description": "Confirmed minimized by the native provider.",
+          "type": "string",
+          "const": "minimized"
+        },
+        {
+          "description": "Not currently visible; the reason may be unavailable.",
+          "type": "string",
+          "const": "offscreen"
+        },
+        {
+          "description": "Native state could not be determined.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
     "WindowSummary": {
       "description": "One top-level application window.",
       "type": "object",
@@ -2000,13 +2025,13 @@
           "description": "Whether the window owns foreground input.",
           "type": "boolean"
         },
-        "minimized": {
-          "description": "Whether the window is minimized.",
-          "type": "boolean"
-        },
         "screen_bounds": {
           "description": "Logical top-left screen bounds.",
           "$ref": "#/$defs/ScreenRect"
+        },
+        "state": {
+          "description": "Best-effort native state, independent of discovery availability.",
+          "$ref": "#/$defs/WindowState"
         },
         "title": {
           "description": "Current window title.",
@@ -2027,7 +2052,7 @@
         "app_ref",
         "title",
         "screen_bounds",
-        "minimized",
+        "state",
         "visible",
         "foreground"
       ]

@@ -8,6 +8,7 @@ mod launch;
 pub(crate) mod provenance;
 mod semantic;
 mod stream;
+mod window_state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -103,22 +104,25 @@ impl MacosDriver {
             .retryable("grant_screen_recording_permission"));
         }
         let before = self.current_window(&window.key).await?;
-        if include_screenshot
-            && self
-                .semantic
-                .window_minimized(
-                    before.key.clone(),
-                    before.pid,
-                    before.screen_bounds,
-                    before.title.clone(),
-                )
-                .await?
-        {
-            return Err(DriverError::new(
-                DriverErrorKind::TargetUnavailable,
-                "minimized macOS target cannot provide a current exact-window frame",
-            )
-            .retryable("restore_window_then_observe"));
+        if include_screenshot {
+            let minimized = if macos_accessibility_client::accessibility::application_is_trusted() {
+                self.semantic
+                    .window_minimized(
+                        before.key.clone(),
+                        before.pid,
+                        before.screen_bounds,
+                        before.title.clone(),
+                    )
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            if minimized == Some(true) || (minimized.is_none() && !before.visible) {
+                return Err(DriverError::new(DriverErrorKind::TargetUnavailable,
+                    "target is minimized or offscreen; restore the window or activate the application")
+                    .retryable("restore_window"));
+            }
         }
         let capture = async {
             if include_screenshot {
@@ -406,42 +410,30 @@ impl DesktopDriver for MacosDriver {
             .await?
             .into_iter()
             .filter(|window| application_key.is_none_or(|key| key == window.application_key))
+            .filter(|window| window.visible || !window.title.is_empty())
             .collect();
-        if windows.len() > 64 {
-            return Err(DriverError::new(
-                DriverErrorKind::Busy,
-                "window state query exceeds its bounded window budget",
-            ));
-        }
-        let mut output = Vec::with_capacity(windows.len());
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
-        for window in windows {
-            let minimized = tokio::time::timeout_at(
-                deadline,
+        let states = window_state::enhance(
+            windows,
+            macos_accessibility_client::accessibility::application_is_trusted(),
+            |window: &NativeWindow| window.visible,
+            |window: &NativeWindow| {
                 self.semantic.window_minimized(
                     window.key.clone(),
                     window.pid,
                     window.screen_bounds,
                     window.title.clone(),
-                ),
-            )
-            .await
-            .map_err(|_| {
-                DriverError::new(
-                    DriverErrorKind::TargetUnresponsive,
-                    "window state query exceeded its time budget",
                 )
-            })?;
-            let minimized = match minimized {
-                Ok(value) => value,
-                Err(error) if error.kind == DriverErrorKind::TargetUnavailable => continue,
-                Err(error) => return Err(error),
-            };
-            let mut projected = driver_window(window);
-            projected.minimized = minimized;
-            output.push(projected);
-        }
-        Ok(output)
+            },
+        )
+        .await;
+        Ok(states
+            .into_iter()
+            .map(|(window, state)| {
+                let mut projected = driver_window(window);
+                projected.state = state;
+                projected
+            })
+            .collect())
     }
 
     async fn list_displays(&self) -> Result<Vec<DriverDisplay>, DriverError> {
@@ -984,7 +976,7 @@ fn driver_window(window: NativeWindow) -> DriverWindow {
         application,
         title: window.title,
         screen_bounds: window.screen_bounds,
-        minimized: false,
+        state: nexus_cua_protocol::WindowState::Normal,
         visible: window.visible,
         foreground: window.foreground,
     }

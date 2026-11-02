@@ -31,6 +31,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     private let choices = ["Alpha", "Beta", "Gamma"]
     private var window: NSWindow?
     private var occluderWindow: NSWindow?
+    private var discoveryWindows: [NSWindow] = []
     private var textField: NSTextField!
     private var rangeSlider: NSSlider!
     private var stateLabel: NSTextField!
@@ -40,6 +41,16 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
         createWindow()
+        if ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_DISCOVERY"] == "1" {
+            for index in 1...80 {
+                let extra = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 320, height: 180), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                extra.title = "Discovery Fixture \(index)"
+                extra.setAccessibilityTitle("Different Accessibility Title \(index)")
+                extra.isReleasedWhenClosed = false
+                extra.orderBack(nil)
+                discoveryWindows.append(extra)
+            }
+        }
         if !backgroundDiagnostics { NSApp.activate(ignoringOtherApps: true) }
     }
 

@@ -248,3 +248,13 @@ for versioning rules.
 Observation lifetime is configured by the service (`serve` or MCP), not by a
 `request` or `mutation reconcile` CLI caller. Those callers reject
 `--max-observation-age-seconds` (C10); the wire protocol is unchanged.
+
+### Window discovery state (C1)
+
+`WindowSummary.state` is the closed enum `normal | minimized | offscreen | unknown`,
+replacing the old boolean. `set_window_minimized.minimized` remains an action
+boolean. Discovery is independent of accessibility permission. On macOS, optional
+AX enrichment covers at most the first 16 authorized windows in z-order within a
+shared 750 ms budget. Failures preserve windows as unknown (or offscreen when
+invisible). Screenshot-only observation works without AX permission; an invisible
+target with no trustworthy state is rejected with restore/activation guidance.

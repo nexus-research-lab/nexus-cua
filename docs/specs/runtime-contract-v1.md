@@ -396,3 +396,13 @@ the earliest idle expiry or an incoming command. Session revocation updates the
 shared ownership registry and sends a nonblocking prune notification; a full
 queue is handled before the next queued command. Native stop completion latency
 is separately measured, not guaranteed by the notification mechanism.
+
+### Window discovery state (C1)
+
+`WindowSummary.state` is the closed enum `normal | minimized | offscreen | unknown`,
+replacing the old boolean. `set_window_minimized.minimized` remains an action
+boolean. Discovery is independent of accessibility permission. On macOS, optional
+AX enrichment covers at most the first 16 authorized windows in z-order within a
+shared 750 ms budget. Failures preserve windows as unknown (or offscreen when
+invisible). Screenshot-only observation works without AX permission; an invisible
+target with no trustworthy state is rejected with restore/activation guidance.

@@ -93,6 +93,7 @@ from .types import (
     WindowObservation,
     WindowRef,
     WindowSummary,
+    WindowState,
     WindowTitleContains,
 )
 
@@ -187,6 +188,7 @@ __all__ = (
     "WindowObservation",
     "WindowRef",
     "WindowSummary",
+    "WindowState",
     "WindowTitleContains",
     "select_application",
     "select_window",
