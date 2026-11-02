@@ -2051,6 +2051,205 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 本次只修改本 PRD，不修改源码与其他文档；技术文档在 R1 实现时同步更新。
 提交前运行 `make check`，Markdown 链接检查须通过。
 
+### 23.10 第二轮审查：`47800d9` 与 Nexus `64cf8e9e8` 的修复要求
+
+审查对象：nexus-cua 提交 `47800d9`（R0 大部分与 R1 会话热流）和 Nexus `cua` 分支
+提交 `64cf8e9e8`。`make check` 通过；B1–B6、B8 的源码修复方向正确，协议级
+`NormalizedPoint`、滚动方向、`mod`、布局解析、Windows 扩展键与滚轮换算、输入
+节流、会话捕获所有权撤销均保留。以下 C1–C12 是必须修复的问题，编号供提交信息
+和本节状态更新引用。
+
+**执行规则**
+
+- 每个 C 项单独提交，提交信息引用编号；源码、协议 schema、三套 SDK、Skill、
+  [Protocol](specs/protocol-v1.md)、[Runtime Contract](specs/runtime-contract-v1.md)
+  和 `CHANGELOG.md` 在同一提交内同步。
+- 每项必须新增确定性测试；需要真实桌面的验收写入
+  [平台验证记录](platform-validation.md)，没有原生证据时只能标"源码已修复"。
+- 不得新增空闲轮询、无界队列、无界重试或跨 actor 移动原生对象；
+  `make check PYTHON=<python3.10+>` 通过后才能提交。
+- 推送远端、改动 Nexus 以外的仓库或修改 CI secret 前先征得用户同意。
+
+**建议顺序**：C5、C10 → C1、C2 → C3 → C6、C7、C8 → C4 → C9 → C11 → C12。
+
+#### C1 窗口列表与观察不得依赖辅助功能（高）
+
+- **问题**：`list_windows` 对每个窗口调用 AX 查询最小化状态；无辅助功能权限时整个
+  调用失败；AX 查找失败（含系统窗口标题与 AX 标题不一致、身份歧义）时窗口被
+  `continue` 静默丢弃；单应用超过 64 个窗口直接 `Busy`。带截图的 `observe` 即使
+  `accessibility = disabled` 也强制 AX 查询。位置：
+  [macos/mod.rs](../crates/platform/src/macos/mod.rs) `list_windows`、
+  `observe_window_owned`；[semantic.rs](../crates/platform/src/macos/semantic.rs)
+  `window_minimized`、`find_window`。这会让"看不到 app"更严重。
+- **修复**：
+  1. 窗口集合只由系统窗口列表决定，AX 只做状态增强，任何 AX 失败都不得删除窗口
+     或让列表失败；恢复原有的 `visible || !title.is_empty()` 噪声过滤。
+  2. 协议把 `WindowSummary.minimized: bool` 替换为封闭枚举 `state`，本项先提供
+     `normal | minimized | offscreen | unknown`（D2 再追加 `app_hidden`、
+     `other_space`、`fullscreen_space`）。AX 不可用、超时、歧义或标题不一致时为
+     `unknown`，不可见时至少为 `offscreen`。
+  3. 未授予辅助功能权限时完全不调用 AX。
+  4. AX 增强按 z-order 只处理前 16 个窗口，共享 750 ms 预算；超出预算或数量的
+     窗口为 `unknown`，不报错。
+  5. `observe` 的最小化前置检查：有 AX 权限时读 `AXMinimized`；无权限时以
+     系统窗口列表的可见性判断，不可见返回 `TargetUnavailable` 并建议
+     `restore_window`/`activate_application`。
+- **验收**：撤销辅助功能权限后 `list_windows` 与仅截图 `observe` 成功；fixture
+  增加一个 `accessibilityTitle` 与窗口标题不同的窗口，它仍出现在列表中且状态为
+  `unknown` 或正确值；单应用 80 个窗口时列表成功返回。
+
+#### C2 热流在静态画面下必须可用（高）
+
+- **问题**：`CaptureStream::snapshot` 要求请求之后收到新的帧回调，否则 1 秒后
+  报错并拆除流（[stream.rs](../crates/platform/src/macos/stream.rs)、
+  [capture.rs](../crates/platform/src/macos/capture.rs) `stream_capture`）。
+  ScreenCaptureKit 在内容不变时可能不再回调，动作前视觉复核也走这条路径，
+  静止窗口上的观察和动作都可能失败。
+- **修复**：
+  1. 帧槽记录"最近完整帧"和"流状态"（运行/停止/目标不可用）。流运行中且已有
+     完整帧时，等待不超过两个帧间隔（200 ms）仍无回调，即视为内容未变并返回
+     最近帧。
+  2. 为 `SCStream` 设置 delegate，收到停止或错误时标记失效；下一次请求重建，
+     不在请求路径上等满 1 秒。
+  3. 流启动后 1 秒内没有首帧时，本次请求回退到一次性截图，流保留，不把错误
+     暴露给调用方。
+  4. 动作前复核直接使用最近帧，不等待新回调。
+- **验收**：静止窗口观察后等 5 秒再观察并执行动作，二者都成功，观察 p95 ≤ 150 ms；
+  内容变化后 200 ms 内的观察反映新内容；目标窗口关闭时返回明确的
+  `TargetUnavailable`，并释放流。
+
+#### C3 Nexus 分支必须在不依赖本机 `go.work` 时可构建（高）
+
+- **问题**：Nexus `go.mod` 仍锁定 2026-10-20 的旧 SDK 伪版本，能编译只是因为有
+  被 gitignore 的本地 `go.work` 指向本机 nexus-cua；`GOWORK=off go build` 报
+  `undefined: nexuscua.NormalizedPoint`。
+- **修复**：征得用户同意后推送 nexus-cua；Nexus `go.mod` 固定到该提交的精确版本
+  并更新 `go.sum`；Nexus 增加 `GOWORK=off` 的构建/测试检查（Makefile 目标或 CI 步骤）；
+  永不提交 `go.work`。
+- **验收**：在干净 clone 中 `GOWORK=off go build ./... && GOWORK=off go test ./internal/service/computeruse/... ./internal/mcp/command/computer/...` 通过。
+
+#### C4 热流按需转换并在捕获阶段缩放（中，含 P1）
+
+- **问题**：每个完整帧都在回调队列上做全分辨率 BGRA→RGBA 转换与反预乘，
+  10 fps 持续进行，与是否有人观察无关；取帧时再完整复制一份；流尺寸等于物理
+  分辨率。窗口内播放视频时 CPU 持续升高，内存翻倍。
+- **修复**：
+  1. 帧槽只保留最新一帧的原生像素缓冲引用（替换时释放旧的），转换只在
+     `snapshot` 时由捕获 actor 执行，且只转换一次；遵守"原生对象留在所属
+     actor"规则，像素缓冲不离开捕获侧。
+  2. `RuntimeConfig` 增加模型图像长边上限（默认 1568），`serve` 与 MCP 提供同名
+     参数；流配置直接输出该尺寸，`ScreenshotMapping` 反映实际像素尺寸。
+  3. 产物 PNG 去掉 alpha 通道（RGB）。
+  4. 一次性截图路径同样按该上限配置输出尺寸。
+- **验收**：session 打开但无观察请求时，目标窗口播放视频 60 秒，sidecar 平均 CPU
+  < 2%；4K 窗口观察输出长边 ≤ 1568，编码后 ≤ 1 MiB；归一化点击在缩放后仍命中
+  fixture 目标。
+
+#### C5 捕获 actor 禁止空闲轮询（中）
+
+实施状态：已去除周期轮询，改为命令/撤销通知/最近流到期唤醒；新增队列满时撤销不丢失等确定性测试。源码检查通过后提交；5 分钟空闲与原生 100ms 释放证据仍待采集。
+
+- **问题**：`actor_loop` 用 `recv_timeout(100ms)` 永久轮询，即使没有任何 session
+  （[capture.rs](../crates/platform/src/macos/capture.rs)），违反"无请求时禁止
+  active polling"。
+- **修复**：没有热流时阻塞 `recv`；有热流时超时设为最早一个流的空闲到期时间。
+  `session_closed` 通过 `try_send` 向 actor 发送 `Prune` 命令，使撤销立即生效且
+  不依赖轮询；通道满时由下一次命令或到期唤醒处理，不得阻塞调用方。
+- **验收**：无 session 空闲 5 分钟，捕获线程无周期唤醒（`sample` 或
+  native-harness idle 证据）；session 关闭后 100 ms 内释放流（保留现有所有权测试）。
+
+#### C6 指针命中检查改为窗口层级判断，并覆盖全部像素动作（中）
+
+- **问题**：macOS 滚动前不移动指针，只依赖事件位置字段；命中检查使用 AX
+  `AXUIElementCopyElementAtPosition`，在 AX 支持差的应用（Java/Qt/游戏/画布）中
+  失败，同一应用的弹出菜单也会因"窗口身份不符"被拒；Windows 要求根窗口等于
+  目标窗口，同样拒绝同进程弹窗；点击、长按、拖拽没有命中检查。
+- **修复**：
+  1. macOS：用系统在屏窗口列表按从前到后顺序找到第一个包含该点的窗口（跳过本
+     进程窗口，为 §2.6 overlay 预留），要求其所属进程等于授权进程，层级不限，
+     因此包含该应用的菜单和弹窗。
+  2. Windows：`WindowFromPoint` 后取所属进程，要求等于授权进程，不再要求根窗口
+     相等。
+  3. 命中检查放在输入 actor 上、紧挨派发之前执行。适用于前台 `click_point`、
+     `press_point`、`scroll`，以及 `drag` 的起点和终点；`move_pointer` 与后台点击
+     不检查。失败返回 `not_dispatched`，建议 `observe_window`。
+  4. macOS 滚动前先发送一次指针移动到目标点，与点击、Windows 一致。
+- **验收**：另一应用窗口覆盖目标点时，点击/滚动/拖拽被拒且无副作用；同一应用
+  弹出菜单上的点击成功；fixture 中无 AX 信息的自绘视图可滚动。
+
+#### C7 删除被忽略的 `Scroll.element_ref`（中）
+
+- **问题**：协议仍接受并解析 `Scroll.element_ref`，但两个平台驱动都直接丢弃，
+  文档未说明。
+- **修复**：本轮协议允许重置，直接从 protocol、schema、三套 SDK、MCP、CLI 和
+  Skill 中删除该字段；语义滚动将来作为独立动作设计。
+- **验收**：schema 不再包含该字段；带该字段的请求因未知字段被拒（兼容性 fixture
+  增加一条 invalid 用例）。
+
+#### C8 归一化坐标支持亚单位精度（中）
+
+- **问题**：`click_view_normalized` 把裁剪视图中的点换算回整图 `0..1000` 整数，
+  4K 宽窗口误差约 ±2 px，削弱了 zoom 的意义。
+- **修复**：`NormalizedPoint` 的 `x/y` 改为有限 `f64`，闭区间 `[0, 1000]`，由
+  Runtime 统一舍入到像素；面向模型的工具仍使用整数输入；zoom 路径传入小数。
+  三套 SDK 与 schema 同步；拒绝 NaN/Infinity。
+- **验收**：对 3840×2160 和 1366×768 图像中的每个采样像素，`from_pixel` 后再
+  `to_pixel` 得到同一像素（属性测试）；zoom 4× 后点击 4×4 px 目标命中。
+
+#### C9 Nexus 授权与动作暴露（中，Nexus 仓）
+
+- **问题**：TTL 改为固定 30 分钟但仍不续期、不与回合绑定；前台输入仍无条件授予；
+  逐动作审批仍位于观察之后（N3）；恢复最小化等动作仍未暴露（N5）。
+- **修复**：
+  1. `select_target` 通过现有权限通道发起一次授权，内容为应用身份、动作类别、
+     是否允许前台输入、时长；session 只授予确认的类别和前台开关。
+  2. 常规动作不再逐次审批；退出应用、剪贴板写入及宿主策略标记的动作逐次审批，
+     审批通过后若观察已失效，直接返回 `stale_observation` 并提示重新观察，
+     不自动重放。
+  3. session TTL 取回合剩余上限与 Runtime 上限的较小值，回合结束立即关闭；
+     回合中过期时返回明确错误并要求重新 `select_target`，不静默重开。
+  4. 暴露 `restore_window`（`set_window_minimized=false`）、`set_window_bounds`、
+     `set_range_value`、`press_point`、可启动应用列表与启动；参数上限从 Runtime
+     capabilities 生成。
+- **验收**：常规点击/输入不弹审批；未授权类别被 Runtime 拒绝；最小化窗口可经
+  `restore_window` 恢复后观察；回合结束后旧 session 不可用。
+
+#### C10 删除无效 CLI 参数（低）
+
+- **问题**：`nexuscua request` 与 `mutation reconcile` 新增的
+  `--max-observation-age-seconds` 没有任何效果
+  （[commands.rs](../crates/cli/src/commands.rs) `RequestArgs`、`ReconcileArgs`）。
+- **修复**：删除这两个参数，仅保留 `serve` 与 MCP 上的参数。
+- **验收**：CLI 解析测试断言这两个子命令拒绝该参数。
+
+#### C11 窗口枚举只做一次（低）
+
+- **问题**：Runtime `list_windows` 对每个授权应用调用一次驱动，每次都完整枚举
+  系统窗口。
+- **修复**：驱动接口改为接受授权应用 key 集合，一次枚举后过滤；AX 增强（C1）
+  只作用于授权应用的窗口。
+- **验收**：多应用 session 的 `list_windows` 只触发一次系统枚举（驱动计数测试）。
+
+#### C12 Windows 显示器捕获 `0x80070057`（Windows）
+
+- **问题**：活动控制台 session 中 `observe_display` 的 WGC `CreateForMonitor`
+  返回 `E_INVALIDARG`，原生回归无法进入窗口动作阶段。
+- **修复步骤**：
+  1. 在调用点重新解析 `HMONITOR`（`EnumDisplayMonitors`/`MonitorFromPoint`），
+     不复用跨显示拓扑变化的缓存值，并记录（不含内容的）显示器设备名与句柄有效性；
+  2. 确认调用线程已初始化 WinRT/COM 且进程为 Per-Monitor-V2 DPI 感知；
+  3. 调用前检查 `GraphicsCaptureSession::IsSupported()`，不支持时返回 `Unsupported`；
+  4. 在同一机器上用最小复现程序对比窗口捕获与显示器捕获，定位后修复，
+     不得静默回退到旧捕获 API。
+- **验收**：Windows 原生回归的显示器观察、窗口观察和动作场景通过，证据写入
+  [平台验证记录](platform-validation.md)。
+
+#### 本轮仍未开始、不在 C 项内的工作
+
+应用场景观察（D1）、窗口状态完整枚举与激活应用（D2）、显示器身份（D3）、
+presence/紧急停止/用户接管与系统指示验收（D4）、`observe_after`（D5）、
+低分辨率复核（P2）、输入法组字检测（B7 剩余部分），仍按 §21 R1 执行。
+
 ## 24. 保留的技术文档
 
 本 PRD 不重复展开以下仍有执行价值的技术资料：

@@ -388,3 +388,11 @@ enablement is independent:
 - Computer Use off, Browser on: existing browser control remains unchanged.
 - both on: the Skill routes web semantics to Browser and native application
   semantics to Computer Use; enabling one never silently grants the other.
+
+### macOS capture wake-up (C5)
+
+The capture actor blocks without warm streams. With warm streams it waits until
+the earliest idle expiry or an incoming command. Session revocation updates the
+shared ownership registry and sends a nonblocking prune notification; a full
+queue is handled before the next queued command. Native stop completion latency
+is separately measured, not guaranteed by the notification mechanism.

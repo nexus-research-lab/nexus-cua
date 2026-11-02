@@ -126,6 +126,9 @@ impl CaptureActor {
         if let Ok(mut sessions) = self.live_sessions.lock() {
             sessions.remove(id);
         }
+        // A full queue already guarantees a wake-up; revocation is read before
+        // each queued command. Closing a session must never block its caller.
+        let _ = self.sender.try_send(CaptureCommand::Prune);
     }
 
     pub(super) async fn list_windows(&self) -> Result<Vec<NativeWindow>, DriverError> {
@@ -249,6 +252,7 @@ impl CaptureActor {
 }
 
 enum CaptureCommand {
+    Prune,
     ListWindows {
         reply: oneshot::Sender<Result<Vec<NativeWindow>, DriverError>>,
     },
@@ -300,16 +304,11 @@ fn actor_loop(
     let mut applications = ApplicationCache::default();
     let mut capture_filter = None;
     let mut streams: Vec<WarmStream> = Vec::new();
-    loop {
-        prune_streams(&mut streams, live_sessions);
-        let command = match receiver.recv_timeout(Duration::from_millis(100)) {
-            Ok(command) => command,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        };
+    while let Some(command) = next_capture_command(receiver, &mut streams, live_sessions) {
         let recycle_space = RECYCLE_CAPACITY - recycled.len();
         recycled.extend(recycle_receiver.try_iter().take(recycle_space));
         autoreleasepool(|_| match command {
+            CaptureCommand::Prune => {}
             CaptureCommand::ListWindows { reply } => {
                 let _ = reply.send(load_windows(&mut applications));
             }
@@ -396,6 +395,39 @@ fn actor_loop(
     }
 }
 
+fn next_capture_command(
+    receiver: &Receiver<CaptureCommand>,
+    streams: &mut Vec<WarmStream>,
+    live_sessions: &Mutex<HashSet<String>>,
+) -> Option<CaptureCommand> {
+    loop {
+        prune_streams(streams, live_sessions);
+        let expiry = streams
+            .iter()
+            .map(|stream| stream.last_used + STREAM_IDLE)
+            .min();
+        match receive_command(receiver, expiry) {
+            Ok(command) => return Some(command),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
+const STREAM_IDLE: Duration = Duration::from_secs(30);
+
+fn receive_command<T>(
+    receiver: &Receiver<T>,
+    expiry: Option<Instant>,
+) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+    match expiry {
+        Some(deadline) => receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+        None => receiver
+            .recv()
+            .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+    }
+}
+
 struct WarmStream {
     target_key: String,
     width: f64,
@@ -413,9 +445,7 @@ fn prune_streams(streams: &mut Vec<WarmStream>, live_sessions: &Mutex<HashSet<St
     for stream in &mut *streams {
         stream.owners.retain(|id| active.contains(id));
     }
-    streams.retain(|stream| {
-        !stream.owners.is_empty() && stream.last_used.elapsed() < Duration::from_secs(30)
-    });
+    streams.retain(|stream| !stream.owners.is_empty() && stream.last_used.elapsed() < STREAM_IDLE);
 }
 
 fn stream_capture(
@@ -1294,5 +1324,55 @@ mod tests {
         let copied = copy_image(&image, None, recycle_sender).unwrap();
 
         assert_eq!(copied.pixels, top_red_bottom_blue);
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[test]
+    fn empty_actor_waits_for_close_notification_or_disconnection() {
+        let (sender, receiver) = sync_channel(1);
+        sender
+            .try_send(CaptureCommand::Prune)
+            .unwrap_or_else(|_| panic!("queue empty"));
+        assert!(matches!(
+            receive_command(&receiver, None),
+            Ok(CaptureCommand::Prune)
+        ));
+        drop(sender);
+        assert!(matches!(
+            receive_command(&receiver, None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn only_stream_expiry_produces_a_timeout() {
+        let (_sender, receiver) = sync_channel::<()>(1);
+        assert!(matches!(
+            receive_command(&receiver, Some(Instant::now())),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+    }
+
+    #[test]
+    fn revocation_survives_a_full_notification_queue() {
+        let (sender, receiver) = sync_channel(1);
+        sender
+            .try_send(CaptureCommand::Prune)
+            .unwrap_or_else(|_| panic!("queue empty"));
+        let live_sessions = Arc::new(Mutex::new(HashSet::from(["session".to_owned()])));
+        let actor = CaptureActor {
+            sender,
+            live_sessions: Arc::clone(&live_sessions),
+        };
+        actor.session_closed("session");
+        assert!(live_sessions.lock().unwrap().is_empty());
+        assert!(matches!(
+            receive_command(&receiver, None),
+            Ok(CaptureCommand::Prune)
+        ));
     }
 }

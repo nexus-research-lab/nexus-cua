@@ -23,6 +23,8 @@ file.
 
 ### Changed
 
+- C5: Wake macOS capture on commands, session revocation, or stream expiry instead of polling while idle.
+
 - Reset the test-only v1 pointer contract to `NormalizedPoint` (0..1000) in
   runtime, MCP/CLI and all SDKs. Scroll now requires an explicit target point
   and checks native ownership before wheel dispatch; rebuild old test clients.

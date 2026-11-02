@@ -430,3 +430,6 @@ The current snapshot does not establish release support. Current acceptance stil
 
 See the [complete product PRD](PRD.zh-CN.md) for ordering and
 [runtime contract](specs/runtime-contract-v1.md) for the normative gates.
+
+C5: command/deadline wake-up and full-queue revocation have deterministic tests.
+Five-minute native idle sampling and 100 ms native stop completion are pending.
