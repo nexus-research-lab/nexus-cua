@@ -188,8 +188,8 @@
               "const": "click_point"
             },
             "point": {
-              "description": "Integer coordinate in the guarded screenshot artifact.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "description": "Normalized 0..1000 coordinate in the guarded screenshot.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -219,8 +219,8 @@
               "const": "press_point"
             },
             "point": {
-              "description": "Integer coordinate in the guarded screenshot artifact.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "description": "Normalized 0..1000 coordinate in the guarded screenshot.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -357,8 +357,8 @@
               "const": "move_pointer"
             },
             "point": {
-              "description": "Integer coordinate in the guarded screenshot artifact.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "description": "Normalized 0..1000 coordinate in the guarded screenshot.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -410,7 +410,7 @@
           ]
         },
         {
-          "description": "Scrolls by physical pixel deltas.",
+          "description": "Scrolls by logical pixel deltas.",
           "type": "object",
           "properties": {
             "delta_x": {
@@ -437,11 +437,16 @@
             "kind": {
               "type": "string",
               "const": "scroll"
+            },
+            "point": {
+              "description": "Required normalized target point; dispatch verifies native hit-test ownership.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
           "required": [
             "kind",
+            "point",
             "delta_x",
             "delta_y"
           ]
@@ -458,7 +463,7 @@
             },
             "from": {
               "description": "Starting point.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "$ref": "#/$defs/NormalizedPoint"
             },
             "kind": {
               "type": "string",
@@ -466,7 +471,7 @@
             },
             "to": {
               "description": "Ending point.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -513,7 +518,7 @@
           "const": "invoke_element"
         },
         {
-          "description": "Click at a physical pixel coordinate.",
+          "description": "Click at a normalized coordinate.",
           "type": "string",
           "const": "click_point"
         },
@@ -568,7 +573,7 @@
           "const": "scroll"
         },
         {
-          "description": "Drag between two physical pixel coordinates.",
+          "description": "Drag between two normalized coordinates.",
           "type": "string",
           "const": "drag"
         }
@@ -1048,6 +1053,31 @@
         "session_id"
       ]
     },
+    "NormalizedPoint": {
+      "description": "A top-left-origin point normalized to the inclusive range 0..1000.\nThis coordinate space is independent of captured or model-resized image dimensions.",
+      "type": "object",
+      "properties": {
+        "x": {
+          "description": "Horizontal normalized coordinate.",
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 1000,
+          "minimum": 0
+        },
+        "y": {
+          "description": "Vertical normalized coordinate.",
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 1000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ]
+    },
     "ObservationId": {
       "description": "Identity for one immutable window or display observation.",
       "type": "string"
@@ -1248,29 +1278,6 @@
         "y",
         "width",
         "height"
-      ]
-    },
-    "ScreenshotPoint": {
-      "description": "An integer pixel coordinate in the exact screenshot artifact.",
-      "type": "object",
-      "properties": {
-        "x": {
-          "description": "Zero-based horizontal pixel coordinate.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "y": {
-          "description": "Zero-based vertical pixel coordinate.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "x",
-        "y"
       ]
     },
     "SensitiveText": {

@@ -10,8 +10,8 @@ use nexus_cua_protocol::{
     ApplicationProvenance, CapabilityManifest, CaptureMode, ClipboardOperation, Command,
     CommandResult, DeliveryMode, DeliveryPreference, DiscoveryRef, DriverCapabilities, ErrorCode,
     ForegroundRestorationStatus, InputRoute, LaunchApplicationInput, ListWindowsInput,
-    MutationStatus, ObserveDisplayInput, ObserveWindowInput, OpenSessionInput, PermissionMode,
-    PermissionState, PermissionStatus, Platform, ReadClipboardInput, ScreenRect, ScreenshotPoint,
+    MutationStatus, NormalizedPoint, ObserveDisplayInput, ObserveWindowInput, OpenSessionInput,
+    PermissionMode, PermissionState, PermissionStatus, Platform, ReadClipboardInput, ScreenRect,
     SensitiveText, SessionInput, WriteClipboardInput,
 };
 use nexus_cua_runtime::{
@@ -26,6 +26,8 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 struct MockDriver {
+    session_starts: AtomicUsize,
+    session_closes: AtomicUsize,
     revision: Mutex<u64>,
     stale_observations_remaining: Mutex<u8>,
     observation_calls: AtomicUsize,
@@ -47,6 +49,8 @@ struct ActionGate {
 impl MockDriver {
     fn new() -> Self {
         Self {
+            session_starts: AtomicUsize::new(0),
+            session_closes: AtomicUsize::new(0),
             revision: Mutex::new(1),
             stale_observations_remaining: Mutex::new(0),
             observation_calls: AtomicUsize::new(0),
@@ -62,6 +66,8 @@ impl MockDriver {
 
     fn stale_once() -> Self {
         Self {
+            session_starts: AtomicUsize::new(0),
+            session_closes: AtomicUsize::new(0),
             revision: Mutex::new(1),
             stale_observations_remaining: Mutex::new(1),
             observation_calls: AtomicUsize::new(0),
@@ -175,11 +181,20 @@ impl MockDriver {
 
 #[async_trait]
 impl DesktopDriver for MockDriver {
+    fn session_started(&self, _id: &nexus_cua_protocol::SessionId) -> Result<(), DriverError> {
+        self.session_starts.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn session_closed(&self, _id: &nexus_cua_protocol::SessionId) {
+        self.session_closes.fetch_add(1, Ordering::SeqCst);
+    }
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
             protocol_version: "nexus.cua.v1".to_owned(),
             runtime_version: "test".to_owned(),
             platform: Platform::Macos,
+            primary_modifier: "command".to_owned(),
             capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
             accessibility_tree: true,
             input_routes: vec![
@@ -555,6 +570,40 @@ fn runtime() -> (Runtime, PathBuf) {
     (runtime, root)
 }
 
+#[tokio::test(start_paused = true)]
+async fn capture_ownership_is_revoked_once_on_close_expiry_and_shutdown() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).unwrap();
+    let closed = open_session(&runtime, PermissionMode::ReadOnly).await;
+    let _expired = open_session_with_ttl(&runtime, PermissionMode::ReadOnly, 1).await;
+    let _remaining = open_session(&runtime, PermissionMode::ReadOnly).await;
+    assert_eq!(driver.session_starts.load(Ordering::SeqCst), 3);
+    runtime
+        .execute(Command::CloseSession(SessionInput {
+            session_id: closed.clone(),
+        }))
+        .await
+        .unwrap();
+    assert!(
+        runtime
+            .execute(Command::CloseSession(SessionInput { session_id: closed }))
+            .await
+            .is_err()
+    );
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 1);
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 2);
+    runtime.shutdown().await;
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 3);
+    drop(runtime);
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 3);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn runtime_rejects_zero_resource_bounds() {
     let root = artifact_root();
@@ -854,7 +903,7 @@ async fn foreground_click_input(
         window_ref,
         observation_id: observation.observation_id,
         action: Action::ClickPoint {
-            point: ScreenshotPoint { x: 1, y: 1 },
+            point: NormalizedPoint { x: 1, y: 1 },
             button: nexus_cua_protocol::PointerButton::Left,
             count: 1,
             delivery: DeliveryPreference::Foreground,
@@ -965,7 +1014,7 @@ async fn runtime_policy_denies_before_observation_consumption() {
             window_ref: window_ref.clone(),
             observation_id: observation.observation_id.clone(),
             action: Action::ClickPoint {
-                point: ScreenshotPoint { x: 1, y: 1 },
+                point: NormalizedPoint { x: 1, y: 1 },
                 button: nexus_cua_protocol::PointerButton::Left,
                 count,
                 delivery: DeliveryPreference::Background,
@@ -1575,7 +1624,7 @@ async fn coordinates_outside_observed_window_fail_before_dispatch() {
                 window_ref,
                 observation_id,
                 action: Action::ClickPoint {
-                    point: ScreenshotPoint { x: 99, y: 99 },
+                    point: NormalizedPoint { x: 1001, y: 500 },
                     button: nexus_cua_protocol::PointerButton::Left,
                     count: 1,
                     delivery: nexus_cua_protocol::DeliveryPreference::Foreground,
@@ -1848,7 +1897,7 @@ async fn background_click_does_not_require_foreground_authority() {
                 window_ref,
                 observation_id,
                 action: Action::ClickPoint {
-                    point: ScreenshotPoint { x: 1, y: 1 },
+                    point: NormalizedPoint { x: 1, y: 1 },
                     button: nexus_cua_protocol::PointerButton::Left,
                     count: 1,
                     delivery: DeliveryPreference::Background,

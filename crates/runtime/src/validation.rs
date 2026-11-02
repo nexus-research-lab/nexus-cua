@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use nexus_cua_protocol::{
-    Action, CapabilityManifest, CuaError, ErrorCode, PermissionMode, ScreenshotMapping,
-    ScreenshotPoint, SensitiveText,
+    Action, CapabilityManifest, CuaError, ErrorCode, NormalizedPoint, PermissionMode,
+    ScreenshotMapping, SensitiveText,
 };
 
 use crate::error::public_error;
@@ -186,7 +186,10 @@ pub(crate) fn validate_action(
             validate_screenshot_point(*point, screenshot_mapping)
         }
         Action::Scroll {
-            delta_x, delta_y, ..
+            point,
+            delta_x,
+            delta_y,
+            ..
         } => {
             if !delta_x.is_finite()
                 || !delta_y.is_finite()
@@ -195,7 +198,7 @@ pub(crate) fn validate_action(
             {
                 return Err(invalid("scroll delta is outside the supported range"));
             }
-            Ok(())
+            validate_screenshot_point(*point, screenshot_mapping)
         }
         Action::Drag {
             from,
@@ -212,9 +215,14 @@ pub(crate) fn validate_action(
 }
 
 fn is_supported_key(key: &str) -> bool {
+    if key.len() == 1 && key.as_bytes()[0].is_ascii_punctuation() {
+        return true;
+    }
     matches!(
-        key,
-        "meta"
+        nexus_cua_protocol::canonical_key(key),
+        "mod"
+            | "win"
+            | "meta"
             | "command"
             | "control"
             | "alt"
@@ -294,12 +302,12 @@ fn validate_text(text: &str) -> Result<(), CuaError> {
 }
 
 fn validate_screenshot_point(
-    point: ScreenshotPoint,
+    point: NormalizedPoint,
     screenshot_mapping: Option<ScreenshotMapping>,
 ) -> Result<(), CuaError> {
     let mapping = screenshot_mapping
         .ok_or_else(|| invalid("pixel actions require a screenshot in the guarded observation"))?;
-    if !mapping.pixel_size.contains(point) {
+    if point.to_pixel(mapping.pixel_size).is_none() {
         return Err(invalid("point lies outside the guarded screenshot"));
     }
     Ok(())
@@ -331,16 +339,37 @@ mod tests {
     }
 
     #[test]
+    fn scroll_requires_a_valid_normalized_point_and_screenshot() {
+        let scroll = |point| Action::Scroll {
+            point,
+            element_ref: None,
+            delta_x: 0.0,
+            delta_y: 300.0,
+        };
+        assert!(
+            validate_action(&scroll(NormalizedPoint { x: 500, y: 500 }), Some(mapping())).is_ok()
+        );
+        assert!(
+            validate_action(
+                &scroll(NormalizedPoint { x: 1001, y: 500 }),
+                Some(mapping())
+            )
+            .is_err()
+        );
+        assert!(validate_action(&scroll(NormalizedPoint { x: 500, y: 500 }), None).is_err());
+    }
+
+    #[test]
     fn pointer_hold_is_bounded_and_requires_a_guarded_point() {
         let valid = Action::PressPoint {
-            point: ScreenshotPoint { x: 50, y: 50 },
+            point: NormalizedPoint { x: 50, y: 50 },
             button: PointerButton::Left,
             duration_ms: MAX_DRAG_DURATION_MS,
         };
         assert!(validate_action(&valid, Some(mapping())).is_ok());
 
         let too_long = Action::PressPoint {
-            point: ScreenshotPoint { x: 50, y: 50 },
+            point: NormalizedPoint { x: 50, y: 50 },
             button: PointerButton::Left,
             duration_ms: MAX_DRAG_DURATION_MS + 1,
         };

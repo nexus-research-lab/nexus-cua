@@ -4,6 +4,7 @@
     "data": {
       "protocol_version": "nexus.cua.v1",
       "runtime_version": "0.1.0",
+      "primary_modifier": "command",
       "platform": "macos",
       "capture_modes": ["window", "display"],
       "accessibility_tree": true,

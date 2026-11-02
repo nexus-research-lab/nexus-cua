@@ -12,11 +12,11 @@ use clap::ValueEnum;
 use nexus_cua_protocol::{
     AccessibilityMode, Action, AppRef, ApplicationLifecycleOperation, AuthorizationToken,
     CapabilityManifest, ClipboardRef, Command, CommandResult, CuaError, DeliveryPreference,
-    DiscoveryRef, DisplayRef, ElementRef, LaunchApplicationInput, ListWindowsInput, ObservationId,
-    ObserveDisplayInput, ObserveWindowInput, OpenSessionInput, PROTOCOL_VERSION,
-    PerformActionInput, PixelSize, PointerButton, ReadClipboardInput, RequestEnvelope, RequestId,
-    ResponseOutcome, ScreenshotMapping, ScreenshotPoint, SensitiveText, SessionId, SessionInput,
-    StatePredicate, VerifyStateInput, WindowRef, WriteClipboardInput,
+    DiscoveryRef, DisplayRef, ElementRef, LaunchApplicationInput, ListWindowsInput,
+    NormalizedPoint, ObservationId, ObserveDisplayInput, ObserveWindowInput, OpenSessionInput,
+    PROTOCOL_VERSION, PerformActionInput, PixelSize, PointerButton, ReadClipboardInput,
+    RequestEnvelope, RequestId, ResponseOutcome, ScreenshotMapping, ScreenshotPoint, SensitiveText,
+    SessionId, SessionInput, StatePredicate, VerifyStateInput, WindowRef, WriteClipboardInput,
 };
 use nexus_cua_runtime::Runtime;
 use nexus_cua_transport::Dispatcher;
@@ -111,6 +111,7 @@ struct RegionView {
     observation_id: ObservationId,
     window_ref: WindowRef,
     source_rect: PixelRect,
+    source_size: PixelSize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -753,6 +754,12 @@ struct GuardedScrollArgs {
     window_ref: String,
     /// Fresh guard returned by the last `observe_window` call.
     observation_id: String,
+    /// Horizontal target coordinate in 0..1000.
+    #[schemars(range(min = 0, max = 1000))]
+    x: u32,
+    /// Vertical target coordinate in 0..1000.
+    #[schemars(range(min = 0, max = 1000))]
+    y: u32,
     /// Horizontal logical scroll delta.
     #[schemars(range(min = -100_000.0, max = 100_000.0))]
     delta_x: f64,
@@ -1400,6 +1407,7 @@ impl NexusCuaMcp {
                 observation_id: observation_id.clone(),
                 window_ref: window_ref.clone(),
                 source_rect,
+                source_size,
             },
         );
         let crop_size = PixelSize {
@@ -1511,7 +1519,7 @@ impl NexusCuaMcp {
             .lock()
             .await
             .get(&observation_id, &window_ref);
-        let Some(image) = image else {
+        let Some(_image) = image else {
             return Ok(adapter_tool_error(
                 "stale_observation",
                 "normalized click requires this MCP process's current screenshot observation",
@@ -1519,7 +1527,10 @@ impl NexusCuaMcp {
                 Some("observe_window"),
             ));
         };
-        let point = normalized_point(args.x, args.y, image.mapping.pixel_size);
+        let point = NormalizedPoint {
+            x: u32::from(args.x),
+            y: u32::from(args.y),
+        };
         self.dispatch_action(
             RequestId::new(args.request_id),
             window_ref,
@@ -1569,7 +1580,9 @@ impl NexusCuaMcp {
                 Some("observe_window"),
             ));
         };
-        let point = normalized_view_point(args.x, args.y, view.source_rect);
+        let pixel = normalized_view_point(args.x, args.y, view.source_rect);
+        let point = NormalizedPoint::from_pixel(pixel, view.source_size)
+            .ok_or_else(|| McpError::invalid_params("invalid zoom mapping", None))?;
         self.dispatch_action(
             RequestId::new(args.request_id),
             view.window_ref,
@@ -1651,6 +1664,10 @@ impl NexusCuaMcp {
             WindowRef::new(args.window_ref),
             ObservationId::new(args.observation_id),
             Action::Scroll {
+                point: NormalizedPoint {
+                    x: args.x,
+                    y: args.y,
+                },
                 element_ref: None,
                 delta_x: args.delta_x,
                 delta_y: args.delta_y,
@@ -1695,7 +1712,7 @@ impl NexusCuaMcp {
             .lock()
             .await
             .get(&observation_id, &window_ref);
-        let Some(image) = image else {
+        let Some(_image) = image else {
             return Ok(adapter_tool_error(
                 "stale_observation",
                 "normalized drag requires this MCP process's current screenshot observation",
@@ -1703,14 +1720,19 @@ impl NexusCuaMcp {
                 Some("observe_window"),
             ));
         };
-        let size = image.mapping.pixel_size;
         self.dispatch_action(
             RequestId::new(args.request_id),
             window_ref,
             observation_id,
             Action::Drag {
-                from: normalized_point(args.from_x, args.from_y, size),
-                to: normalized_point(args.to_x, args.to_y, size),
+                from: NormalizedPoint {
+                    x: u32::from(args.from_x),
+                    y: u32::from(args.from_y),
+                },
+                to: NormalizedPoint {
+                    x: u32::from(args.to_x),
+                    y: u32::from(args.to_y),
+                },
                 duration_ms: args.duration_ms.unwrap_or(500),
             },
         )
@@ -1921,13 +1943,6 @@ fn valid_adapter_request_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
-}
-
-fn normalized_point(x: u16, y: u16, size: PixelSize) -> ScreenshotPoint {
-    ScreenshotPoint {
-        x: normalized_axis(x, size.width),
-        y: normalized_axis(y, size.height),
-    }
 }
 
 fn normalized_view_point(x: u16, y: u16, rect: PixelRect) -> ScreenshotPoint {
@@ -2372,23 +2387,6 @@ mod tests {
         assert_eq!(cache.entries.len(), 1);
         assert_eq!(cache.cached_bytes, image_bytes as u64);
         assert!(cache.cached_bytes <= MAX_CACHED_IMAGE_BYTES);
-    }
-
-    #[test]
-    fn normalized_points_cover_the_exact_image_without_resize_assumptions() {
-        let size = PixelSize {
-            width: 1_920,
-            height: 1_504,
-        };
-        assert_eq!(normalized_point(0, 0, size), ScreenshotPoint { x: 0, y: 0 });
-        assert_eq!(
-            normalized_point(500, 500, size),
-            ScreenshotPoint { x: 960, y: 752 }
-        );
-        assert_eq!(
-            normalized_point(1_000, 1_000, size),
-            ScreenshotPoint { x: 1_919, y: 1_503 }
-        );
     }
 
     #[test]

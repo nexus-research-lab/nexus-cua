@@ -244,6 +244,7 @@ func (e *CUAError) Error() string {
 }
 
 type DriverCapabilities struct {
+	PrimaryModifier      string                          `json:"primary_modifier"`
 	ProtocolVersion      string                          `json:"protocol_version"`
 	RuntimeVersion       string                          `json:"runtime_version"`
 	Platform             Platform                        `json:"platform"`
@@ -344,7 +345,7 @@ type ScreenRect struct {
 	Height float64 `json:"height"`
 }
 
-type ScreenshotPoint struct {
+type NormalizedPoint struct {
 	X uint32 `json:"x"`
 	Y uint32 `json:"y"`
 }
@@ -545,7 +546,7 @@ type InvokeElement struct {
 func (InvokeElement) closedAction() {}
 
 type ClickPoint struct {
-	Point    ScreenshotPoint    `json:"point"`
+	Point    NormalizedPoint    `json:"point"`
 	Button   PointerButton      `json:"button"`
 	Count    uint8              `json:"count"`
 	Delivery DeliveryPreference `json:"delivery"`
@@ -554,7 +555,7 @@ type ClickPoint struct {
 func (ClickPoint) closedAction() {}
 
 type PressPoint struct {
-	Point      ScreenshotPoint `json:"point"`
+	Point      NormalizedPoint `json:"point"`
 	Button     PointerButton   `json:"button"`
 	DurationMS uint32          `json:"duration_ms"`
 }
@@ -595,7 +596,7 @@ type SetExpanded struct {
 func (SetExpanded) closedAction() {}
 
 type MovePointer struct {
-	Point      ScreenshotPoint `json:"point"`
+	Point      NormalizedPoint `json:"point"`
 	DurationMS uint32          `json:"duration_ms"`
 }
 
@@ -614,16 +615,17 @@ type PressKeys struct {
 func (PressKeys) closedAction() {}
 
 type Scroll struct {
-	ElementRef *ElementRef `json:"element_ref"`
-	DeltaX     float64     `json:"delta_x"`
-	DeltaY     float64     `json:"delta_y"`
+	Point      NormalizedPoint `json:"point"`
+	ElementRef *ElementRef     `json:"element_ref"`
+	DeltaX     float64         `json:"delta_x"`
+	DeltaY     float64         `json:"delta_y"`
 }
 
 func (Scroll) closedAction() {}
 
 type Drag struct {
-	From       ScreenshotPoint `json:"from"`
-	To         ScreenshotPoint `json:"to"`
+	From       NormalizedPoint `json:"from"`
+	To         NormalizedPoint `json:"to"`
 	DurationMS uint32          `json:"duration_ms"`
 }
 

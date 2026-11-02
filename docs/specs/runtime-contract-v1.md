@@ -200,18 +200,35 @@ text is redacted from debug output and forbidden from logs and artifacts.
 
 ## Coordinates
 
-There are exactly two public coordinate spaces:
+Window and accessibility bounds use `screen_points`: logical top-left screen
+coordinates, possibly fractional or negative on secondary displays.
 
-- `screen_points`: logical top-left screen coordinates used by window and
-  accessibility bounds. Values may be fractional and may be negative on a
-  multi-display desktop.
-- `screenshot_pixels`: unsigned integer coordinates in the exact image
-  artifact returned by the guarded observation.
+All pointer action points use `normalized` integer coordinates in inclusive
+`0..1000`, including click, hold, move, scroll and both drag endpoints. Each
+point is mapped by the runtime through the guarded screenshot's exact pixel
+size and affine screen mapping; 1000 maps to the last pixel, never beyond the
+surface. SDKs and adapters must not first convert these points into pixels.
+Physical `screenshot_pixels` remain image/crop metadata, not action inputs.
 
-Every screenshot observation publishes its pixel size and a checked affine
-mapping from screenshot pixels to screen points. Pixel actions accept only
-`screenshot_pixels` from that exact observation. The runtime validates image
-bounds before the driver converts them to the OS input coordinate system.
+Scroll requires a point and a fresh screenshot even when an element ref is
+provided. Native dispatch hit-tests that point and rejects an unrelated
+covering window before wheel input. Positive delta_y means down; positive
+delta_x means right. Deltas express logical-pixel intent. Windows converts
+using the configured wheel line/character count and a 16-logical-pixel unit;
+page-scroll/disabled settings fail explicitly. Application wheel quantization
+means dispatch acceptance is not proof of an exact scroll distance.
+
+`mod` means Command on macOS and Control on Windows. `meta` retains its native
+meaning (Command/Windows key); `cmd`/`ctrl`/`opt`/`esc`/`return`/`pageup`/`pagedown`
+are normalized aliases. Windows rejects Command rather than silently sending
+a Windows-key shortcut. Capabilities report `primary_modifier`. Character and
+symbol shortcuts resolve against the current layout (macOS Unicode keyboard
+layout, Windows target-thread `VkKeyScanExW`); unmodified single-character
+input uses Unicode packets. `backspace` deletes backward and `delete` forward.
+
+Guarded observations default to 120 seconds in runtime, service, and MCP.
+`serve --max-observation-age-seconds` and the corresponding MCP option override
+that bound; zero is invalid. Expiry does not bypass the native freshness check.
 
 ## Semantic snapshots
 

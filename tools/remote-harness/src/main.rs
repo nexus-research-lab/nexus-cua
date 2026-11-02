@@ -918,6 +918,51 @@ async fn assert_untrusted_client_rejected(
     }
 }
 
+// The reconnect can reach the worker before the disconnected request is admitted.
+// Query the original mutation identity; never replay the mutation to hide that race.
+async fn reconcile_disconnected_mutation(
+    bootstrap: &WorkerBootstrap,
+    certificates: &CertificateMaterial,
+    mutation_id: &str,
+    max_frame_bytes: usize,
+) -> Result<MutationReconciliation, HarnessError> {
+    timeout(Duration::from_secs(5), async {
+        for attempt in 0..10 {
+            let request = execute_request(
+                bootstrap,
+                &format!("request_reconcile_{attempt}"),
+                Command::ReconcileMutation(ReconcileMutationInput {
+                    request_id: RequestId::new(mutation_id),
+                    wait_ms: 1_000,
+                }),
+            );
+            let response = expect_execute(
+                round_trip(bootstrap, certificates, &request, max_frame_bytes).await?,
+            )?;
+            let GatewayOutcome::Success {
+                result: GatewayResult::Core(CommandResult::MutationReconciled(reconciliation)),
+            } = response.outcome
+            else {
+                return Err(HarnessError::Assertion(
+                    "disconnected mutation did not reconcile",
+                ));
+            };
+            if !matches!(
+                reconciliation.disposition,
+                MutationDisposition::Unknown | MutationDisposition::Pending
+            ) {
+                return Ok(reconciliation);
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        Err(HarnessError::Assertion(
+            "mutation reconciliation exceeded its bounded query budget",
+        ))
+    })
+    .await
+    .map_err(|_| HarnessError::Assertion("mutation reconciliation exceeded its deadline"))?
+}
+
 async fn send_and_disconnect(
     bootstrap: &WorkerBootstrap,
     certificates: &CertificateMaterial,
@@ -1164,24 +1209,9 @@ async fn run_controller(
         }),
     );
     send_and_disconnect(&bootstrap, &certificates, &mutation, max_frame_bytes).await?;
-    let reconcile = execute_request(
-        &bootstrap,
-        "request_reconcile",
-        Command::ReconcileMutation(ReconcileMutationInput {
-            request_id: RequestId::new(mutation_id),
-            wait_ms: 1_000,
-        }),
-    );
-    let reconcile_response =
-        expect_execute(round_trip(&bootstrap, &certificates, &reconcile, max_frame_bytes).await?)?;
-    let GatewayOutcome::Success {
-        result: GatewayResult::Core(CommandResult::MutationReconciled(reconciliation)),
-    } = reconcile_response.outcome
-    else {
-        return Err(HarnessError::Assertion(
-            "disconnected mutation did not reconcile",
-        ));
-    };
+    let reconciliation =
+        reconcile_disconnected_mutation(&bootstrap, &certificates, mutation_id, max_frame_bytes)
+            .await?;
     if reconciliation.admission != MutationAdmission::Admitted
         || reconciliation.disposition != MutationDisposition::Succeeded
         || reconciliation.worker_epoch.as_deref() != Some(bootstrap.lease.worker_epoch.as_str())

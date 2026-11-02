@@ -11,6 +11,8 @@ use nexus_cua_runtime::DriverErrorKind;
 use nexus_cua_runtime::{DesktopDriver, DriverError};
 
 mod host_identity;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+mod input_text;
 #[cfg(target_os = "macos")]
 mod macos;
 mod observation;

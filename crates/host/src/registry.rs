@@ -448,6 +448,7 @@ mod tests {
                         protocol_version: nexus_cua_protocol::PROTOCOL_VERSION.to_owned(),
                         runtime_version: "fixture".to_owned(),
                         platform: Platform::Macos,
+                        primary_modifier: "command".to_owned(),
                         capture_modes: vec![CaptureMode::Window],
                         accessibility_tree: false,
                         input_routes: vec![InputRoute::Foreground],

@@ -206,6 +206,9 @@ struct ServeArgs {
     /// Private transient screenshot directory.
     #[arg(long, requires_all = ["endpoint", "token_file"])]
     artifact_root: Option<PathBuf>,
+    /// Maximum model think time before a guarded observation must be refreshed.
+    #[arg(long, default_value_t = DEFAULT_MAX_OBSERVATION_AGE_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
+    max_observation_age_seconds: u64,
     /// Maximum encoded request or response size.
     #[arg(long, default_value_t = 1024 * 1024)]
     max_frame_bytes: usize,
@@ -252,6 +255,9 @@ struct RequestArgs {
     /// Stable retry identity; generated when omitted.
     #[arg(long)]
     request_id: Option<String>,
+    /// Maximum model think time before a guarded observation must be refreshed.
+    #[arg(long, default_value_t = DEFAULT_MAX_OBSERVATION_AGE_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
+    max_observation_age_seconds: u64,
     /// Maximum encoded request or response size.
     #[arg(long, default_value_t = 1024 * 1024)]
     max_frame_bytes: usize,
@@ -293,6 +299,9 @@ struct ReconcileArgs {
     /// Maximum wait for an already-admitted mutation, in milliseconds.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=120_000))]
     wait_ms: u32,
+    /// Maximum model think time before a guarded observation must be refreshed.
+    #[arg(long, default_value_t = DEFAULT_MAX_OBSERVATION_AGE_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
+    max_observation_age_seconds: u64,
     /// Maximum encoded request or response size.
     #[arg(long, default_value_t = 1024 * 1024)]
     max_frame_bytes: usize,
@@ -534,6 +543,8 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     let driver = nexus_cua_platform::system_driver()?;
     let mut runtime_config = RuntimeConfig::new(&paths.artifact_root);
     runtime_config.policy = policy;
+    runtime_config.max_observation_age =
+        std::time::Duration::from_secs(args.max_observation_age_seconds);
     let runtime = Arc::new(Runtime::new(driver, runtime_config).map_err(CliError::Runtime)?);
     let mut server_config = ServerConfig::new(paths.endpoint.clone());
     server_config.max_frame_bytes = max_frame_bytes;
@@ -704,6 +715,46 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    #[test]
+    fn service_observation_age_matches_mcp_and_runtime_defaults() {
+        let cli = Cli::try_parse_from(["nexuscua", "serve", "--dev-root", "state"]).unwrap();
+        let CliCommand::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert_eq!(
+            args.max_observation_age_seconds,
+            DEFAULT_MAX_OBSERVATION_AGE_SECONDS
+        );
+        assert_eq!(
+            RuntimeConfig::new("state").max_observation_age.as_secs(),
+            args.max_observation_age_seconds
+        );
+        let cli = Cli::try_parse_from([
+            "nexuscua",
+            "serve",
+            "--dev-root",
+            "state",
+            "--max-observation-age-seconds",
+            "90",
+        ])
+        .unwrap();
+        let CliCommand::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        assert_eq!(args.max_observation_age_seconds, 90);
+        assert!(
+            Cli::try_parse_from([
+                "nexuscua",
+                "serve",
+                "--dev-root",
+                "state",
+                "--max-observation-age-seconds",
+                "0"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn bounded_command_reader_accepts_the_limit_and_rejects_one_more_byte() {

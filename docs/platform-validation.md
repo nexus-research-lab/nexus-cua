@@ -1,5 +1,24 @@
 # Platform Validation
 
+## Current implementation review (2026-11-02)
+
+The macOS session-owned ScreenCaptureKit stream passes source checks and the
+core native fixture path, including window replacement and session expiry.
+Full native acceptance remains blocked at minimization: an independent fixture
+probe also did not enter the minimized state without a runtime or capture stream.
+System recording-indicator visibility, native stream-release latency, memory
+budgets, application scenes, and user takeover are not yet accepted.
+
+`desktop-conditions` runs only occlusion/minimization with semantic authority and
+foreground input disabled. Set `NEXUS_CUA_FIXTURE_BACKGROUND=1` when launching the
+macOS fixture to avoid activating it; this diagnostic is partial evidence only.
+
+Windows workspace tests pass with LLVM-MinGW `ld.lld` and
+`-C linker-flavor=ld.lld -C link-self-contained=yes`. Interactive display capture
+still fails with WGC HRESULT `0x80070057`; `validate --window-only` isolates
+window capture and currently stops at missing fixture invocation semantics.
+Neither source tests nor the window-only diagnostic establish native acceptance.
+
 ## Codex MCP dogfood
 
 On 2026-08-27, Codex CLI `0.149.0` loaded the project-scoped local
@@ -264,6 +283,18 @@ They do not replace the maintained Windows x64 fixture/evidence gate or the
 full native action acceptance that depends on it.
 
 ### Deterministic Windows fixture
+
+For a fresh run, build the workspace, standalone harness and WPF fixture, then
+run `tools/native-harness/run-windows-validation.ps1` in the logged-in desktop
+session. SSH can prepare builds, but its service session cannot validate desktop
+input. If launching through Task Scheduler, use the existing user's interactive
+token and remove the temporary task afterwards. The runner uses a unique pipe,
+token and evidence directory, bounds validation to 180 seconds by default, and
+removes transient captures and its token even on failure. It retains only
+metadata reports under `target/native-evidence/windows-validation`.
+
+The historical results below predate the normalized-coordinate contract and do
+not establish acceptance for the current revision.
 
 The self-contained WPF fixture and standalone harness completed the production
 named-pipe path as the interactive console user. The strict run proved:

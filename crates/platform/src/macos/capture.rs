@@ -1,6 +1,6 @@
 //! Serialized `CoreGraphics` discovery and `ScreenCaptureKit` exact-window capture actor.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::mem::{MaybeUninit, size_of};
 use std::ptr;
@@ -81,17 +81,51 @@ pub(super) struct ForegroundOwner {
 #[derive(Clone)]
 pub(super) struct CaptureActor {
     sender: SyncSender<CaptureCommand>,
+    live_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
 impl CaptureActor {
     pub(super) fn spawn() -> Self {
         let (sender, receiver) = sync_channel(COMMAND_CAPACITY);
         let (recycle_sender, recycle_receiver) = sync_channel(RECYCLE_CAPACITY);
+        let live_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let actor_sessions = Arc::clone(&live_sessions);
         thread::Builder::new()
             .name("nexus-cua-macos-capture".to_owned())
-            .spawn(move || actor_loop(&receiver, &recycle_receiver, &recycle_sender))
+            .spawn(move || {
+                actor_loop(
+                    &receiver,
+                    &recycle_receiver,
+                    &recycle_sender,
+                    &actor_sessions,
+                );
+            })
             .expect("create CoreGraphics capture actor thread");
-        Self { sender }
+        Self {
+            sender,
+            live_sessions,
+        }
+    }
+
+    pub(super) fn session_started(&self, id: String) -> Result<(), DriverError> {
+        let mut sessions = self
+            .live_sessions
+            .lock()
+            .map_err(|_| native_failure("capture session registry is unavailable"))?;
+        if sessions.len() >= 64 {
+            return Err(DriverError::new(
+                DriverErrorKind::Busy,
+                "capture session capacity exhausted",
+            ));
+        }
+        sessions.insert(id);
+        Ok(())
+    }
+
+    pub(super) fn session_closed(&self, id: &str) {
+        if let Ok(mut sessions) = self.live_sessions.lock() {
+            sessions.remove(id);
+        }
     }
 
     pub(super) async fn list_windows(&self) -> Result<Vec<NativeWindow>, DriverError> {
@@ -125,8 +159,18 @@ impl CaptureActor {
         target_key: String,
         expected_bounds: ScreenRect,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
+        self.capture_scoped(None, target_key, expected_bounds).await
+    }
+
+    pub(super) async fn capture_scoped(
+        &self,
+        session_id: Option<String>,
+        target_key: String,
+        expected_bounds: ScreenRect,
+    ) -> Result<(RgbaImage, ScreenRect), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(CaptureCommand::Capture {
+            session_id,
             target_key,
             expected_bounds,
             reply,
@@ -212,6 +256,7 @@ enum CaptureCommand {
         reply: oneshot::Sender<Result<Vec<NativeDisplay>, DriverError>>,
     },
     Capture {
+        session_id: Option<String>,
         target_key: String,
         expected_bounds: ScreenRect,
         reply: oneshot::Sender<Result<(RgbaImage, ScreenRect), DriverError>>,
@@ -249,16 +294,21 @@ fn actor_loop(
     receiver: &Receiver<CaptureCommand>,
     recycle_receiver: &Receiver<Vec<u8>>,
     recycle_sender: &SyncSender<Vec<u8>>,
+    live_sessions: &Mutex<HashSet<String>>,
 ) {
     let mut recycled = VecDeque::with_capacity(RECYCLE_CAPACITY);
     let mut applications = ApplicationCache::default();
     let mut capture_filter = None;
-    while let Ok(command) = receiver.recv() {
-        while let Ok(pixels) = recycle_receiver.try_recv() {
-            if recycled.len() < RECYCLE_CAPACITY {
-                recycled.push_back(pixels);
-            }
-        }
+    let mut streams: Vec<WarmStream> = Vec::new();
+    loop {
+        prune_streams(&mut streams, live_sessions);
+        let command = match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(command) => command,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let recycle_space = RECYCLE_CAPACITY - recycled.len();
+        recycled.extend(recycle_receiver.try_iter().take(recycle_space));
         autoreleasepool(|_| match command {
             CaptureCommand::ListWindows { reply } => {
                 let _ = reply.send(load_windows(&mut applications));
@@ -267,17 +317,31 @@ fn actor_loop(
                 let _ = reply.send(load_displays());
             }
             CaptureCommand::Capture {
+                session_id,
                 target_key,
                 expected_bounds,
                 reply,
             } => {
-                let _ = reply.send(capture_target(
-                    &target_key,
-                    expected_bounds,
-                    &mut capture_filter,
-                    recycled.pop_front(),
-                    recycle_sender.clone(),
-                ));
+                let result = if session_id.is_some()
+                    || streams.iter().any(|stream| stream.target_key == target_key)
+                {
+                    stream_capture(
+                        &mut streams,
+                        live_sessions,
+                        session_id.as_deref(),
+                        &target_key,
+                        expected_bounds,
+                    )
+                } else {
+                    capture_target(
+                        &target_key,
+                        expected_bounds,
+                        &mut capture_filter,
+                        recycled.pop_front(),
+                        recycle_sender.clone(),
+                    )
+                };
+                let _ = reply.send(result);
             }
             CaptureCommand::CaptureDisplay {
                 target_key,
@@ -330,6 +394,100 @@ fn actor_loop(
             }
         });
     }
+}
+
+struct WarmStream {
+    target_key: String,
+    width: f64,
+    height: f64,
+    owners: HashSet<String>,
+    last_used: Instant,
+    stream: super::stream::CaptureStream,
+}
+
+fn prune_streams(streams: &mut Vec<WarmStream>, live_sessions: &Mutex<HashSet<String>>) {
+    let active = live_sessions
+        .lock()
+        .map(|sessions| sessions.clone())
+        .unwrap_or_default();
+    for stream in &mut *streams {
+        stream.owners.retain(|id| active.contains(id));
+    }
+    streams.retain(|stream| {
+        !stream.owners.is_empty() && stream.last_used.elapsed() < Duration::from_secs(30)
+    });
+}
+
+fn stream_capture(
+    streams: &mut Vec<WarmStream>,
+    live_sessions: &Mutex<HashSet<String>>,
+    session_id: Option<&str>,
+    target_key: &str,
+    bounds: ScreenRect,
+) -> Result<(RgbaImage, ScreenRect), DriverError> {
+    let authorized = || {
+        session_id.is_none_or(|id| {
+            live_sessions
+                .lock()
+                .is_ok_and(|sessions| sessions.contains(id))
+        })
+    };
+    if !authorized() {
+        return Err(target_unavailable());
+    }
+    let mut owners = HashSet::new();
+    if let Some(index) = streams
+        .iter()
+        .position(|stream| stream.target_key == target_key)
+        && (streams[index].width.to_bits() != bounds.width.to_bits()
+            || streams[index].height.to_bits() != bounds.height.to_bits())
+    {
+        owners = streams.remove(index).owners;
+    }
+    if !streams.iter().any(|stream| stream.target_key == target_key) {
+        if streams.len() >= 2 {
+            let oldest = streams
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, stream)| stream.last_used)
+                .map_or(0, |(index, _)| index);
+            streams.remove(oldest);
+        }
+        let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
+        let scale = f64::from(unsafe { filter.filter.pointPixelScale() }).max(1.0);
+        let stream = super::stream::CaptureStream::start(
+            &filter.filter,
+            capture_dimension(bounds.width * scale)?,
+            capture_dimension(bounds.height * scale)?,
+        )?;
+        streams.push(WarmStream {
+            target_key: target_key.to_owned(),
+            width: bounds.width,
+            height: bounds.height,
+            owners,
+            last_used: Instant::now(),
+            stream,
+        });
+    }
+    let stream = streams
+        .iter_mut()
+        .find(|stream| stream.target_key == target_key)
+        .expect("stream inserted above");
+    if let Some(id) = session_id {
+        stream.owners.insert(id.to_owned());
+    }
+    stream.last_used = Instant::now();
+    let image = match stream.stream.snapshot() {
+        Ok(image) => image,
+        Err(error) => {
+            streams.retain(|stream| stream.target_key != target_key);
+            return Err(error);
+        }
+    };
+    if !authorized() {
+        return Err(target_unavailable());
+    }
+    Ok((image, bounds))
 }
 
 fn foreground_owner() -> Option<ForegroundOwner> {
@@ -928,7 +1086,7 @@ fn dictionary_value(dictionary: &CFDictionary, key: CFStringRef) -> Option<CFTyp
     (found != 0 && !value.is_null()).then(|| unsafe { CFType::wrap_under_get_rule(value.cast()) })
 }
 
-fn dictionary_i64(dictionary: &CFDictionary, key: CFStringRef) -> Option<i64> {
+pub(super) fn dictionary_i64(dictionary: &CFDictionary, key: CFStringRef) -> Option<i64> {
     dictionary_value(dictionary, key)?
         .downcast::<CFNumber>()?
         .to_i64()

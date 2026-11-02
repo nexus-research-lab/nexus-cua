@@ -14,7 +14,9 @@ more precise interface.
 3. Observe the exact window immediately before a mutation. Use accessibility
    facts when reliable and the screenshot for visual targets. Coordinates are
    top-left normalized `0..1000`; use zoom and its opaque view reference for a
-   small target instead of estimating client-resized pixels.
+   small target instead of estimating client-resized pixels. Scroll also requires
+   a target x/y in this space; positive vertical deltas scroll down. Prefer
+   `mod` for portable shortcuts (Command on macOS, Control on Windows).
 4. Allocate one stable, unique `request_id` for each mutation intent before
    sending it. Retain that ID. After timeout or an indeterminate result, query
    reconciliation with the same ID; never submit the intent under a new ID.

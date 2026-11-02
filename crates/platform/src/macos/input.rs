@@ -42,6 +42,7 @@ pub(super) enum InputAction {
     TypeText(SensitiveText),
     PressKeys(Vec<String>),
     Scroll {
+        point: ScreenPoint,
         delta_x: f64,
         delta_y: f64,
     },
@@ -136,7 +137,11 @@ impl InputState {
             InputAction::Move { point, duration_ms } => self.move_pointer(point, duration_ms),
             InputAction::TypeText(text) => self.type_text(pid, text.expose()),
             InputAction::PressKeys(keys) => self.press_keys(pid, &keys),
-            InputAction::Scroll { delta_x, delta_y } => self.scroll(delta_x, delta_y),
+            InputAction::Scroll {
+                point,
+                delta_x,
+                delta_y,
+            } => self.scroll(point, delta_x, delta_y),
             InputAction::Drag {
                 from,
                 to,
@@ -153,13 +158,22 @@ impl InputState {
     ) -> Result<(), DriverError> {
         let (down_type, up_type, native_button) = mouse_types(button);
         let point = cg_point(point);
+        let movement = self.mouse_event(CGEventType::MouseMoved, point, native_button)?;
+        let mut events = Vec::with_capacity(usize::from(count));
         for click in 1..=count {
             let down = self.mouse_event(down_type, point, native_button)?;
             down.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
-            down.post(CGEventTapLocation::HID);
             let up = self.mouse_event(up_type, point, native_button)?;
             up.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
+            events.push((down, up));
+        }
+        movement.post(CGEventTapLocation::HID);
+        thread::sleep(FRAME_INTERVAL);
+        for (down, up) in events {
+            down.post(CGEventTapLocation::HID);
+            thread::sleep(Duration::from_millis(10));
             up.post(CGEventTapLocation::HID);
+            thread::sleep(Duration::from_millis(10));
         }
         Ok(())
     }
@@ -266,7 +280,7 @@ impl InputState {
 
     fn type_text(&self, pid: i32, text: &str) -> Result<(), DriverError> {
         let utf16 = Zeroizing::new(text.encode_utf16().collect::<Vec<_>>());
-        for chunk in utf16.chunks(20) {
+        for chunk in crate::input_text::chunks(&utf16) {
             let down = CGEvent::new_keyboard_event(self.source.clone(), 0, true)
                 .map_err(|()| input_failure("failed to create Unicode key-down event"))?;
             down.set_string_from_utf16_unchecked(chunk);
@@ -278,17 +292,23 @@ impl InputState {
             // keyboard content into an unrelated foreground application.
             down.post_to_pid(pid);
             up.post_to_pid(pid);
+            thread::sleep(Duration::from_millis(5));
         }
         Ok(())
     }
 
     fn press_keys(&self, pid: i32, keys: &[String]) -> Result<(), DriverError> {
+        if keys.len() == 1 && keys[0].len() == 1 && keys[0].is_ascii() {
+            return self.type_text(pid, &keys[0]);
+        }
         let mut flags = CGEventFlags::empty();
         let mut modifiers = Vec::new();
         let mut primary = Vec::new();
         for key in keys {
-            let modifier = match key.as_str() {
-                "meta" | "command" => Some((KeyCode::COMMAND, CGEventFlags::CGEventFlagCommand)),
+            let modifier = match nexus_cua_protocol::canonical_key(key) {
+                "mod" | "meta" | "command" => {
+                    Some((KeyCode::COMMAND, CGEventFlags::CGEventFlagCommand))
+                }
                 "control" => Some((KeyCode::CONTROL, CGEventFlags::CGEventFlagControl)),
                 "alt" | "option" => Some((KeyCode::OPTION, CGEventFlags::CGEventFlagAlternate)),
                 "shift" => Some((KeyCode::SHIFT, CGEventFlags::CGEventFlagShift)),
@@ -299,8 +319,19 @@ impl InputState {
                 if !modifiers.iter().any(|(candidate, _)| *candidate == keycode) {
                     modifiers.push((keycode, flag));
                 }
+            } else if key.len() == 1 && key.is_ascii() {
+                let (code, shift) =
+                    super::keyboard_layout::character_key(u16::from(key.as_bytes()[0]))
+                        .ok_or_else(|| unsupported_key(key))?;
+                if shift {
+                    flags |= CGEventFlags::CGEventFlagShift;
+                }
+                primary.push(code);
             } else {
-                primary.push(key_code(key).ok_or_else(|| unsupported_key(key))?);
+                primary.push(
+                    key_code(nexus_cua_protocol::canonical_key(key))
+                        .ok_or_else(|| unsupported_key(key))?,
+                );
             }
         }
         if primary.is_empty() {
@@ -339,16 +370,17 @@ impl InputState {
         Ok(event)
     }
 
-    fn scroll(&self, delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
+    fn scroll(&self, point: ScreenPoint, delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
         let event = CGEvent::new_scroll_event(
             self.source.clone(),
             ScrollEventUnit::PIXEL,
             2,
-            bounded_i32(delta_y),
-            bounded_i32(delta_x),
+            bounded_i32(-delta_y),
+            bounded_i32(-delta_x),
             0,
         )
         .map_err(|()| input_failure("failed to create scroll event"))?;
+        event.set_location(cg_point(point));
         event.post(CGEventTapLocation::HID);
         Ok(())
     }
@@ -390,46 +422,11 @@ fn mouse_types(button: PointerButton) -> (CGEventType, CGEventType, CGMouseButto
 
 fn key_code(key: &str) -> Option<u16> {
     Some(match key {
-        "a" => KeyCode::ANSI_A,
-        "b" => KeyCode::ANSI_B,
-        "c" => KeyCode::ANSI_C,
-        "d" => KeyCode::ANSI_D,
-        "e" => KeyCode::ANSI_E,
-        "f" => KeyCode::ANSI_F,
-        "g" => KeyCode::ANSI_G,
-        "h" => KeyCode::ANSI_H,
-        "i" => KeyCode::ANSI_I,
-        "j" => KeyCode::ANSI_J,
-        "k" => KeyCode::ANSI_K,
-        "l" => KeyCode::ANSI_L,
-        "m" => KeyCode::ANSI_M,
-        "n" => KeyCode::ANSI_N,
-        "o" => KeyCode::ANSI_O,
-        "p" => KeyCode::ANSI_P,
-        "q" => KeyCode::ANSI_Q,
-        "r" => KeyCode::ANSI_R,
-        "s" => KeyCode::ANSI_S,
-        "t" => KeyCode::ANSI_T,
-        "u" => KeyCode::ANSI_U,
-        "v" => KeyCode::ANSI_V,
-        "w" => KeyCode::ANSI_W,
-        "x" => KeyCode::ANSI_X,
-        "y" => KeyCode::ANSI_Y,
-        "z" => KeyCode::ANSI_Z,
-        "0" => KeyCode::ANSI_0,
-        "1" => KeyCode::ANSI_1,
-        "2" => KeyCode::ANSI_2,
-        "3" => KeyCode::ANSI_3,
-        "4" => KeyCode::ANSI_4,
-        "5" => KeyCode::ANSI_5,
-        "6" => KeyCode::ANSI_6,
-        "7" => KeyCode::ANSI_7,
-        "8" => KeyCode::ANSI_8,
-        "9" => KeyCode::ANSI_9,
         "enter" | "return" => KeyCode::RETURN,
         "tab" => KeyCode::TAB,
         "space" => KeyCode::SPACE,
-        "backspace" | "delete" => KeyCode::DELETE,
+        "backspace" => KeyCode::DELETE,
+        "delete" => KeyCode::FORWARD_DELETE,
         "escape" => KeyCode::ESCAPE,
         "left" => KeyCode::LEFT_ARROW,
         "right" => KeyCode::RIGHT_ARROW,
@@ -476,4 +473,16 @@ fn input_failure(message: &str) -> DriverError {
 
 fn actor_stopped<T>(_error: T) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, "macOS input actor stopped")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_and_backspace_have_opposite_directions() {
+        assert_eq!(key_code("backspace"), Some(KeyCode::DELETE));
+        assert_eq!(key_code("delete"), Some(KeyCode::FORWARD_DELETE));
+        assert_ne!(key_code("delete"), key_code("backspace"));
+    }
 }

@@ -21,14 +21,15 @@ use windows::Win32::System::Threading::{
     WaitForSingleObject,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
-    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
-    VK_END, VK_ESCAPE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10,
-    VK_F11, VK_F12, VK_HOME, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT,
-    VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC, MOUSE_EVENT_FLAGS,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, MapVirtualKeyW,
+    SendInput, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1,
+    VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12, VK_HOME,
+    VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB,
+    VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId,
@@ -77,6 +78,7 @@ pub(super) enum InputAction {
     TypeText(SensitiveText),
     PressKeys(Vec<String>),
     Scroll {
+        point: ScreenPoint,
         delta_x: f64,
         delta_y: f64,
     },
@@ -245,7 +247,9 @@ fn perform_foreground(
         )
         .mutation_not_dispatched());
     }
-    activate(target)?;
+    if unsafe { GetForegroundWindow() } != target {
+        activate(target)?;
+    }
     let action_result = perform(raw_hwnd, action);
     let restoration = if !restore_foreground {
         ForegroundRestorationStatus::NotRequested
@@ -359,9 +363,13 @@ fn perform(raw_hwnd: isize, action: InputAction) -> Result<(), DriverError> {
             duration_ms,
         } => press(point, button, duration_ms),
         InputAction::Move { point, duration_ms } => move_pointer(point, duration_ms),
-        InputAction::TypeText(text) => type_text(text.expose()),
-        InputAction::PressKeys(keys) => press_keys(&keys),
-        InputAction::Scroll { delta_x, delta_y } => scroll(delta_x, delta_y),
+        InputAction::TypeText(text) => type_text(hwnd, text.expose()),
+        InputAction::PressKeys(keys) => press_keys(hwnd, &keys),
+        InputAction::Scroll {
+            point,
+            delta_x,
+            delta_y,
+        } => scroll(hwnd, point, delta_x, delta_y),
         InputAction::Drag {
             from,
             to,
@@ -596,13 +604,22 @@ fn window_mutation_failure(message: &str) -> DriverError {
 
 fn click(point: ScreenPoint, button: PointerButton, count: u8) -> Result<(), DriverError> {
     let (down, up) = mouse_button_flags(button);
-    let mut inputs = Vec::with_capacity(usize::from(count) * 2 + 1);
-    inputs.push(absolute_mouse(point, MOUSEEVENTF_MOVE)?);
+    let movement = absolute_mouse(point, MOUSEEVENTF_MOVE)?;
+    let down = absolute_mouse(point, down)?;
+    let up = absolute_mouse(point, up)?;
+    send(&[movement])?;
+    thread::sleep(FRAME_INTERVAL);
     for _ in 0..count {
-        inputs.push(absolute_mouse(point, down)?);
-        inputs.push(absolute_mouse(point, up)?);
+        let pressed = send(&[down]);
+        thread::sleep(Duration::from_millis(10));
+        // Always attempt release, including an uncertain partial down sequence.
+        let released = send(&[up]);
+        pressed
+            .and(released)
+            .map_err(DriverError::mutation_indeterminate)?;
+        thread::sleep(Duration::from_millis(10));
     }
-    send(&inputs)
+    Ok(())
 }
 
 fn click_background(
@@ -727,34 +744,98 @@ fn interpolate(
     Ok(())
 }
 
-fn type_text(text: &str) -> Result<(), DriverError> {
-    let mut inputs = Vec::with_capacity(text.encode_utf16().count() * 2);
-    for unit in text.encode_utf16() {
-        inputs.push(keyboard_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE));
-        inputs.push(keyboard_input(
-            VIRTUAL_KEY(0),
-            unit,
-            KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-        ));
+fn type_text(target: HWND, text: &str) -> Result<(), DriverError> {
+    let units = zeroize::Zeroizing::new(text.encode_utf16().collect::<Vec<_>>());
+    let mut dispatched = false;
+    for chunk in crate::input_text::chunks(&units) {
+        if unsafe { GetForegroundWindow() } != target {
+            let error = DriverError::new(
+                DriverErrorKind::ForegroundRequired,
+                "foreground owner changed during text input",
+            );
+            return Err(if dispatched {
+                error.mutation_indeterminate()
+            } else {
+                error.mutation_not_dispatched()
+            });
+        }
+        let mut inputs = Vec::with_capacity(chunk.len() * 2);
+        for unit in chunk {
+            inputs.push(keyboard_input(VIRTUAL_KEY(0), *unit, KEYEVENTF_UNICODE));
+            inputs.push(keyboard_input(
+                VIRTUAL_KEY(0),
+                *unit,
+                KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+            ));
+        }
+        let result = send(&inputs);
+        inputs.fill(INPUT::default());
+        result.map_err(|error| {
+            if dispatched {
+                error.mutation_indeterminate()
+            } else {
+                error
+            }
+        })?;
+        dispatched = true;
+        thread::sleep(Duration::from_millis(5));
     }
-    send(&inputs)
+    Ok(())
 }
 
-fn press_keys(keys: &[String]) -> Result<(), DriverError> {
+fn press_keys(target: HWND, keys: &[String]) -> Result<(), DriverError> {
+    if keys.len() == 1 && keys[0].len() == 1 && keys[0].is_ascii() {
+        return type_text(target, &keys[0]);
+    }
+    // Query the target thread's layout, not the headless input actor's layout.
+    let thread_id = unsafe { GetWindowThreadProcessId(target, None) };
+    let layout =
+        unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout(thread_id) };
     let mut modifiers = Vec::new();
     let mut primary = Vec::new();
     for key in keys {
-        match key.as_str() {
-            "meta" | "command" => modifiers.push(VK_LWIN),
-            "control" => modifiers.push(VK_CONTROL),
+        match nexus_cua_protocol::canonical_key(key) {
+            "meta" | "win" => modifiers.push(VK_LWIN),
+            "mod" | "control" => modifiers.push(VK_CONTROL),
             "alt" | "option" => modifiers.push(VK_MENU),
             "shift" => modifiers.push(VK_SHIFT),
-            _ => primary.push(key_code(key).ok_or_else(|| unsupported_key(key))?),
+            _ if key.len() == 1 && key.is_ascii() => {
+                let mapped = unsafe {
+                    windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanExW(
+                        u16::from(key.as_bytes()[0]),
+                        layout,
+                    )
+                };
+                let mapped = u16::try_from(mapped).map_err(|_| unsupported_key(key))?;
+                let required = mapped >> 8;
+                if required & !7 != 0 {
+                    return Err(unsupported_key(key));
+                }
+                for (mask, modifier) in [(1, VK_SHIFT), (2, VK_CONTROL), (4, VK_MENU)] {
+                    if required & mask != 0 {
+                        modifiers.push(modifier);
+                    }
+                }
+                primary.push(VIRTUAL_KEY(mapped & 0xff));
+            }
+            _ => primary.push(
+                key_code(nexus_cua_protocol::canonical_key(key))
+                    .ok_or_else(|| unsupported_key(key))?,
+            ),
         }
     }
     if primary.is_empty() {
         return Err(unsupported_key("modifier-only chord"));
     }
+    let mut unique = Vec::new();
+    modifiers.retain(|key| {
+        if unique.contains(key) {
+            false
+        } else {
+            unique.push(*key);
+            true
+        }
+    });
     let mut inputs = Vec::with_capacity(modifiers.len() * 2 + primary.len() * 2);
     for modifier in &modifiers {
         inputs.push(keyboard_input(*modifier, 0, KEYBD_EVENT_FLAGS::default()));
@@ -769,18 +850,38 @@ fn press_keys(keys: &[String]) -> Result<(), DriverError> {
     send(&inputs)
 }
 
-fn scroll(delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
-    let mut inputs = Vec::with_capacity(2);
+fn scroll(target: HWND, point: ScreenPoint, delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
+    let native_point = POINT {
+        x: checked_i32(point.x.round(), "scroll x")?,
+        y: checked_i32(point.y.round(), "scroll y")?,
+    };
+    // SAFETY: Read-only hit test immediately before serialized pointer dispatch.
+    let hit = unsafe { windows::Win32::UI::WindowsAndMessaging::WindowFromPoint(native_point) };
+    let root = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetAncestor(
+            hit,
+            windows::Win32::UI::WindowsAndMessaging::GA_ROOT,
+        )
+    };
+    if root != target {
+        return Err(DriverError::new(
+            DriverErrorKind::TargetUnavailable,
+            "scroll point is covered by another window",
+        )
+        .mutation_not_dispatched());
+    }
+    let mut inputs = Vec::with_capacity(3);
+    inputs.push(absolute_mouse(point, MOUSEEVENTF_MOVE)?);
     if delta_y != 0.0 {
         inputs.push(relative_mouse(
             MOUSEEVENTF_WHEEL,
-            u32::from_ne_bytes(wheel_delta(delta_y).to_ne_bytes()),
+            u32::from_ne_bytes(wheel_delta(-delta_y, wheel_units(false)?).to_ne_bytes()),
         ));
     }
     if delta_x != 0.0 {
         inputs.push(relative_mouse(
             MOUSEEVENTF_HWHEEL,
-            u32::from_ne_bytes(wheel_delta(delta_x).to_ne_bytes()),
+            u32::from_ne_bytes(wheel_delta(delta_x, wheel_units(true)?).to_ne_bytes()),
         ));
     }
     send(&inputs)
@@ -819,6 +920,34 @@ fn relative_mouse(flags: MOUSE_EVENT_FLAGS, data: u32) -> INPUT {
 }
 
 fn keyboard_input(virtual_key: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    // Unicode packets carry a UTF-16 unit, not a hardware scan code.
+    let (scan, flags) = if flags.contains(KEYEVENTF_UNICODE) {
+        (scan, flags)
+    } else {
+        let extended = matches!(
+            virtual_key,
+            VK_LEFT
+                | VK_RIGHT
+                | VK_UP
+                | VK_DOWN
+                | VK_HOME
+                | VK_END
+                | VK_PRIOR
+                | VK_NEXT
+                | VK_DELETE
+                | VK_LWIN
+        );
+        // SAFETY: Read-only translation of a validated virtual key.
+        let mapped = unsafe { MapVirtualKeyW(u32::from(virtual_key.0), MAPVK_VK_TO_VSC) };
+        (
+            u16::try_from(mapped & 0xff).unwrap_or(0),
+            if extended {
+                flags | KEYEVENTF_EXTENDEDKEY
+            } else {
+                flags
+            },
+        )
+    };
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -884,10 +1013,43 @@ fn normalize_absolute(value: f64, origin: i32, extent: i32) -> i32 {
         as i32
 }
 
+// Windows wheel messages express detents rather than pixels. Use the configured
+// line/character count and a documented 16-logical-pixel unit; applications may
+// quantize or override wheel behavior, so dispatch never proves scroll distance.
+fn wheel_units(horizontal: bool) -> Result<u32, DriverError> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETWHEELSCROLLCHARS, SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        SystemParametersInfoW,
+    };
+    let mut units = 0_u32;
+    // SAFETY: these read-only selectors write one initialized UINT.
+    unsafe {
+        SystemParametersInfoW(
+            if horizontal {
+                SPI_GETWHEELSCROLLCHARS
+            } else {
+                SPI_GETWHEELSCROLLLINES
+            },
+            0,
+            Some((&raw mut units).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
+        )
+    }
+    .map_err(|_| input_failure("cannot read Windows wheel settings").mutation_not_dispatched())?;
+    if units == 0 || units == u32::MAX {
+        return Err(DriverError::new(
+            DriverErrorKind::Unsupported,
+            "pixel scrolling requires line-based Windows wheel settings",
+        )
+        .mutation_not_dispatched());
+    }
+    Ok(units)
+}
+
 // The clamp proves that the rounded native wheel delta fits in i32.
 #[allow(clippy::cast_possible_truncation)]
-fn wheel_delta(value: f64) -> i32 {
-    (value * WHEEL_DELTA)
+fn wheel_delta(value: f64, units: u32) -> i32 {
+    (value * WHEEL_DELTA / (f64::from(units) * 16.0))
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
@@ -901,15 +1063,6 @@ fn mouse_button_flags(button: PointerButton) -> (MOUSE_EVENT_FLAGS, MOUSE_EVENT_
 }
 
 fn key_code(key: &str) -> Option<VIRTUAL_KEY> {
-    if key.len() == 1 {
-        let byte = key.as_bytes()[0];
-        if byte.is_ascii_lowercase() {
-            return Some(VIRTUAL_KEY(u16::from(byte.to_ascii_uppercase())));
-        }
-        if byte.is_ascii_digit() {
-            return Some(VIRTUAL_KEY(u16::from(byte)));
-        }
-    }
     Some(match key {
         "enter" | "return" => VK_RETURN,
         "tab" => VK_TAB,
@@ -962,4 +1115,38 @@ fn input_failure(message: &str) -> DriverError {
 
 fn actor_stopped<T>(_error: T) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, "Windows input actor stopped")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation_keys_are_extended_and_unicode_packets_are_unchanged() {
+        for key in [
+            VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_DELETE,
+        ] {
+            for flags in [KEYBD_EVENT_FLAGS::default(), KEYEVENTF_KEYUP] {
+                let input = keyboard_input(key, 0, flags);
+                // SAFETY: keyboard_input initializes the keyboard union member.
+                let key_input = unsafe { input.Anonymous.ki };
+                assert!(key_input.dwFlags.contains(KEYEVENTF_EXTENDEDKEY));
+                assert_ne!(key_input.wScan, 0);
+                assert_eq!(
+                    key_input.dwFlags.contains(KEYEVENTF_KEYUP),
+                    flags.contains(KEYEVENTF_KEYUP)
+                );
+            }
+        }
+        let unicode = keyboard_input(VIRTUAL_KEY(0), 0x4e2d, KEYEVENTF_UNICODE);
+        let key_input = unsafe { unicode.Anonymous.ki };
+        assert_eq!(key_input.wScan, 0x4e2d);
+        assert_eq!(key_input.dwFlags, KEYEVENTF_UNICODE);
+        let backspace = keyboard_input(VK_BACK, 0, KEYBD_EVENT_FLAGS::default());
+        assert!(
+            !unsafe { backspace.Anonymous.ki }
+                .dwFlags
+                .contains(KEYEVENTF_EXTENDEDKEY)
+        );
+    }
 }

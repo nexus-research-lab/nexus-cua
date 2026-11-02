@@ -3,9 +3,11 @@
 mod capture;
 mod clipboard;
 mod input;
+mod keyboard_layout;
 mod launch;
 pub(crate) mod provenance;
 mod semantic;
+mod stream;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -85,6 +87,108 @@ impl MacosDriver {
     }
 }
 
+impl MacosDriver {
+    async fn observe_window_owned(
+        &self,
+        capture_session: Option<String>,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        if include_screenshot && !ScreenCaptureAccess.preflight() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "macOS screen-recording permission is required",
+            )
+            .retryable("grant_screen_recording_permission"));
+        }
+        let before = self.current_window(&window.key).await?;
+        if include_screenshot
+            && self
+                .semantic
+                .window_minimized(
+                    before.key.clone(),
+                    before.pid,
+                    before.screen_bounds,
+                    before.title.clone(),
+                )
+                .await?
+        {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "minimized macOS target cannot provide a current exact-window frame",
+            )
+            .retryable("restore_window_then_observe"));
+        }
+        let capture = async {
+            if include_screenshot {
+                self.capture
+                    .capture_scoped(capture_session, window.key.clone(), before.screen_bounds)
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        };
+        let semantics = async {
+            if accessibility == AccessibilityMode::Disabled {
+                Ok(None)
+            } else {
+                self.semantic
+                    .snapshot(
+                        before.pid,
+                        before.screen_bounds,
+                        before.title.clone(),
+                        accessibility,
+                    )
+                    .await
+                    .map(Some)
+            }
+        };
+        let (captured, semantics) = tokio::join!(capture, semantics);
+        let captured = captured?;
+        let semantics = semantics?;
+        let after = self.current_window(&window.key).await?;
+        if before.screen_bounds != after.screen_bounds {
+            return Err(DriverError::new(
+                DriverErrorKind::StaleObservation,
+                "target geometry changed during observation",
+            )
+            .retryable("observe_window"));
+        }
+        let fingerprint = fingerprint(
+            &after.key,
+            after.screen_bounds,
+            captured.as_ref().map(|(image, _bounds)| image),
+        );
+        let (screenshot, screenshot_screen_bounds) = match captured {
+            Some((image, bounds)) if bounds == after.screen_bounds => (Some(image), Some(bounds)),
+            Some(_) => {
+                return Err(DriverError::new(
+                    DriverErrorKind::StaleObservation,
+                    "captured surface does not match the target geometry",
+                )
+                .retryable("observe_window"));
+            }
+            None => (None, None),
+        };
+        let (elements, elements_complete, elements_truncation) = semantics.map_or_else(
+            || (Vec::new(), true, None),
+            |snapshot| (snapshot.elements, snapshot.complete, snapshot.truncation),
+        );
+        Ok(DriverObservation {
+            window_key: window.key.clone(),
+            window_screen_bounds: after.screen_bounds,
+            screenshot,
+            screenshot_screen_bounds,
+            elements,
+            elements_complete,
+            elements_truncation,
+            fingerprint,
+        })
+    }
+}
+
 fn initialize_appkit() -> Result<(), DriverError> {
     let main_thread = MainThreadMarker::new().ok_or_else(|| {
         DriverError::new(
@@ -99,11 +203,23 @@ fn initialize_appkit() -> Result<(), DriverError> {
 
 #[async_trait]
 impl DesktopDriver for MacosDriver {
+    fn session_started(
+        &self,
+        session_id: &nexus_cua_protocol::SessionId,
+    ) -> Result<(), DriverError> {
+        self.capture.session_started(session_id.as_str().to_owned())
+    }
+
+    fn session_closed(&self, session_id: &nexus_cua_protocol::SessionId) {
+        self.capture.session_closed(session_id.as_str());
+    }
+
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
             platform: Platform::Macos,
+            primary_modifier: "command".to_owned(),
             capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
             accessibility_tree: true,
             input_routes: vec![
@@ -285,14 +401,47 @@ impl DesktopDriver for MacosDriver {
         &self,
         application_key: Option<&str>,
     ) -> Result<Vec<DriverWindow>, DriverError> {
-        Ok(self
+        let windows: Vec<_> = self
             .windows()
             .await?
             .into_iter()
             .filter(|window| application_key.is_none_or(|key| key == window.application_key))
-            .filter(|window| window.visible || !window.title.is_empty())
-            .map(driver_window)
-            .collect())
+            .collect();
+        if windows.len() > 64 {
+            return Err(DriverError::new(
+                DriverErrorKind::Busy,
+                "window state query exceeds its bounded window budget",
+            ));
+        }
+        let mut output = Vec::with_capacity(windows.len());
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
+        for window in windows {
+            let minimized = tokio::time::timeout_at(
+                deadline,
+                self.semantic.window_minimized(
+                    window.key.clone(),
+                    window.pid,
+                    window.screen_bounds,
+                    window.title.clone(),
+                ),
+            )
+            .await
+            .map_err(|_| {
+                DriverError::new(
+                    DriverErrorKind::TargetUnresponsive,
+                    "window state query exceeded its time budget",
+                )
+            })?;
+            let minimized = match minimized {
+                Ok(value) => value,
+                Err(error) if error.kind == DriverErrorKind::TargetUnavailable => continue,
+                Err(error) => return Err(error),
+            };
+            let mut projected = driver_window(window);
+            projected.minimized = minimized;
+            output.push(projected);
+        }
+        Ok(output)
     }
 
     async fn list_displays(&self) -> Result<Vec<DriverDisplay>, DriverError> {
@@ -338,87 +487,24 @@ impl DesktopDriver for MacosDriver {
         include_screenshot: bool,
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
-        if include_screenshot && !ScreenCaptureAccess.preflight() {
-            return Err(DriverError::new(
-                DriverErrorKind::PermissionRequired,
-                "macOS screen-recording permission is required",
-            )
-            .retryable("grant_screen_recording_permission"));
-        }
-        let before = self.current_window(&window.key).await?;
-        if include_screenshot && !before.visible {
-            return Err(DriverError::new(
-                DriverErrorKind::TargetUnavailable,
-                "minimized macOS target cannot provide a current exact-window frame",
-            )
-            .retryable("restore_window_then_observe"));
-        }
-        let capture = async {
-            if include_screenshot {
-                self.capture
-                    .capture(window.key.clone(), before.screen_bounds)
-                    .await
-                    .map(Some)
-            } else {
-                Ok(None)
-            }
-        };
-        let semantics = async {
-            if accessibility == AccessibilityMode::Disabled {
-                Ok(None)
-            } else {
-                self.semantic
-                    .snapshot(
-                        before.pid,
-                        before.screen_bounds,
-                        before.title.clone(),
-                        accessibility,
-                    )
-                    .await
-                    .map(Some)
-            }
-        };
-        let (captured, semantics) = tokio::join!(capture, semantics);
-        let captured = captured?;
-        let semantics = semantics?;
-        let after = self.current_window(&window.key).await?;
-        if before.screen_bounds != after.screen_bounds {
-            return Err(DriverError::new(
-                DriverErrorKind::StaleObservation,
-                "target geometry changed during observation",
-            )
-            .retryable("observe_window"));
-        }
-        let fingerprint = fingerprint(
-            &after.key,
-            after.screen_bounds,
-            captured.as_ref().map(|(image, _bounds)| image),
-        );
-        let (screenshot, screenshot_screen_bounds) = match captured {
-            Some((image, bounds)) if bounds == after.screen_bounds => (Some(image), Some(bounds)),
-            Some(_) => {
-                return Err(DriverError::new(
-                    DriverErrorKind::StaleObservation,
-                    "captured surface does not match the target geometry",
-                )
-                .retryable("observe_window"));
-            }
-            None => (None, None),
-        };
-        let (elements, elements_complete, elements_truncation) = semantics.map_or_else(
-            || (Vec::new(), true, None),
-            |snapshot| (snapshot.elements, snapshot.complete, snapshot.truncation),
-        );
-        Ok(DriverObservation {
-            window_key: window.key.clone(),
-            window_screen_bounds: after.screen_bounds,
-            screenshot,
-            screenshot_screen_bounds,
-            elements,
-            elements_complete,
-            elements_truncation,
-            fingerprint,
-        })
+        self.observe_window_owned(None, window, include_screenshot, accessibility)
+            .await
+    }
+
+    async fn observe_window_scoped(
+        &self,
+        session_id: &nexus_cua_protocol::SessionId,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        self.observe_window_owned(
+            Some(session_id.as_str().to_owned()),
+            window,
+            include_screenshot,
+            accessibility,
+        )
+        .await
     }
 
     async fn read_clipboard(
@@ -457,10 +543,22 @@ impl DesktopDriver for MacosDriver {
             if captured_bounds != current.screen_bounds {
                 return Ok(false);
             }
-            Ok(fingerprints_match(
-                fingerprint_value,
-                &fingerprint(&current.key, current.screen_bounds, Some(&image)),
-            ))
+            let actual = fingerprint(&current.key, current.screen_bounds, Some(&image));
+            let matches = fingerprints_match(fingerprint_value, &actual);
+            if !matches {
+                let geometry_changed = fingerprint_value.split_once(":visual:").map(|v| v.0)
+                    != actual.split_once(":visual:").map(|v| v.0);
+                return Err(DriverError::new(
+                    DriverErrorKind::StaleObservation,
+                    if geometry_changed {
+                        "target window geometry changed since observation"
+                    } else {
+                        "target window content changed since observation"
+                    },
+                )
+                .retryable("observe_window"));
+            }
+            Ok(matches)
         } else {
             Ok(fingerprint(&current.key, current.screen_bounds, None) == fingerprint_value)
         }
@@ -686,8 +784,7 @@ impl MacosDriver {
             }
             input_action => {
                 self.focus_for_input(current).await?;
-                self.dispatch_input_action(current.pid, input_action)
-                    .await?;
+                self.dispatch_input_action(current, input_action).await?;
                 (
                     DeliveryMode::Foreground,
                     ActionEffectStatus::Unverified,
@@ -757,13 +854,13 @@ impl MacosDriver {
         {
             return Ok(DriverActionOutput::unverified(DeliveryMode::Semantic));
         }
-        self.dispatch_input_action(current.pid, action).await?;
+        self.dispatch_input_action(current, action).await?;
         Ok(DriverActionOutput::unverified(DeliveryMode::Background))
     }
 
     async fn dispatch_input_action(
         &self,
-        pid: i32,
+        window: &NativeWindow,
         action: DriverAction,
     ) -> Result<(), DriverError> {
         let action = match action {
@@ -793,17 +890,15 @@ impl MacosDriver {
             DriverAction::TypeText { text } => InputAction::TypeText(text),
             DriverAction::PressKeys { keys } => InputAction::PressKeys(keys),
             DriverAction::Scroll {
-                element_key,
+                point,
                 delta_x,
                 delta_y,
-            } => {
-                if let Some(element_key) = element_key {
-                    self.semantic
-                        .perform(element_key, SemanticAction::Focus)
-                        .await?;
-                }
-                InputAction::Scroll { delta_x, delta_y }
-            }
+                ..
+            } => InputAction::Scroll {
+                point,
+                delta_x,
+                delta_y,
+            },
             DriverAction::Drag {
                 from,
                 to,
@@ -821,7 +916,17 @@ impl MacosDriver {
                 .mutation_not_dispatched());
             }
         };
-        self.input.perform(pid, action).await
+        if let InputAction::Scroll { point, .. } = &action {
+            self.semantic
+                .validate_pointer_owner(
+                    window.pid,
+                    *point,
+                    window.screen_bounds,
+                    window.title.clone(),
+                )
+                .await?;
+        }
+        self.input.perform(window.pid, action).await
     }
 
     async fn focus_for_input(&self, window: &NativeWindow) -> Result<(), DriverError> {
@@ -879,7 +984,7 @@ fn driver_window(window: NativeWindow) -> DriverWindow {
         application,
         title: window.title,
         screen_bounds: window.screen_bounds,
-        minimized: !window.visible,
+        minimized: false,
         visible: window.visible,
         foreground: window.foreground,
     }

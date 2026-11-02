@@ -43,8 +43,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows x64 is not supported yet; NEXUS_CUA_WINDOWS_ENABLED=true restores it.
-        include: ${{ fromJSON(vars.NEXUS_CUA_WINDOWS_ENABLED == 'true' && '[{"name":"macOS","os":"macos-14"},{"name":"Windows","os":"windows-2022"}]' || '[{"name":"macOS","os":"macos-14"}]') }}
+        # Source checks do not require a maintained interactive desktop runner.
+        include:
+          - name: macOS
+            os: macos-14
+          - name: Windows
+            os: windows-2022
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

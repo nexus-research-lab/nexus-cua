@@ -505,7 +505,7 @@ fn require_unique<T: Eq + std::hash::Hash>(
 #[cfg(test)]
 mod tests {
     use nexus_cua_protocol::{
-        Action, Command, DeliveryPreference, PerformActionInput, PointerButton, ScreenshotPoint,
+        Action, Command, DeliveryPreference, NormalizedPoint, PerformActionInput, PointerButton,
         SensitiveText,
     };
 
@@ -544,7 +544,7 @@ mod tests {
         assert!(
             stack
                 .authorize(&action_command(Action::ClickPoint {
-                    point: ScreenshotPoint { x: 0, y: 0 },
+                    point: NormalizedPoint { x: 0, y: 0 },
                     button: PointerButton::Left,
                     count: 1,
                     delivery: DeliveryPreference::Background,

@@ -7,6 +7,12 @@ file.
 
 ### Added
 
+- Add session-owned macOS ScreenCaptureKit window streams with bounded frame
+  retention, idle eviction, and ownership revocation on session close/expiry.
+  Application-scene capture and native recording-indicator acceptance remain open.
+
+- Add a bounded Windows interactive fixture validation runner with isolated
+  transport authority and transient screenshot cleanup.
 - Added the standalone `pelican-bike.html` SVG animation demo, with a coastal
   scene, an animated pelican cyclist, and pause, replay, and speed controls.
 - Added the single fail-closed `scripts/run_codex_acceptance` entry point and
@@ -17,6 +23,16 @@ file.
 
 ### Changed
 
+- Reset the test-only v1 pointer contract to `NormalizedPoint` (0..1000) in
+  runtime, MCP/CLI and all SDKs. Scroll now requires an explicit target point
+  and checks native ownership before wheel dispatch; rebuild old test clients.
+- Unify runtime/service/MCP observation lifetime at 120 seconds and expose
+  `serve --max-observation-age-seconds`.
+- Correct macOS forward delete, add portable `mod` and common key aliases,
+  set Windows navigation extended-key/scancode flags, and pace Unicode input
+  without splitting surrogate pairs. Windows scroll conversion uses system
+  wheel settings instead of multiplying logical pixels by 120.
+- Restore Windows source CI independently of interactive release evidence.
 - The macOS release candidate now reads the same Developer ID and notarization
   secrets as Nexus (`MACOS_DEVELOPER_ID_CERTIFICATE_BASE64`,
   `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `MACOS_DEVELOPER_ID_APPLICATION`,
@@ -26,7 +42,7 @@ file.
 - Added the manual `macOS signing preflight` workflow. It imports the Developer
   ID certificate, checks the configured identity and team, signs and verifies a
   throwaway binary, and authenticates notary credentials without publishing.
-- Windows x64 CI, native evidence, and candidate signing jobs are disabled until a
+- Windows native evidence and candidate signing jobs remain disabled until a
   maintained Windows runner exists; set the repository variable
   `NEXUS_CUA_WINDOWS_ENABLED=true` to re-enable them.
 

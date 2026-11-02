@@ -7,6 +7,7 @@ private let secureSentinel = "fixture-secret"
 final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     NSTableViewDataSource, NSTableViewDelegate
 {
+    private let backgroundDiagnostics = ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_BACKGROUND"] == "1"
     private var generation = 1
     private var counter = 0
     private var checked = false
@@ -39,7 +40,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
         createWindow()
-        NSApp.activate(ignoringOtherApps: true)
+        if !backgroundDiagnostics { NSApp.activate(ignoringOtherApps: true) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -123,8 +124,12 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         if captureProfile != nil {
             window.setFrame(frame, display: false, animate: false)
         }
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        if backgroundDiagnostics {
+            window.orderBack(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
         self.window = window
         updateState()
     }
@@ -319,6 +324,10 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         stateLabel.identifier = NSUserInterfaceItemIdentifier("fixture.state")
         stateLabel.maximumNumberOfLines = 2
         stateLabel.lineBreakMode = .byWordWrapping
+        // State text changes during every probe. It must wrap inside the fixture,
+        // not resize the window and invalidate an unrelated observation guard.
+        stateLabel.preferredMaxLayoutWidth = 340
+        stateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let left = columnView([
             title,

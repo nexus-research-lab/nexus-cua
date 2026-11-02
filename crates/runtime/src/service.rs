@@ -35,6 +35,9 @@ use crate::validation::{validate_action, validate_clipboard_text, validate_manif
 const MAX_CONFIGURED_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_CLIPBOARD_CHANGE_MARKER_BYTES: usize = 256;
 
+/// Default guarded observation lifetime shared by service and adapters.
+pub const DEFAULT_MAX_OBSERVATION_AGE_SECONDS: u64 = 120;
+
 /// Runtime limits selected by the embedding host.
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
@@ -81,7 +84,7 @@ impl RuntimeConfig {
             artifact_root: artifact_root.into(),
             max_session_ttl: StdDuration::from_secs(60 * 60),
             discovery_ttl: StdDuration::from_secs(30),
-            max_observation_age: StdDuration::from_secs(30),
+            max_observation_age: StdDuration::from_secs(DEFAULT_MAX_OBSERVATION_AGE_SECONDS),
             max_observations_per_session: 32,
             max_active_sessions: 64,
             max_discovered_applications: 256,
@@ -749,6 +752,8 @@ impl Runtime {
             )
         })?;
         let session = Arc::new(Session {
+            driver: Arc::clone(&self.driver),
+            closed: AtomicBool::new(true),
             id: session_id.clone(),
             manifest: input.manifest,
             allowed_applications,
@@ -764,6 +769,10 @@ impl Runtime {
                 Some("close_unused_session"),
             ));
         }
+        self.driver
+            .session_started(&session_id)
+            .map_err(CuaError::from)?;
+        session.closed.store(false, Ordering::Release);
         sessions.insert(session_id.clone(), session);
         drop(sessions);
         self.signal_reschedule()?;
@@ -776,9 +785,7 @@ impl Runtime {
 
     async fn close_session(&self, input: SessionInput) -> Result<CommandResult, CuaError> {
         let removed = self.sessions.write().await.remove(&input.session_id);
-        if removed.is_none() {
-            return Err(session_unavailable());
-        }
+        removed.ok_or_else(session_unavailable)?.close();
         self.artifacts.remove_session(&input.session_id);
         self.signal_reschedule()?;
         info!(session_id = %input.session_id, "computer-use session closed");
@@ -932,11 +939,22 @@ impl Runtime {
         } else {
             None
         };
-        let windows = self
-            .driver
-            .list_windows(application_key.as_deref())
-            .await
-            .map_err(CuaError::from)?;
+        // Native state queries must stay within this session's authorized apps.
+        let mut windows = Vec::new();
+        for application in &session.allowed_applications {
+            if application_key
+                .as_ref()
+                .is_some_and(|key| key != &application.key)
+            {
+                continue;
+            }
+            windows.extend(
+                self.driver
+                    .list_windows(Some(&application.key))
+                    .await
+                    .map_err(CuaError::from)?,
+            );
+        }
         let mut state = session.state.lock().await;
         let mut output = Vec::new();
         for window in windows
@@ -1023,6 +1041,10 @@ impl Runtime {
         let screenshot = self
             .write_screenshot(session.id.clone(), image, screen_bounds)
             .await?;
+        if session.closed.load(Ordering::Acquire) || session.expires_at <= Instant::now() {
+            self.artifacts.remove_session(&session.id);
+            return Err(session_unavailable());
+        }
         let captured_at = OffsetDateTime::now_utc().format(&Rfc3339).map_err(|_| {
             public_error(
                 ErrorCode::Internal,
@@ -1062,8 +1084,16 @@ impl Runtime {
             return Err(capability_denied());
         }
         let mut observation = self
-            .observe_driver_window(&window, input.include_screenshot, input.accessibility)
+            .observe_driver_window(
+                &session.id,
+                &window,
+                input.include_screenshot,
+                input.accessibility,
+            )
             .await?;
+        if session.closed.load(Ordering::Acquire) || session.expires_at <= Instant::now() {
+            return Err(session_unavailable());
+        }
         if observation.window_key != window.key {
             return Err(public_error(
                 ErrorCode::Internal,
@@ -1090,6 +1120,10 @@ impl Runtime {
                 ));
             }
         };
+        if session.closed.load(Ordering::Acquire) || session.expires_at <= Instant::now() {
+            self.artifacts.remove_session(&session.id);
+            return Err(session_unavailable());
+        }
         let captured_at = OffsetDateTime::now_utc().format(&Rfc3339).map_err(|_| {
             public_error(
                 ErrorCode::Internal,
@@ -1136,13 +1170,14 @@ impl Runtime {
 
     async fn observe_driver_window(
         &self,
+        session_id: &SessionId,
         window: &DriverWindow,
         include_screenshot: bool,
         accessibility: nexus_cua_protocol::AccessibilityMode,
     ) -> Result<DriverObservation, CuaError> {
         let first = self
             .driver
-            .observe_window(window, include_screenshot, accessibility)
+            .observe_window_scoped(session_id, window, include_screenshot, accessibility)
             .await;
         if matches!(
             &first,
@@ -1150,7 +1185,7 @@ impl Runtime {
         ) {
             return self
                 .driver
-                .observe_window(window, include_screenshot, accessibility)
+                .observe_window_scoped(session_id, window, include_screenshot, accessibility)
                 .await
                 .map_err(Into::into);
         }
@@ -1252,15 +1287,16 @@ impl Runtime {
             (window, observation.fingerprint.clone(), driver_action)
         };
 
-        if !self
+        let verification = self
             .driver
             .observation_is_current(&window, &fingerprint)
-            .await
-            .map_err(CuaError::from)?
-        {
+            .await;
+        if !matches!(verification, Ok(true)) {
             self.invalidate_observation(&session, &input.observation_id)
                 .await;
-            return Err(stale_observation());
+            return Err(verification
+                .err()
+                .map_or_else(stale_observation, CuaError::from));
         }
 
         let terminates_application =
@@ -1325,6 +1361,7 @@ impl Runtime {
             return Err(session_unavailable());
         };
         if session.expires_at <= Instant::now() {
+            session.close();
             sessions.remove(session_id);
             drop(sessions);
             self.artifacts.remove_session(session_id);
@@ -1632,7 +1669,9 @@ async fn reap_due(
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for session_id in &expired {
-            sessions.remove(session_id);
+            if let Some(session) = sessions.remove(session_id) {
+                session.close();
+            }
         }
         expired
     };

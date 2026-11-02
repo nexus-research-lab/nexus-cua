@@ -7,7 +7,7 @@ import (
 
 func TestMarshalPressPointUsesClosedWireVariant(t *testing.T) {
 	payload, err := marshalAction(PressPoint{
-		Point: ScreenshotPoint{X: 12, Y: 34}, Button: PointerRight, DurationMS: 750,
+		Point: NormalizedPoint{X: 12, Y: 34}, Button: PointerRight, DurationMS: 750,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -19,7 +19,7 @@ func TestMarshalPressPointUsesClosedWireVariant(t *testing.T) {
 
 func TestMarshalBackgroundClickUsesClosedDelivery(t *testing.T) {
 	payload, err := marshalAction(ClickPoint{
-		Point:    ScreenshotPoint{X: 12, Y: 34},
+		Point:    NormalizedPoint{X: 12, Y: 34},
 		Button:   PointerLeft,
 		Count:    1,
 		Delivery: DeliveryPreferenceBackground,

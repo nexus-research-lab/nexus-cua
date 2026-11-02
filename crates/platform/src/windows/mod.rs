@@ -89,6 +89,7 @@ impl DesktopDriver for WindowsDriver {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
             platform: Platform::Windows,
+            primary_modifier: "control".to_owned(),
             capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
             accessibility_tree: true,
             input_routes: vec![
@@ -570,7 +571,7 @@ impl WindowsDriver {
                 } else {
                     None
                 };
-                let action = self.resolve_input_action(input_action).await?;
+                let action = Self::resolve_input_action(input_action)?;
                 let foreground_restoration = self
                     .input
                     .perform_foreground(
@@ -630,11 +631,11 @@ impl WindowsDriver {
         hwnd: isize,
         action: DriverAction,
     ) -> Result<(), DriverError> {
-        let action = self.resolve_input_action(action).await?;
+        let action = Self::resolve_input_action(action)?;
         self.input.perform(hwnd, action).await
     }
 
-    async fn resolve_input_action(&self, action: DriverAction) -> Result<InputAction, DriverError> {
+    fn resolve_input_action(action: DriverAction) -> Result<InputAction, DriverError> {
         let action = match action {
             DriverAction::ClickPoint {
                 point,
@@ -662,17 +663,15 @@ impl WindowsDriver {
             DriverAction::TypeText { text } => InputAction::TypeText(text),
             DriverAction::PressKeys { keys } => InputAction::PressKeys(keys),
             DriverAction::Scroll {
-                element_key,
+                point,
                 delta_x,
                 delta_y,
-            } => {
-                if let Some(element_key) = element_key {
-                    self.semantic
-                        .perform(element_key, SemanticAction::Focus)
-                        .await?;
-                }
-                InputAction::Scroll { delta_x, delta_y }
-            }
+                ..
+            } => InputAction::Scroll {
+                point,
+                delta_x,
+                delta_y,
+            },
             DriverAction::Drag {
                 from,
                 to,

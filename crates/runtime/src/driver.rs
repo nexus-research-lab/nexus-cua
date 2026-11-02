@@ -300,6 +300,8 @@ pub enum DriverAction {
     },
     /// Scroll either a semantic element or the foreground surface.
     Scroll {
+        /// Resolved target point in logical screen coordinates.
+        point: ScreenPoint,
         /// Optional guarded semantic scroll target.
         element_key: Option<String>,
         /// Horizontal logical scroll delta.
@@ -415,6 +417,32 @@ pub struct DriverClipboardWriteOutput {
 /// Replaceable platform implementation beneath the authorization runtime.
 #[async_trait]
 pub trait DesktopDriver: Send + Sync {
+    /// Registers a bounded runtime session for native capture resource ownership.
+    ///
+    /// # Errors
+    /// Returns an error if the native capture ownership budget is exhausted.
+    fn session_started(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+    ) -> Result<(), DriverError> {
+        Ok(())
+    }
+
+    /// Revokes capture ownership immediately; native resources are released on their actor.
+    fn session_closed(&self, _session_id: &nexus_cua_protocol::SessionId) {}
+
+    /// Observes a target while binding retained capture resources to its authority lifetime.
+    async fn observe_window_scoped(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        self.observe_window(window, include_screenshot, accessibility)
+            .await
+    }
+
     /// Returns immutable capability metadata.
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError>;
 

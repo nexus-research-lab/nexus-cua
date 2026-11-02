@@ -108,7 +108,8 @@ impl ArtifactStore {
         options.mode(0o600);
         let mut file = options.open(&path).map_err(io_error)?;
         file.write_all(&png_bytes).map_err(io_error)?;
-        file.sync_all().map_err(io_error)?;
+        // Transient artifacts require complete writes, not crash-durable persistence.
+        // write_all completes before the artifact is registered or returned.
 
         let sha256 = hex::encode(Sha256::digest(&png_bytes));
         self.register_artifact(session_id, path.clone())?;

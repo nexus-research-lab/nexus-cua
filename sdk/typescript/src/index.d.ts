@@ -46,6 +46,7 @@ export class SensitiveText {
 }
 
 export interface DriverCapabilities {
+  primary_modifier: string;
   protocol_version: string;
   runtime_version: string;
   platform: Platform;
@@ -126,7 +127,7 @@ export interface CapabilityManifest {
 export interface OpenSessionOutput { session_id: string; expires_at: string }
 export interface ApplicationSummary { app_ref: string; name: string; application_id: string; foreground: boolean }
 export interface ScreenRect { x: number; y: number; width: number; height: number }
-export interface ScreenshotPoint { x: number; y: number }
+export interface NormalizedPoint { x: number; y: number }
 export interface PixelSize { width: number; height: number }
 export interface ScreenshotMapping { screen_bounds: ScreenRect; pixel_size: PixelSize }
 export interface WindowSummary { window_ref: string; app_ref: string; title: string; screen_bounds: ScreenRect; minimized: boolean; visible: boolean; foreground: boolean }
@@ -234,18 +235,18 @@ export type Action =
   | { kind: "terminate_application" }
   | { kind: "focus_element"; element_ref: string }
   | { kind: "invoke_element"; element_ref: string }
-  | { kind: "click_point"; point: ScreenshotPoint; button: PointerButton; count: number; delivery?: DeliveryPreference }
-  | { kind: "press_point"; point: ScreenshotPoint; button: PointerButton; duration_ms: number }
+  | { kind: "click_point"; point: NormalizedPoint; button: PointerButton; count: number; delivery?: DeliveryPreference }
+  | { kind: "press_point"; point: NormalizedPoint; button: PointerButton; duration_ms: number }
   | { kind: "set_value"; element_ref: string; value: SensitiveText }
   | { kind: "set_range_value"; element_ref: string; value: number }
   | { kind: "toggle_element"; element_ref: string }
   | { kind: "select_element"; element_ref: string }
   | { kind: "set_expanded"; element_ref: string; expanded: boolean }
-  | { kind: "move_pointer"; point: ScreenshotPoint; duration_ms: number }
+  | { kind: "move_pointer"; point: NormalizedPoint; duration_ms: number }
   | { kind: "type_text"; text: SensitiveText }
   | { kind: "press_keys"; keys: string[] }
-  | { kind: "scroll"; element_ref: string | null; delta_x: number; delta_y: number }
-  | { kind: "drag"; from: ScreenshotPoint; to: ScreenshotPoint; duration_ms: number };
+  | { kind: "scroll"; point: NormalizedPoint; element_ref: string | null; delta_x: number; delta_y: number }
+  | { kind: "drag"; from: NormalizedPoint; to: NormalizedPoint; duration_ms: number };
 
 export type StatePredicate =
   | { kind: "window_title_contains"; text: string }

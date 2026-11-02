@@ -239,7 +239,7 @@
           "const": "invoke_element"
         },
         {
-          "description": "Click at a physical pixel coordinate.",
+          "description": "Click at a normalized coordinate.",
           "type": "string",
           "const": "click_point"
         },
@@ -294,7 +294,7 @@
           "const": "scroll"
         },
         {
-          "description": "Drag between two physical pixel coordinates.",
+          "description": "Drag between two normalized coordinates.",
           "type": "string",
           "const": "drag"
         }
@@ -1183,6 +1183,10 @@
           "description": "Host operating system.",
           "$ref": "#/$defs/Platform"
         },
+        "primary_modifier": {
+          "description": "Platform shortcut modifier used by the portable `mod` key.",
+          "type": "string"
+        },
         "protocol_version": {
           "description": "Stable protocol identifier.",
           "type": "string"
@@ -1197,6 +1201,7 @@
         "protocol_version",
         "runtime_version",
         "platform",
+        "primary_modifier",
         "capture_modes",
         "accessibility_tree",
         "input_routes",

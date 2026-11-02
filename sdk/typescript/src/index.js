@@ -572,6 +572,14 @@ function actionWire(action) {
   const value = objectValue(action, "action");
   if (!ACTION_KINDS.has(value.kind)) throw new TypeError(`unsupported action kind ${String(value.kind)}`);
   if (value.kind === "set_window_bounds") validateRect(value.bounds);
+  const points = value.kind === "drag" ? [value.from, value.to]
+    : ["click_point", "press_point", "move_pointer", "scroll"].includes(value.kind) ? [value.point] : [];
+  for (const point of points) {
+    if (!point || !Number.isInteger(point.x) || !Number.isInteger(point.y)
+        || point.x < 0 || point.x > 1000 || point.y < 0 || point.y > 1000) {
+      throw new RangeError("action point must use integer coordinates in 0..1000");
+    }
+  }
   if (value.kind === "click_point") {
     if (!new Set(["left", "middle", "right"]).has(value.button)
         || !Number.isInteger(value.count) || value.count < 1 || value.count > 255) {

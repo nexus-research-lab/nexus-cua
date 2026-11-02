@@ -15,11 +15,13 @@ decoding. Public references are opaque strings: consumers may compare or store
 them only for their documented lifetime and must not parse authority from
 their contents.
 
-During the pre-release `0.1.x` line, a wire-shape change may update
-`nexus.cua.v1` only in a reviewed milestone commit before a signed preview tag.
-Once a preview build is tagged, an incompatible change requires a new protocol
-identifier and parallel schemas/fixtures. Additive enum variants are treated
-as incompatible for clients pinned to a closed contract.
+The published `v0.1.0` tag was a pipeline test without production users. The
+2026-11 development baseline intentionally resets the closed v1 contract:
+all pointer actions now take `NormalizedPoint` (0..1000), and scroll requires
+an explicit target point. Old SDKs and test binaries must be rebuilt together;
+there is no legacy pixel-coordinate fallback or parallel compatibility layer.
+Hosts must pin a matching runtime and SDK source revision. A future supported
+preview will establish the compatibility baseline before distribution.
 
 ## Generated schemas
 

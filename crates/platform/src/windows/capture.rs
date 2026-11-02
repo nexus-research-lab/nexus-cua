@@ -382,7 +382,16 @@ fn capture_item(target: CaptureTarget) -> Result<GraphicsCaptureItem, DriverErro
             CaptureTarget::Window(raw_hwnd) => interop.CreateForWindow(hwnd(raw_hwnd)),
             CaptureTarget::Display(raw_monitor) => interop.CreateForMonitor(hmonitor(raw_monitor)),
         }
-        .map_err(|_| target_unavailable())
+        .map_err(|error| {
+            DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                format!(
+                    "WGC target creation failed (HRESULT {:#010x})",
+                    error.code().0
+                ),
+            )
+            .retryable("list_windows")
+        })
     }
 }
 

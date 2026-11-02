@@ -41,7 +41,8 @@ pub const DEFAULT_MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 /// Hard ceiling for a single MCP image block.
 pub const HARD_MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 /// Default lifetime of a guarded observation while a model is thinking.
-pub const DEFAULT_MAX_OBSERVATION_AGE_SECONDS: u64 = 120;
+pub const DEFAULT_MAX_OBSERVATION_AGE_SECONDS: u64 =
+    nexus_cua_runtime::DEFAULT_MAX_OBSERVATION_AGE_SECONDS;
 /// Hard ceiling for a guarded observation lifetime.
 pub const HARD_MAX_OBSERVATION_AGE_SECONDS: u64 = 300;
 const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -918,6 +919,7 @@ mod tests {
                 protocol_version: "nexus.cua.v1".to_owned(),
                 runtime_version: "transport-test".to_owned(),
                 platform: Platform::Macos,
+                primary_modifier: "command".to_owned(),
                 capture_modes: vec![CaptureMode::Display],
                 accessibility_tree: false,
                 input_routes: Vec::<InputRoute>::new(),
@@ -991,6 +993,7 @@ mod tests {
                 protocol_version: "nexus.cua.v1".to_owned(),
                 runtime_version: "transport-mutation-test".to_owned(),
                 platform: Platform::Macos,
+                primary_modifier: "command".to_owned(),
                 capture_modes: vec![CaptureMode::Window],
                 accessibility_tree: false,
                 input_routes: vec![InputRoute::Foreground],

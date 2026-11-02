@@ -1802,6 +1802,41 @@ W = Windows 测试重点。每个问题都给出现象、根因（含源码位�
 | M5 | source gate、harness、Codex acceptance 入口存在 | R1 后按新预算重新采集 |
 | M6 | checksum/SBOM/manifest、签名预检存在 | R2 内部试用通过后再推进 |
 
+### 2026-11-02 实施复核（进行中）
+
+- 用户确认既有发布只用于测试流水线，无实际用户，本轮不保留旧协议兼容层。
+  Runtime、SDK、Nexus 必须一起重建；坐标合同改为统一 `NormalizedPoint`，滚动点必填。
+- 已修改：B1 显式滚动点与派发 hit-test、B2 系统滚轮设置换算、B3 删除方向、
+  B4 `mod` 与常用别名、B6 扩展键/扫描码、B7 指针预移动及有界 Unicode 分块节流、
+  B8 统一有效期与服务参数。B4 capabilities 已报告主修饰键，B5 已使用当前布局解析
+  字符与符号；无修饰的单字符按键走 Unicode 输入。B7 输入法组字状态的完整检测
+  仍待完成，不能把源码修复标成整项原生验收通过。
+- B2 验收需区分逻辑意图和应用滚轮量化：Windows 按系统行/字符数与每单位 16
+  逻辑像素换算，禁用/整页滚动配置明确拒绝。跨任意应用的像素误差 ≤10% 不能仅
+  从 SendInput 返回值推导，须在指定 fixture 中测量。
+- Nexus `cua` 已合并本地 `main` `74d8fe98b`，合并提交 `2b2d5d031`；旧沙箱
+  恢复实现没有复活。合并后的 `make check` 与前端 `npm run check` 已通过；后续
+  坐标接入改动单独验证。
+- R1 已加入会话绑定的 macOS `SCStream` 窗口捕获，最多两个热流、每流一张
+  最新 Rust 帧、10fps、30 秒空闲回收；会话关闭/过期撤销捕获所有权。
+  这还不是 PRD 的按显示器共享场景流。系统录屏指示、原生释放时延与性能预算
+  尚未验收；presence、用户接管、动作后观察仍待实现。
+- 本轮 macOS `make check` 通过（含会话关闭/过期/关闭 runtime 的所有权测试）。
+  已定位并修复 fixture 状态标签撑宽窗口导致的 geometry stale；滚动目标改用
+  AX hit-test，最小化改读 AXMinimized。持续流版本已通过核心动作、跨屏、窗口替换和会话过期路径；
+  修复了已销毁 AX 对象导致列表整体失败的问题。完整回归仍阻塞于最小化状态
+  检查。独立 fixture 在无 runtime/捕获时也未成功最小化，尚未确定 AppKit/桌面
+  原因。已加入不申请前台输入的 `desktop-conditions` 诊断；临时截图和令牌已清理。
+- Windows x64 SSH 测试机已连通，WPF fixture 构建通过；Rust 1.88 GNU 全工作区
+  Clippy 及 Python、Go、TypeScript SDK 测试曾通过。LLVM-MinGW 的 `ld.lld`
+  配合 `link-self-contained=yes` 已解决原先测试二进制启动与 proc-macro 链接问题。
+  随后工作区测试暴露远程 harness 在断线后过早查询的竞态；已加入有界只读
+  reconciliation 等待，本地与 Windows 工作区测试均通过。完整原生验收仍未完成。
+- Windows 活动控制台 session 2 的原生回归失败在 `observe_display`：WGC
+  `CreateForMonitor` 返回 `0x80070057`，尚未进入窗口动作验收。两次临时任务和
+  进程均已结束，截图与令牌已删除。窗口单独诊断已进入辅助功能检查，但 fixture
+  按钮未暴露预期 invoke，仍未通过。恢复 CI 不代表本轮 Windows 原生测试通过。
+
 ### 23.2 设计层问题（D 类）
 
 #### D1 观察只有单个窗口，菜单、弹窗和上下文全部不可见

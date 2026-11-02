@@ -184,6 +184,9 @@ func marshalAction(action Action) (map[string]any, error) {
 	case InvokeElement:
 		kind = string(ActionInvokeElement)
 	case ClickPoint:
+		if value.Point.X > 1000 || value.Point.Y > 1000 {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		if !contains([]string{"left", "middle", "right"}, string(value.Button)) || value.Count == 0 {
 			return nil, fmt.Errorf("nexus-cua: invalid click button or count")
 		}
@@ -196,6 +199,9 @@ func marshalAction(action Action) (map[string]any, error) {
 		action = value
 		kind = string(ActionClickPoint)
 	case PressPoint:
+		if value.Point.X > 1000 || value.Point.Y > 1000 {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		if !contains([]string{"left", "middle", "right"}, string(value.Button)) {
 			return nil, fmt.Errorf("nexus-cua: invalid press button")
 		}
@@ -214,6 +220,9 @@ func marshalAction(action Action) (map[string]any, error) {
 	case SetExpanded:
 		kind = string(ActionSetExpanded)
 	case MovePointer:
+		if value.Point.X > 1000 || value.Point.Y > 1000 {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		kind = string(ActionMovePointer)
 	case TypeText:
 		kind = string(ActionTypeText)
@@ -228,8 +237,14 @@ func marshalAction(action Action) (map[string]any, error) {
 		}
 		kind = string(ActionPressKeys)
 	case Scroll:
+		if value.Point.X > 1000 || value.Point.Y > 1000 {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		kind = string(ActionScroll)
 	case Drag:
+		if value.From.X > 1000 || value.From.Y > 1000 || value.To.X > 1000 || value.To.Y > 1000 {
+			return nil, fmt.Errorf("nexus-cua: drag points must be in 0..1000")
+		}
 		kind = string(ActionDrag)
 	default:
 		return nil, fmt.Errorf("nexus-cua: unsupported action type %T", action)

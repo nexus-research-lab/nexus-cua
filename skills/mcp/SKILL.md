@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the configured nexuscua MCP server when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=c9650f509fce6d1305feff120e3cf20a80b9ecc65f25ee2731dea6f42d76e1e9 -->
+<!-- generated: product=0.1.0 catalogue_sha256=4304e6c405cfe1dec296af91815bf7b424b4aaa05cb6b9136b8392942cceced8 -->
 
 ## Operating contract
 
@@ -21,7 +21,9 @@ more precise interface.
 3. Observe the exact window immediately before a mutation. Use accessibility
    facts when reliable and the screenshot for visual targets. Coordinates are
    top-left normalized `0..1000`; use zoom and its opaque view reference for a
-   small target instead of estimating client-resized pixels.
+   small target instead of estimating client-resized pixels. Scroll also requires
+   a target x/y in this space; positive vertical deltas scroll down. Prefer
+   `mod` for portable shortcuts (Command on macOS, Control on Windows).
 4. Allocate one stable, unique `request_id` for each mutation intent before
    sending it. Retain that ID. After timeout or an indeterminate result, query
    reconciliation with the same ID; never submit the intent under a new ID.

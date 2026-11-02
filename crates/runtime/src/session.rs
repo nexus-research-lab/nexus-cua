@@ -1,11 +1,15 @@
 //! Authorized session state and public-reference projection.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 use nexus_cua_protocol::{
     AccessibilityElement, Action, AppRef, CapabilityManifest, ClipboardRef, CuaError, DisplayRef,
-    ElementRef, ErrorCode, ObservationId, ScreenPoint, ScreenshotMapping, ScreenshotPoint,
+    ElementRef, ErrorCode, NormalizedPoint, ObservationId, ScreenPoint, ScreenshotMapping,
     SessionId, WindowRef,
 };
 use tokio::sync::Mutex;
@@ -18,6 +22,8 @@ use crate::driver::{
 use crate::error::public_error;
 
 pub(crate) struct Session {
+    pub(crate) driver: Arc<dyn crate::DesktopDriver>,
+    pub(crate) closed: AtomicBool,
     pub(crate) id: SessionId,
     pub(crate) manifest: CapabilityManifest,
     pub(crate) allowed_applications: Vec<DriverApplication>,
@@ -26,10 +32,21 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    pub(crate) fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            self.driver.session_closed(&self.id);
+        }
+    }
     pub(crate) fn allows_application(&self, application: &DriverApplication) -> bool {
         self.allowed_applications
             .iter()
             .any(|allowed| allowed.matches_generation(application))
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -295,10 +312,12 @@ pub(crate) fn resolve_action(
         Action::TypeText { text } => DriverAction::TypeText { text: text.clone() },
         Action::PressKeys { keys } => DriverAction::PressKeys { keys: keys.clone() },
         Action::Scroll {
+            point,
             element_ref,
             delta_x,
             delta_y,
         } => DriverAction::Scroll {
+            point: resolve_screenshot_point(*point, observation)?,
             element_key: element_ref.as_ref().map(element_key).transpose()?,
             delta_x: *delta_x,
             delta_y: *delta_y,
@@ -347,12 +366,16 @@ fn resolve_range_value(
 }
 
 fn resolve_screenshot_point(
-    point: ScreenshotPoint,
+    point: NormalizedPoint,
     observation: &ObservationRecord,
 ) -> Result<ScreenPoint, CuaError> {
     observation
         .screenshot_mapping
-        .and_then(|mapping| mapping.to_screen(point))
+        .and_then(|mapping| {
+            point
+                .to_pixel(mapping.pixel_size)
+                .and_then(|pixel| mapping.to_screen(pixel))
+        })
         .ok_or_else(|| {
             public_error(
                 ErrorCode::InvalidRequest,

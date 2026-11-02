@@ -230,6 +230,7 @@ class DriverCapabilities:
     protocol_version: str
     runtime_version: str
     platform: Platform
+    primary_modifier: str
     capture_modes: tuple[CaptureMode, ...]
     accessibility_tree: bool
     input_routes: tuple[InputRoute, ...]
@@ -245,6 +246,7 @@ class DriverCapabilities:
                 "protocol_version",
                 "runtime_version",
                 "platform",
+                "primary_modifier",
                 "capture_modes",
                 "accessibility_tree",
                 "input_routes",
@@ -257,6 +259,7 @@ class DriverCapabilities:
             string_value(data["protocol_version"]),
             string_value(data["runtime_version"]),
             enum_value(Platform, data["platform"]),
+            string_value(data["primary_modifier"]),
             enum_tuple(CaptureMode, data["capture_modes"]),
             bool_value(data["accessibility_tree"]),
             enum_tuple(InputRoute, data["input_routes"]),
@@ -544,13 +547,13 @@ class ScreenRect:
 
 
 @dataclass(frozen=True)
-class ScreenshotPoint:
+class NormalizedPoint:
     x: int
     y: int
 
     def to_wire(self) -> dict[str, int]:
-        if not (0 <= self.x <= 2**32 - 1 and 0 <= self.y <= 2**32 - 1):
-            raise ValueError("screenshot point must fit unsigned 32-bit coordinates")
+        if not (type(self.x) is int and type(self.y) is int and 0 <= self.x <= 1000 and 0 <= self.y <= 1000):
+            raise ValueError("normalized point must use integer coordinates in 0..1000")
         return {"x": self.x, "y": self.y}
 
 
@@ -1110,7 +1113,7 @@ class InvokeElement(Action):
 
 @dataclass(frozen=True)
 class ClickPoint(Action):
-    point: ScreenshotPoint
+    point: NormalizedPoint
     button: PointerButton = PointerButton.LEFT
     count: int = 1
     delivery: DeliveryPreference = DeliveryPreference.FOREGROUND
@@ -1127,7 +1130,7 @@ class ClickPoint(Action):
 
 @dataclass(frozen=True)
 class PressPoint(Action):
-    point: ScreenshotPoint
+    point: NormalizedPoint
     duration_ms: int
     button: PointerButton = PointerButton.LEFT
 
@@ -1197,7 +1200,7 @@ class SetExpanded(Action):
 
 @dataclass(frozen=True)
 class MovePointer(Action):
-    point: ScreenshotPoint
+    point: NormalizedPoint
     duration_ms: int
 
     def to_wire(self) -> dict[str, Any]:
@@ -1226,6 +1229,7 @@ class PressKeys(Action):
 
 @dataclass(frozen=True)
 class Scroll(Action):
+    point: NormalizedPoint
     delta_x: float
     delta_y: float
     element_ref: ElementRef | None = None
@@ -1233,6 +1237,7 @@ class Scroll(Action):
     def to_wire(self) -> dict[str, Any]:
         return {
             "kind": "scroll",
+            "point": self.point.to_wire(),
             "element_ref": self.element_ref,
             "delta_x": self.delta_x,
             "delta_y": self.delta_y,
@@ -1241,8 +1246,8 @@ class Scroll(Action):
 
 @dataclass(frozen=True)
 class Drag(Action):
-    from_point: ScreenshotPoint
-    to_point: ScreenshotPoint
+    from_point: NormalizedPoint
+    to_point: NormalizedPoint
     duration_ms: int
 
     def to_wire(self) -> dict[str, Any]:

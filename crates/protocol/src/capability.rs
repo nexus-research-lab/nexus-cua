@@ -87,6 +87,8 @@ pub struct DriverCapabilities {
     pub runtime_version: String,
     /// Host operating system.
     pub platform: Platform,
+    /// Platform shortcut modifier used by the portable `mod` key.
+    pub primary_modifier: String,
     /// Exact capture surfaces implemented by the driver.
     pub capture_modes: Vec<CaptureMode>,
     /// Whether accessibility elements can be observed.

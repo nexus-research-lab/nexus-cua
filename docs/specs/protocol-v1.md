@@ -122,6 +122,12 @@ out-of-range requests before driver dispatch. The driver then uses the native
 semantic range API; it never approximates the request with pointer or keyboard
 input and never requires foreground-input authority.
 
+Pointer action coordinates use `NormalizedPoint` in inclusive `0..1000`.
+`scroll` requires `point` as well as logical deltas, and checks native ownership
+at dispatch. All SDKs and both adapters use this same wire representation.
+See [Runtime coordinates](runtime-contract-v1.md#coordinates) for mapping,
+scroll-unit limitations, key aliases and the common observation lifetime.
+
 `click_point` carries a closed `delivery` preference. Omission means
 `foreground` for wire compatibility. `background` targets the exact guarded
 application/window through the negotiated public platform route, does not
