@@ -1082,41 +1082,34 @@ async fn reconcile_observation(
         include_screenshot: true,
         accessibility: AccessibilityMode::Full,
     });
-    match client
-        .send_outcome_with(request_id.clone(), 1, command.clone())
-        .await?
-    {
-        Err(error) if error.code == ErrorCode::DeadlineExceeded => {}
-        Err(error) => {
-            return Err(format!(
-                "short reconciliation request returned {:?}, expected deadline_exceeded",
-                error.code
-            )
-            .into());
+    // Native scheduling cannot guarantee that a 1 ms request times out. Verify
+    // the observable replay contract instead; deterministic transport tests
+    // cover admission/deadline races without desktop timing assumptions.
+    let first = client
+        .send_outcome_with(request_id.clone(), 30_000, command.clone())
+        .await?;
+    let Ok(CommandResult::WindowObserved(first)) = first else {
+        return Err(match first {
+            Err(error) => format!(
+                "initial observation failed: {:?}: {}",
+                error.code, error.message
+            ),
+            Ok(_) => "initial observation returned unexpected result kind".to_owned(),
         }
-        Ok(_) => return Err("1 ms observation unexpectedly completed before its deadline".into()),
-    }
+        .into());
+    };
     match client
         .send_outcome_with(request_id, 30_000, command)
         .await?
     {
-        Ok(CommandResult::WindowObserved(value)) => Ok(*value),
-        Ok(other) => Err(unexpected("reconciled observation", &other)),
-        // Reconciliation promises the terminal result of the admitted request,
-        // not that the operation itself must succeed. A provider can be
-        // transiently unavailable while the 1 ms probe is in flight; receiving
-        // that stable terminal error still proves the ledger contract. Use a
-        // new request for the fixture correctness path after reconciliation.
-        Err(error)
-            if matches!(
-                error.code,
-                ErrorCode::TargetUnavailable | ErrorCode::TargetUnresponsive
-            ) && error.mutation_status == MutationStatus::NotApplicable =>
+        Ok(CommandResult::WindowObserved(value))
+            if value.observation_id == first.observation_id =>
         {
-            observe(client, session_id, window, true, AccessibilityMode::Full).await
+            Ok(*value)
         }
+        Ok(_) => Err("same-request observation did not preserve its result identity".into()),
         Err(error) => Err(format!(
-            "same-request reconciliation returned {:?}: {}",
+            "same-request observation failed: {:?}: {}",
             error.code, error.message
         )
         .into()),

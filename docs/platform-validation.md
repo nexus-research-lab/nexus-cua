@@ -451,8 +451,9 @@ C8: exhaustive per-axis round trips cover 3840×2160, 1366×768 and 1×1 images.
 Nonfinite/out-of-bounds rejection is tested. Native 4× zoom on a 4×4 pixel
 target is pending; arithmetic tests alone do not establish input acceptance.
 
-C6: deterministic tests cover guarded action points, both drag endpoints,
-background/move exemptions, topmost process selection and runtime overlay exclusion.
+C6: source routes guarded action points and both drag endpoints through input
+ownership checks; native coverage remains pending. Deterministic tests cover
+topmost process selection and runtime overlay exclusion.
 Native foreign occlusion, same-process popup, and AX-free custom-view scrolling
 remain pending. CG rectangle ordering does not prove click-through semantics.
 
