@@ -1,6 +1,50 @@
 # Platform Validation
 
-## Current implementation review (2026-11-02)
+## Windows readiness review (2026-11-03)
+
+Source reviewed: `6e00e2fab9b6394d1bdb6f90d0b4bed274787fce` (rc.4).
+The [source CI](https://github.com/nexus-research-lab/nexus-cua/actions/runs/41610981684)
+passes, including Windows compilation and contracts. It is not interactive
+Windows desktop acceptance. The reachable Windows 11 build 26300 test machine
+still has a `0.1.0` diagnostic binary; its old reports cannot validate rc.4.
+No Windows driver change or fresh native run was made during this review.
+
+The last saved native fixture run reached semantic input, pointer movement and
+foreground click, then failed the background-click effect check: the expected
+counter increment did not occur. Earlier WGC timeout and UIA cache failures are
+separate historical results, not proof that the current source still fails there.
+
+Work required before Windows can follow the accepted Mac product path:
+
+1. **Native cancellation and user activity.** `WindowsDriver` inherits the default
+   `perform_action_scoped`, which checks authority only before the async call.
+   Its input/UIA actors do not receive `DriverActionGuard`; there is no Windows
+   activity monitor or between-action idle recovery. Carry the guard into native
+   dispatch and bounded input chunks, release held inputs on interruption, and
+   validate close/expiry/stop and physical-input takeover. Keep native objects on
+   their owning actors and keep pre-dispatch versus indeterminate evidence exact.
+2. **Background effect and foreground activation.** Background pointer messages
+   currently go to the top-level HWND; successful `PostMessageW` is only delivery
+   evidence. Reproduce on a pinned build, establish the intended native recipient
+   for supported targets, and verify the fixture effect without a foreground
+   fallback. Nexus has no explicit `AllowSetForegroundWindow` handoff to the CUA
+   sidecar; validate or implement that host handoff with real packaged processes.
+3. **Observation capabilities.** Windows advertises `observe_after=false` and
+   window/display capture only. Add bounded settling and post-action reads if
+   enabling `observe_after`. Same-application scene capture remains unsupported;
+   do not claim it through a desktop screenshot fallback.
+4. **Pinned product acceptance.** Build runtime, harness and fixture from one
+   revision, run on an unlocked interactive desktop, then bundle a Windows Nexus
+   preview with the matching SDK. Cover window restore/replacement, mixed DPI,
+   keyboard/text input, permissions/UIPI, resource release and complete app tasks.
+   The maintained Windows runner manifest is still an unassigned example; Windows
+   release packaging, signing and clean-machine acceptance remain separate gates.
+
+The next native baseline must use the pinned source rather than the existing old
+binary. Prioritize cancellation/takeover before claiming ordinary Windows use is
+ready. These are implementation and acceptance gaps, not a percentage estimate.
+
+## Earlier implementation review (2026-11-02)
 
 The macOS session-owned ScreenCaptureKit stream passes source checks and the
 core native fixture path, including window replacement and session expiry.

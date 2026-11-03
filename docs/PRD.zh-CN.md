@@ -2254,6 +2254,8 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C12 Windows 显示器捕获 `0x80070057`（Windows）
 
+2026-11-03 的源码与测试机复核见 [Windows readiness review](platform-validation.md#windows-readiness-review-2026-11-03)。远端现有测试二进制仍为 0.1.0；以下原生结果是历史诊断，不能当作 rc.4 验收。当前优先补齐原生接管/撤销检查，再验证后台点击效果与 Nexus 前台许可，随后补动作后观察及固定版本打包验收。
+
 实施状态：已补当前拓扑解析、PMv2 验证、WGC 支持检查和无内容最小诊断程序。Windows 11 build 26300 上最小程序的窗口/显示器创建均成功；完整 runtime 已通过显示器观察；进一步补齐 UIA pattern 缓存属性，并修复 WGC 在无画面变化的动作后等待不到新帧。当前原生语义动作、鼠标移动和前台点击通过，后台点击未改变 fixture 计数，整体原生验收未通过。旧 `0x80070057` 根因尚未被单变量复现确认。
 
 - **问题**：活动控制台 session 中 `observe_display` 的 WGC `CreateForMonitor`
