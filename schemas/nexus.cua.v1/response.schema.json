@@ -585,6 +585,11 @@
       "description": "Capture surface implemented by the selected driver.",
       "oneOf": [
         {
+          "description": "Display-sized scene containing only the authorized application's surfaces.",
+          "type": "string",
+          "const": "application_scene"
+        },
+        {
           "description": "One exact top-level application window.",
           "type": "string",
           "const": "window"

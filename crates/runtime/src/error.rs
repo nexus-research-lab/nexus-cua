@@ -6,6 +6,8 @@ use thiserror::Error;
 /// Stable driver failure category hidden behind the public error model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverErrorKind {
+    /// Session authority was revoked or expired before another dispatch.
+    SessionUnavailable,
     /// A bounded native actor queue cannot admit more work.
     Busy,
     /// Required operating-system permission is missing.
@@ -80,6 +82,7 @@ impl DriverError {
 impl From<DriverError> for CuaError {
     fn from(value: DriverError) -> Self {
         let code = match value.kind {
+            DriverErrorKind::SessionUnavailable => ErrorCode::SessionUnavailable,
             DriverErrorKind::Busy => ErrorCode::Busy,
             DriverErrorKind::PermissionRequired => ErrorCode::PermissionRequired,
             DriverErrorKind::Unsupported => ErrorCode::Unsupported,

@@ -123,6 +123,7 @@ class ClientTests(unittest.TestCase):
             ),
         )
         client.reconcile_mutation("fixture-action", wait=0)
+        client.observe_application_scene("session_fixture", "window_fixture")
 
         self.assertEqual(transport.requests, requests)
 

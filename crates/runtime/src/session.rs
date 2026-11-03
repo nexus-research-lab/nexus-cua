@@ -23,7 +23,7 @@ use crate::error::public_error;
 
 pub(crate) struct Session {
     pub(crate) driver: Arc<dyn crate::DesktopDriver>,
-    pub(crate) closed: AtomicBool,
+    pub(crate) closed: Arc<AtomicBool>,
     pub(crate) id: SessionId,
     pub(crate) manifest: CapabilityManifest,
     pub(crate) allowed_applications: Vec<DriverApplication>,
@@ -32,6 +32,14 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    pub(crate) fn action_guard(&self) -> crate::driver::DriverActionGuard {
+        crate::driver::DriverActionGuard {
+            closed: Arc::clone(&self.closed),
+            expires_at: self.expires_at.into_std(),
+            dispatched: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub(crate) fn close(&self) {
         if !self.closed.swap(true, Ordering::AcqRel) {
             self.driver.session_closed(&self.id);
@@ -166,6 +174,7 @@ pub(crate) struct ClipboardRecord {
 }
 
 pub(crate) struct ObservationRecord {
+    pub(crate) application_scene: bool,
     pub(crate) id: ObservationId,
     pub(crate) window_ref: WindowRef,
     pub(crate) screenshot_mapping: Option<ScreenshotMapping>,
@@ -228,6 +237,7 @@ pub(crate) fn project_observation(
     }
     (
         ObservationRecord {
+            application_scene: false,
             id: observation_id,
             window_ref: window_ref.clone(),
             screenshot_mapping,
@@ -240,10 +250,34 @@ pub(crate) fn project_observation(
     )
 }
 
+fn validate_scene_delivery(
+    action: &Action,
+    observation: &ObservationRecord,
+) -> Result<(), CuaError> {
+    if observation.application_scene
+        && matches!(
+            action,
+            Action::ClickPoint {
+                delivery: nexus_cua_protocol::DeliveryPreference::Background,
+                ..
+            }
+        )
+    {
+        return Err(public_error(
+            ErrorCode::Unsupported,
+            "application scene clicks require the foreground route; use an exact-window observation for background delivery",
+            false,
+            Some("observe_window"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_action(
     action: &Action,
     observation: &ObservationRecord,
 ) -> Result<DriverAction, CuaError> {
+    validate_scene_delivery(action, observation)?;
     let element = |element_ref: &ElementRef| {
         observation
             .elements

@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the configured nexuscua MCP server when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=0822432af1fd36fa2a8662c0beb8374a72aaff9ee14aedf78ee957413928eac5 -->
+<!-- generated: product=0.1.0 catalogue_sha256=0c265a34d985f464ed800180efb9a82cdaa3e4593d935bc19df29cd6a526518f -->
 
 ## Operating contract
 
@@ -63,7 +63,7 @@ the process owning WindowFromPoint, permitting same-process popups. Pointer
 actions do not first raise the target and erase evidence of foreign occlusion.
 Move-only and explicit background clicks are exempt from this foreground check.
 Scroll first moves the cursor to its target. Unowned points fail not_dispatched
-with observe_window guidance. This does not implement application-scene capture.
+with observe_window guidance. When capabilities advertise `application_scene`, pass `application_scene=true` to MCP `observe_window` (CLI: `window observe --application-scene`) to see the authorized application's menus and popups on the anchor display. Other applications are excluded. Accessibility still describes the anchor window; use the returned screenshot mapping for visual coordinates and foreground delivery for scene clicks. Helpers owned by another process are not included.
 
 C4: `serve` and `mcp serve` accept `--max-image-edge` (default 1568, range 1..4096).
 RuntimeConfig exposes the same model-image budget. macOS window streams and
@@ -86,6 +86,14 @@ limits count UTF-8 bytes. Hosts should derive UI/schema bounds from this object
 and cap session authority by their own remaining round duration. Capabilities
 do not grant authority; the runtime still validates every request.
 
+Inactive/Stage Manager window recovery: a visible thumbnail is not proof of
+normal window geometry, and `unknown` must not be treated as minimized. If
+accessibility cannot resolve the inactive window, obtain a geometry-only guard
+with `observe_window(include_screenshot=false, accessibility=disabled)`, then
+explicitly `focus_window` with foreground authority and re-observe. Never
+activate as a side effect of a read. Do not retry an indeterminate activation;
+reconcile the request and inspect current state first.
+
 ## MCP binding
 
 Use only the configured `nexuscua` MCP alias. Do not call a shell command,
@@ -95,7 +103,7 @@ to reach around the adapter.
 
 Read and verification tools: `mcp__nexuscua__get_status`, `mcp__nexuscua__list_apps`, `mcp__nexuscua__list_launchable_apps`, `mcp__nexuscua__list_windows`, `mcp__nexuscua__list_displays`, `mcp__nexuscua__observe_display`, `mcp__nexuscua__observe_window`, `mcp__nexuscua__read_clipboard`, `mcp__nexuscua__zoom`, `mcp__nexuscua__verify_state`.
 
-Mutation tools (each requires its own retained `request_id`): `mcp__nexuscua__launch_application`, `mcp__nexuscua__write_clipboard`, `mcp__nexuscua__click_normalized`, `mcp__nexuscua__click_view_normalized`, `mcp__nexuscua__type_text`, `mcp__nexuscua__press_keys`, `mcp__nexuscua__scroll`, `mcp__nexuscua__drag_normalized`, `mcp__nexuscua__invoke_element`, `mcp__nexuscua__set_element_value`, `mcp__nexuscua__set_range_value`, `mcp__nexuscua__terminate_application`, `mcp__nexuscua__perform_action`.
+Mutation tools (each requires its own retained `request_id`): `mcp__nexuscua__launch_application`, `mcp__nexuscua__write_clipboard`, `mcp__nexuscua__click_normalized`, `mcp__nexuscua__click_view_normalized`, `mcp__nexuscua__type_text`, `mcp__nexuscua__press_keys`, `mcp__nexuscua__scroll`, `mcp__nexuscua__drag_normalized`, `mcp__nexuscua__invoke_element`, `mcp__nexuscua__set_element_value`, `mcp__nexuscua__set_range_value`, `mcp__nexuscua__focus_window`, `mcp__nexuscua__terminate_application`, `mcp__nexuscua__perform_action`.
 
 Read-only reconciliation tool: `mcp__nexuscua__reconcile_mutation`.
 

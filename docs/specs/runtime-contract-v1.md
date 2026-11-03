@@ -298,6 +298,17 @@ the result rather than claiming cancellation. A caller that times out retries
 the same `request_id`, optionally with a longer wait, to reconcile. Bounded
 native queues return `busy` before their actor executes the command.
 
+Explicit session close and session expiry revoke macOS action authority across
+native queues. Actors recheck the runtime-issued guard before native mutations;
+held pointer actions check between bounded input steps and release synthetic
+buttons on interruption. A bounded keyboard chord already started completes
+its key releases. Closing a session acknowledges revocation, not completion of
+all native cleanup, and cannot retract an event already posted to the OS.
+Rejection before native dispatch is `session_unavailable` / `not_dispatched`;
+revocation after any dispatch is `session_unavailable` / `indeterminate`.
+Caller timeout alone does not revoke authority. This mechanism does not yet
+provide physical-user takeover detection or a host emergency-stop UI.
+
 Every public failure names its mutation disposition. Runtime and driver
 preflight failures are `not_dispatched`; a failure returned after admission to
 the native mutation call defaults to `indeterminate` unless the owning actor
@@ -437,7 +448,7 @@ the process owning WindowFromPoint, permitting same-process popups. Pointer
 actions do not first raise the target and erase evidence of foreign occlusion.
 Move-only and explicit background clicks are exempt from this foreground check.
 Scroll first moves the cursor to its target. Unowned points fail not_dispatched
-with observe_window guidance. This does not implement application-scene capture.
+with observe_window guidance. Application-scene capture is a separate capability described below.
 
 C4: `serve` and `mcp serve` accept `--max-image-edge` (default 1568, range 1..4096).
 RuntimeConfig exposes the same model-image budget. macOS window streams and
@@ -459,3 +470,44 @@ configuration; action values share the runtime validator's constants. Text
 limits count UTF-8 bytes. Hosts should derive UI/schema bounds from this object
 and cap session authority by their own remaining round duration. Capabilities
 do not grant authority; the runtime still validates every request.
+
+## macOS application scenes
+
+`observe_application_scene` accepts the same input as `observe_window` and
+returns `window_observed`. It requires a live session-scoped anchor window
+and the `application_scene` capture capability. It does not require or grant
+unfiltered display-capture authority. Platforms without isolated scene capture
+return `unsupported`.
+
+On macOS, the screenshot covers the display containing the anchor window's
+center and includes only the anchor application's ScreenCaptureKit surfaces.
+Its `screenshot.mapping.screen_bounds` is the coordinate authority;
+`window_screen_bounds` and accessibility elements still describe the anchor.
+Menus and popups owned by that application are included; cross-process helpers,
+authentication dialogs, and other applications are excluded. A scene currently
+covers one display. Move the anchor or choose another window for another display.
+
+The scene fingerprint binds display identity, display bounds, anchor generation,
+anchor geometry, and visual state. Session close invalidates its observations
+and artifacts. Foreground pixel dispatch still checks native process ownership;
+background clicks against scene observations return `unsupported` before dispatch.
+Exact-window observation remains available for background delivery. No implicit
+capture fallback can expose an unfiltered desktop.
+
+MCP `observe_window` selects this operation with `application_scene=true`;
+CLI `window observe` uses `--application-scene`. Go, Python and TypeScript expose
+`ObserveApplicationScene`, `observe_application_scene`, and
+`observeApplicationScene`, respectively.
+
+Explicit macOS `focus_window` activation is the recovery path for inactive or
+Stage Manager-transformed anchors. A geometry-only observation
+(`include_screenshot=false`, `accessibility=disabled`) can guard it. Activation
+revalidates the process generation on the native main thread; after native
+admission, failure to settle or raise remains indeterminate. Read-only queries
+never activate a window. AX state caching must not report a transformed thumbnail
+as `normal` merely because the original AX window says `AXMinimized=false`.
+
+A blank/suspended ScreenCaptureKit frame invalidates cached pixels but may recover
+within the existing bounded frame deadline. A stopped stream is rebuilt on the
+next capture request. Persistent suspension is an error, never a stale-frame
+success or permission to capture an unfiltered desktop.

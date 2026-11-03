@@ -46,8 +46,8 @@ function fixtureClient(transport, requestIds) {
 test("compatibility fixtures cover the complete public client", async () => {
   const requests = fixture("requests.json");
   const results = fixture("results.json");
-  assert.equal(requests.length, 17);
-  assert.equal(results.length, 17);
+  assert.equal(requests.length, 18);
+  assert.equal(results.length, 18);
   const resultByOperation = new Map(
     requests.map((request, index) => [request.command.operation, results[index]]),
   );
@@ -111,6 +111,10 @@ test("compatibility fixtures cover the complete public client", async () => {
     },
   });
   await client.reconcileMutation("fixture-action", 0);
+  await client.observeApplicationScene({
+    session_id: "session_fixture", window_ref: "window_fixture",
+    include_screenshot: true, accessibility: "interactive",
+  });
 
   assert.deepEqual(sent, requests);
 });

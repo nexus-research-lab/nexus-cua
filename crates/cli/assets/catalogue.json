@@ -23,6 +23,7 @@
     { "leaf": "invoke_element", "kind": "mutation", "vision": true },
     { "leaf": "set_element_value", "kind": "mutation", "vision": true },
     { "leaf": "set_range_value", "kind": "mutation", "vision": true },
+    { "leaf": "focus_window", "kind": "mutation", "vision": true },
     { "leaf": "terminate_application", "kind": "mutation", "vision": true },
     { "leaf": "perform_action", "kind": "mutation", "vision": false },
     { "leaf": "reconcile_mutation", "kind": "reconcile", "vision": true },

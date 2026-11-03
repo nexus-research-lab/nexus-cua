@@ -828,6 +828,24 @@
           ]
         },
         {
+          "description": "Observe the authorized application's scene on the anchor window's display.\nThe returned window observation retains the anchor guard; its screenshot\nmapping covers the display and never grants authority to other applications.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ObserveWindowInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "observe_application_scene"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
           "description": "Capture one exact physical display for desktop overview.",
           "type": "object",
           "properties": {

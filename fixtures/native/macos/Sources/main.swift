@@ -40,7 +40,9 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
-        createWindow()
+        if ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_WINDOWLESS"] != "1" {
+            createWindow()
+        }
         if ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_DISCOVERY"] == "1" {
             for index in 1...80 {
                 let extra = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 320, height: 180), styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -194,7 +196,12 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             action: #selector(hangDuringInvoke)
         )
         let desktopRow = row([minimize, occluder])
-        let displayRow = row([nextDisplay])
+        let menuChoice = NSPopUpButton(frame: .zero, pullsDown: false)
+        menuChoice.addItems(withTitles: ["Menu Alpha", "Menu Beta", "Menu Gamma"])
+        menuChoice.setAccessibilityLabel("Fixture Popup Menu")
+        menuChoice.target = self
+        menuChoice.action = #selector(selectPopup(_:))
+        let displayRow = row([nextDisplay, menuChoice])
         let faultRow = row([hangBeforeMutation, hangDuringInvoke])
 
         let textCaption = label("Fixture Text")
@@ -470,6 +477,13 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
 
     @objc private func minimizeWindow() {
         window?.miniaturize(nil)
+    }
+
+    @objc private func selectPopup(_ sender: NSPopUpButton) {
+        if sender.titleOfSelectedItem == "Menu Beta" {
+            counter += 1
+            updateState()
+        }
     }
 
     @objc private func toggleOccluder() {

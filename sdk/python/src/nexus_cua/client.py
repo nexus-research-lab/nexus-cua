@@ -359,6 +359,28 @@ class Client:
             command, timeout, "window_observed", WindowObservation.from_wire
         )
 
+    def observe_application_scene(
+        self,
+        session_id: str,
+        window_ref: str,
+        *,
+        include_screenshot: bool = True,
+        accessibility: AccessibilityMode = AccessibilityMode.INTERACTIVE,
+        timeout: float = 30.0,
+    ) -> WindowObservation:
+        command = {
+            "operation": "observe_application_scene",
+            "input": {
+                "session_id": session_id,
+                "window_ref": window_ref,
+                "include_screenshot": include_screenshot,
+                "accessibility": accessibility.value,
+            },
+        }
+        return self._request_result(
+            command, timeout, "window_observed", WindowObservation.from_wire
+        )
+
     def read_clipboard(
         self, session_id: str, timeout: float = 30.0
     ) -> ClipboardSnapshot:

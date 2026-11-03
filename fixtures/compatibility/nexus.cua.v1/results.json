@@ -236,5 +236,64 @@
       "error_code": null,
       "fresh_observation_required": true
     }
+  },
+  {
+    "result_type": "window_observed",
+    "data": {
+      "observation_id": "observation_fixture",
+      "window_ref": "window_fixture",
+      "captured_at": "2026-08-25T12:00:01Z",
+      "window_screen_bounds": {
+        "x": 10.0,
+        "y": 20.0,
+        "width": 800.0,
+        "height": 600.0
+      },
+      "screenshot": {
+        "artifact_ref": "artifact_fixture",
+        "path": "/private/runtime/session_fixture/artifact_fixture.png",
+        "mime_type": "image/png",
+        "mapping": {
+          "screen_bounds": {
+            "x": 10.0,
+            "y": 20.0,
+            "width": 800.0,
+            "height": 600.0
+          },
+          "pixel_size": {
+            "width": 1600,
+            "height": 1200
+          }
+        },
+        "byte_length": 4096,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "elements": [
+        {
+          "element_ref": "element_fixture",
+          "parent_ref": null,
+          "role": "checkbox",
+          "name": "Remember me",
+          "value": null,
+          "range_value": null,
+          "screen_bounds": {
+            "x": 40.0,
+            "y": 80.0,
+            "width": 120.0,
+            "height": 32.0
+          },
+          "enabled": true,
+          "focused": false,
+          "selected": null,
+          "checked": true,
+          "expanded": null,
+          "actions": [
+            "toggle"
+          ]
+        }
+      ],
+      "elements_complete": true,
+      "elements_truncation": null
+    }
   }
 ]

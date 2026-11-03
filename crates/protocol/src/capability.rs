@@ -21,6 +21,8 @@ pub enum Platform {
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMode {
+    /// Display-sized scene containing only the authorized application's surfaces.
+    ApplicationScene,
     /// One exact top-level application window.
     Window,
     /// One exact physical display for read-only desktop overview.

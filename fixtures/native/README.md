@@ -137,3 +137,16 @@ profiles change only the initial native window size; the default validation
 profile and logical control contract remain unchanged. Evidence always records
 the observed screenshot pixel dimensions because operating-system scaling can
 make logical and physical sizes differ.
+
+## macOS discovery and scene diagnostics
+
+`NEXUS_CUA_FIXTURE_WINDOWLESS=1` starts a regular application without creating a
+window. After an earlier discovery snapshot, launch it and verify fresh discovery
+and session admission succeed while the window list is empty. After exit, fresh
+discovery must omit the old generation.
+
+The macOS fixture includes `Fixture Popup Menu`. Selecting `Menu Beta` increments
+the counter once. Observe with application-scene capture after opening the menu,
+then use the returned scene mapping for a foreground click. Compare the fresh
+counter state and close the session to remove every screenshot. These diagnostics
+do not replace full native, permission, takeover, or Nexus task acceptance.

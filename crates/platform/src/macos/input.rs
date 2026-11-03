@@ -11,7 +11,7 @@ use core_graphics::event::{
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use nexus_cua_protocol::{PointerButton, ScreenPoint, SensitiveText};
-use nexus_cua_runtime::{DriverError, DriverErrorKind};
+use nexus_cua_runtime::{DriverActionGuard, DriverError, DriverErrorKind};
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
@@ -21,6 +21,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 #[derive(Clone)]
 pub(super) struct InputActor {
     sender: SyncSender<InputCommand>,
+    guard: Option<DriverActionGuard>,
 }
 
 pub(super) enum InputAction {
@@ -72,13 +73,28 @@ impl InputActor {
         ready_receiver
             .recv()
             .map_err(|_| input_failure("macOS input actor stopped during startup"))??;
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            guard: None,
+        })
+    }
+
+    pub(super) fn guarded(&self, guard: DriverActionGuard) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            guard: Some(guard),
+        }
     }
 
     pub(super) async fn perform(&self, pid: i32, action: InputAction) -> Result<(), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.sender
-            .try_send(InputCommand { pid, action, reply })
+            .try_send(InputCommand {
+                pid,
+                action,
+                reply,
+                guard: self.guard.clone(),
+            })
             .map_err(|error| match error {
                 TrySendError::Full(_) => {
                     DriverError::new(DriverErrorKind::Busy, "macOS input actor is busy")
@@ -106,12 +122,14 @@ fn pointer_targets(action: &InputAction) -> [Option<ScreenPoint>; 2] {
 }
 
 struct InputCommand {
+    guard: Option<DriverActionGuard>,
     pid: i32,
     action: InputAction,
     reply: oneshot::Sender<Result<(), DriverError>>,
 }
 
 struct InputState {
+    guard: Option<DriverActionGuard>,
     source: CGEventSource,
 }
 
@@ -119,17 +137,23 @@ impl InputState {
     fn new() -> Result<Self, DriverError> {
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
             .map_err(|()| input_failure("failed to create HID CGEvent source"))?;
-        Ok(Self { source })
+        Ok(Self {
+            source,
+            guard: None,
+        })
     }
 
-    fn run(self, receiver: &Receiver<InputCommand>) {
+    fn run(mut self, receiver: &Receiver<InputCommand>) {
         while let Ok(command) = receiver.recv() {
+            self.guard = command.guard;
             let result = self.perform(command.pid, command.action);
+            self.guard = None;
             let _ = command.reply.send(result);
         }
     }
 
     fn perform(&self, pid: i32, action: InputAction) -> Result<(), DriverError> {
+        self.check_authority()?;
         for point in pointer_targets(&action).into_iter().flatten() {
             super::capture::validate_pointer_owner(pid, point)?;
         }
@@ -184,10 +208,10 @@ impl InputState {
             up.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
             events.push((down, up));
         }
-        movement.post(CGEventTapLocation::HID);
+        self.post(&movement, None)?;
         thread::sleep(FRAME_INTERVAL);
         for (down, up) in events {
-            down.post(CGEventTapLocation::HID);
+            self.post(&down, None)?;
             thread::sleep(Duration::from_millis(10));
             up.post(CGEventTapLocation::HID);
             thread::sleep(Duration::from_millis(10));
@@ -209,7 +233,7 @@ impl InputState {
             down.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
             let up = self.mouse_event(up_type, point, native_button)?;
             up.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
-            down.post_to_pid(pid);
+            self.post(&down, Some(pid))?;
             up.post_to_pid(pid);
         }
         Ok(())
@@ -227,10 +251,15 @@ impl InputState {
         // failure cannot leave a synthetic button held.
         let down = self.mouse_event(down_type, point, native_button)?;
         let up = self.mouse_event(up_type, point, native_button)?;
-        down.post(CGEventTapLocation::HID);
-        thread::sleep(Duration::from_millis(u64::from(duration_ms)));
+        self.post(&down, None)?;
+        let result = self.wait_while_authorized(Duration::from_millis(u64::from(duration_ms)));
+        if result.is_err()
+            && let Ok(current) = CGEvent::new(self.source.clone())
+        {
+            up.set_location(current.location());
+        }
         up.post(CGEventTapLocation::HID);
-        Ok(())
+        result
     }
 
     fn move_pointer(&self, target: ScreenPoint, duration_ms: u32) -> Result<(), DriverError> {
@@ -254,21 +283,26 @@ impl InputState {
     ) -> Result<(), DriverError> {
         let from = cg_point(from);
         let to = cg_point(to);
-        self.mouse_event(CGEventType::MouseMoved, from, CGMouseButton::Left)?
-            .post(CGEventTapLocation::HID);
-        self.mouse_event(CGEventType::LeftMouseDown, from, CGMouseButton::Left)?
-            .post(CGEventTapLocation::HID);
-        let drag_result = self.interpolate_mouse(
+        let movement = self.mouse_event(CGEventType::MouseMoved, from, CGMouseButton::Left)?;
+        let down = self.mouse_event(CGEventType::LeftMouseDown, from, CGMouseButton::Left)?;
+        let up = self.mouse_event(CGEventType::LeftMouseUp, from, CGMouseButton::Left)?;
+        self.post(&movement, None)?;
+        self.post(&down, None)?;
+        let result = self.interpolate_mouse(
             from,
             to,
             duration_ms,
             CGEventType::LeftMouseDragged,
             CGMouseButton::Left,
         );
-        let up_result = self
-            .mouse_event(CGEventType::LeftMouseUp, to, CGMouseButton::Left)
-            .map(|event| event.post(CGEventTapLocation::HID));
-        drag_result.and(up_result)
+        let release_at = if result.is_ok() {
+            to
+        } else {
+            CGEvent::new(self.source.clone()).map_or(from, |event| event.location())
+        };
+        up.set_location(release_at);
+        up.post(CGEventTapLocation::HID);
+        result
     }
 
     fn interpolate_mouse(
@@ -286,8 +320,7 @@ impl InputState {
                 from.x + (to.x - from.x) * progress,
                 from.y + (to.y - from.y) * progress,
             );
-            self.mouse_event(event_type, point, button)?
-                .post(CGEventTapLocation::HID);
+            self.post(&self.mouse_event(event_type, point, button)?, None)?;
             if step < steps {
                 thread::sleep(FRAME_INTERVAL);
             }
@@ -307,7 +340,7 @@ impl InputState {
             // The driver confirms this application is active before dispatch.
             // PID routing prevents a concurrent focus change from leaking
             // keyboard content into an unrelated foreground application.
-            down.post_to_pid(pid);
+            self.post(&down, Some(pid))?;
             up.post_to_pid(pid);
             thread::sleep(Duration::from_millis(5));
         }
@@ -369,6 +402,10 @@ impl InputState {
             active_flags.remove(flag);
             events.push(self.keyboard_event(keycode, false, active_flags)?);
         }
+        self.check_authority()?;
+        if let Some(guard) = &self.guard {
+            guard.begin_dispatch()?;
+        }
         for event in events {
             event.post_to_pid(pid);
         }
@@ -398,15 +435,45 @@ impl InputState {
         )
         .map_err(|()| input_failure("failed to create scroll event"))?;
         event.set_location(cg_point(point));
-        self.mouse_event(
-            CGEventType::MouseMoved,
-            cg_point(point),
-            CGMouseButton::Left,
-        )?
-        .post(CGEventTapLocation::HID);
+        self.post(
+            &self.mouse_event(
+                CGEventType::MouseMoved,
+                cg_point(point),
+                CGMouseButton::Left,
+            )?,
+            None,
+        )?;
         thread::sleep(FRAME_INTERVAL);
-        event.post(CGEventTapLocation::HID);
+        self.post(&event, None)?;
         Ok(())
+    }
+
+    fn check_authority(&self) -> Result<(), DriverError> {
+        self.guard.as_ref().map_or(Ok(()), DriverActionGuard::check)
+    }
+
+    fn post(&self, event: &CGEvent, pid: Option<i32>) -> Result<(), DriverError> {
+        if let Some(guard) = &self.guard {
+            guard.begin_dispatch()?;
+        }
+        match pid {
+            Some(pid) => event.post_to_pid(pid),
+            None => event.post(CGEventTapLocation::HID),
+        }
+        Ok(())
+    }
+
+    fn wait_while_authorized(&self, duration: Duration) -> Result<(), DriverError> {
+        let deadline = std::time::Instant::now() + duration;
+        while std::time::Instant::now() < deadline {
+            self.check_authority()?;
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(FRAME_INTERVAL),
+            );
+        }
+        self.check_authority()
     }
 
     fn mouse_event(

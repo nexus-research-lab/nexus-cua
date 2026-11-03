@@ -11,6 +11,57 @@ use zeroize::Zeroize;
 
 use crate::DriverError;
 
+/// Revocable, finite authority checked again on the native dispatch actor.
+/// This is an internal runtime-issued guard, never a public caller credential.
+#[derive(Clone)]
+pub struct DriverActionGuard {
+    pub(crate) closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) expires_at: std::time::Instant,
+    pub(crate) dispatched: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DriverActionGuard {
+    /// Fails before a new dispatch when its session was closed or expired.
+    ///
+    /// # Errors
+    /// Returns session unavailable with the action's dispatch status when revoked.
+    pub fn check(&self) -> Result<(), DriverError> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire)
+            || std::time::Instant::now() >= self.expires_at
+        {
+            let error = DriverError::new(
+                crate::DriverErrorKind::SessionUnavailable,
+                "action authority was closed or expired",
+            );
+            return Err(
+                if self.dispatched.load(std::sync::atomic::Ordering::Acquire) {
+                    error.mutation_indeterminate()
+                } else {
+                    error.mutation_not_dispatched()
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Checks authority immediately before a native mutation attempt. Later
+    /// cancellation is indeterminate because part of the action may have happened.
+    ///
+    /// # Errors
+    /// Returns session unavailable if authority was closed or expired.
+    pub fn begin_dispatch(&self) -> Result<(), DriverError> {
+        self.check()?;
+        self.dispatched
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether any part of this action has reached a native dispatch boundary.
+    pub fn was_dispatched(&self) -> bool {
+        self.dispatched.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 /// Internal application identity owned by a platform driver.
 #[derive(Clone, Debug)]
 pub struct DriverApplication {
@@ -450,6 +501,21 @@ pub trait DesktopDriver: Send + Sync {
             .await
     }
 
+    /// Captures only the authorized application on the anchor display.
+    /// Drivers without scene isolation must reject rather than expose the desktop.
+    async fn observe_application_scene_scoped(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+        _window: &DriverWindow,
+        _include_screenshot: bool,
+        _accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        Err(DriverError::new(
+            crate::DriverErrorKind::Unsupported,
+            "application scene capture is unavailable",
+        ))
+    }
+
     /// Returns immutable capability metadata.
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError>;
 
@@ -542,6 +608,21 @@ pub trait DesktopDriver: Send + Sync {
         fingerprint: &str,
     ) -> Result<bool, DriverError>;
 
+    /// Executes with finite revocable authority. Native drivers must check this
+    /// guard on their dispatch actor and between bounded input chunks.
+    async fn perform_action_scoped(
+        &self,
+        window: &DriverWindow,
+        action: DriverAction,
+        allow_foreground: bool,
+        restore_foreground: bool,
+        guard: DriverActionGuard,
+    ) -> Result<DriverActionOutput, DriverError> {
+        guard.check()?;
+        self.perform_action(window, action, allow_foreground, restore_foreground)
+            .await
+    }
+
     /// Executes one already-authorized action.
     ///
     /// `allow_foreground` is a hard upper bound. Implementations must return
@@ -582,5 +663,53 @@ mod tests {
         let pixels = returned.lock().unwrap().take().unwrap();
         assert!(pixels.is_empty());
         assert!(pixels.capacity() >= 16);
+    }
+}
+
+#[cfg(test)]
+mod action_guard_tests {
+    use super::DriverActionGuard;
+    use nexus_cua_protocol::MutationStatus;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn revocation_distinguishes_queued_actions_from_partial_dispatch() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let guard = DriverActionGuard {
+            closed: Arc::clone(&closed),
+            expires_at: Instant::now() + Duration::from_secs(60),
+            dispatched: Arc::new(AtomicBool::new(false)),
+        };
+        let queued = guard.clone();
+        closed.store(true, Ordering::Release);
+        assert_eq!(
+            queued.begin_dispatch().unwrap_err().mutation_status,
+            MutationStatus::NotDispatched
+        );
+        closed.store(false, Ordering::Release);
+        guard.begin_dispatch().unwrap();
+        closed.store(true, Ordering::Release);
+        assert_eq!(
+            queued.check().unwrap_err().mutation_status,
+            MutationStatus::Indeterminate
+        );
+    }
+
+    #[test]
+    fn expired_authority_cannot_start_native_dispatch() {
+        let guard = DriverActionGuard {
+            closed: Arc::new(AtomicBool::new(false)),
+            expires_at: Instant::now(),
+            dispatched: Arc::new(AtomicBool::new(false)),
+        };
+        assert_eq!(
+            guard.begin_dispatch().unwrap_err().mutation_status,
+            MutationStatus::NotDispatched
+        );
+        assert!(!guard.was_dispatched());
     }
 }

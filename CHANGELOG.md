@@ -5,6 +5,23 @@ file.
 
 ## [Unreleased]
 
+- Recheck macOS session authority on native dispatch actors and interrupt held
+  pointer actions on session close or expiry, releasing synthetic buttons and
+  reporting partial effects as indeterminate.
+
+- Recover explicitly focused macOS Stage Manager windows through authorized
+  activation and bounded geometry convergence; revalidate cached AX state before
+  describing transformed windows as normal, and wait boundedly for transient
+  suspended capture frames without reusing invalid pixels.
+
+- Discover regular macOS applications independently of windows, including newly
+  started and windowless applications; drain pending workspace notifications on
+  the bounded main-thread request path without idle polling.
+- Add capability-negotiated macOS application-scene observation through the
+  protocol, CLI/MCP and three SDKs. The anchor display includes only the
+  authorized application, including its menus and popups. Scene clicks require
+  foreground delivery and retain native process ownership checks.
+
 - Cache Windows UIA pattern properties with their patterns so range, toggle,
   selection and expansion metadata are available without extra provider reads.
 - Refresh Windows capture sessions after mutations, including pointer moves that

@@ -60,6 +60,10 @@ pub enum Command {
     ListDisplays(SessionInput),
     /// Capture one exact window.
     ObserveWindow(crate::ObserveWindowInput),
+    /// Observe the authorized application's scene on the anchor window's display.
+    /// The returned window observation retains the anchor guard; its screenshot
+    /// mapping covers the display and never grants authority to other applications.
+    ObserveApplicationScene(crate::ObserveWindowInput),
     /// Capture one exact physical display for desktop overview.
     ObserveDisplay(crate::ObserveDisplayInput),
     /// Read bounded plain text under separate clipboard authority.

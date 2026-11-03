@@ -32,7 +32,7 @@ use nexus_cua_protocol::{
     AccessibilityMode, AccessibilityRangeValue, ObservationTruncation, ScreenPoint, ScreenRect,
     SensitiveText, TruncationReason,
 };
-use nexus_cua_runtime::{DriverElement, DriverError, DriverErrorKind};
+use nexus_cua_runtime::{DriverActionGuard, DriverElement, DriverError, DriverErrorKind};
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
@@ -42,6 +42,20 @@ const AX_MESSAGING_TIMEOUT_SECONDS: f32 = 0.2;
 const MAX_FIELD_BYTES: usize = 512;
 const WINDOW_CONFIRM_TIMEOUT: Duration = Duration::from_millis(200);
 const WINDOW_CONFIRM_INTERVAL: Duration = Duration::from_millis(10);
+
+// The serial AX actor installs one runtime-issued guard per command. Native
+// dispatch helpers check it after provider reads, immediately before mutation.
+thread_local! {
+    static ACTION_GUARD: std::cell::RefCell<Option<DriverActionGuard>> = const { std::cell::RefCell::new(None) };
+}
+
+fn begin_native_dispatch() -> Result<(), DriverError> {
+    ACTION_GUARD.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map_or(Ok(()), DriverActionGuard::begin_dispatch)
+    })
+}
 
 declare_TCFType!(AxElement, AXUIElementRef);
 impl_TCFType!(AxElement, AXUIElementRef, AXUIElementGetTypeID);
@@ -68,7 +82,8 @@ impl AxElement {
 
 #[derive(Clone)]
 pub(super) struct SemanticActor {
-    sender: SyncSender<SemanticCommand>,
+    sender: SyncSender<(SemanticCommand, Option<DriverActionGuard>)>,
+    guard: Option<DriverActionGuard>,
 }
 
 pub(super) struct SemanticSnapshot {
@@ -112,7 +127,10 @@ impl SemanticActor {
             .name("nexus-cua-macos-semantic".to_owned())
             .spawn(move || SemanticState::default().run(&receiver))
             .expect("create AXUIElement actor thread");
-        Self { sender }
+        Self {
+            sender,
+            guard: None,
+        }
     }
 
     pub(super) async fn snapshot(
@@ -221,14 +239,23 @@ impl SemanticActor {
         receiver.await.map_err(actor_stopped)?
     }
 
+    pub(super) fn guarded(&self, guard: DriverActionGuard) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            guard: Some(guard),
+        }
+    }
+
     fn admit(&self, command: SemanticCommand) -> Result<(), DriverError> {
-        self.sender.try_send(command).map_err(|error| match error {
-            TrySendError::Full(_) => {
-                DriverError::new(DriverErrorKind::Busy, "macOS semantic actor is busy")
-                    .retryable("retry_with_backoff")
-            }
-            TrySendError::Disconnected(_) => actor_stopped(()),
-        })
+        self.sender
+            .try_send((command, self.guard.clone()))
+            .map_err(|error| match error {
+                TrySendError::Full(_) => {
+                    DriverError::new(DriverErrorKind::Busy, "macOS semantic actor is busy")
+                        .retryable("retry_with_backoff")
+                }
+                TrySendError::Disconnected(_) => actor_stopped(()),
+            })
     }
 }
 
@@ -337,7 +364,19 @@ impl SemanticState {
         // cache is only used for state reads, never as mutation authority.
         let window = &self.state_windows[key];
         let result = copy_attribute(window, kAXMinimizedAttribute).and_then(|value| {
-            cf_booleanish(&value).ok_or_else(|| provider_failure("AXMinimized is not a boolean"))
+            let minimized = cf_booleanish(&value)
+                .ok_or_else(|| provider_failure("AXMinimized is not a boolean"))?;
+            if !minimized {
+                let (actual_title, actual_bounds) = read_window_identity(window)?;
+                if !window_identity_matches(actual_bounds, actual_title.as_deref(), bounds, title) {
+                    return Err(DriverError::new(
+                        DriverErrorKind::TargetUnavailable,
+                        "window geometry is transformed or changing",
+                    )
+                    .retryable("focus_window"));
+                }
+            }
+            Ok(minimized)
         });
         if result.is_err() {
             self.state_windows.remove(key);
@@ -345,8 +384,9 @@ impl SemanticState {
         result
     }
 
-    fn run(mut self, receiver: &Receiver<SemanticCommand>) {
-        while let Ok(command) = receiver.recv() {
+    fn run(mut self, receiver: &Receiver<(SemanticCommand, Option<DriverActionGuard>)>) {
+        while let Ok((command, guard)) = receiver.recv() {
+            ACTION_GUARD.with(|slot| *slot.borrow_mut() = guard);
             match command {
                 SemanticCommand::WindowMinimized {
                     key,
@@ -420,6 +460,7 @@ impl SemanticState {
                     ));
                 }
             }
+            ACTION_GUARD.with(|slot| *slot.borrow_mut() = None);
         }
     }
 
@@ -1249,6 +1290,7 @@ fn confirm_window_minimized(window: &AxElement, minimized: bool) -> Result<(), D
 }
 
 fn perform_native_action(element: &AxElement, action: &str) -> Result<(), DriverError> {
+    begin_native_dispatch()?;
     let action = CFString::new(action);
     // SAFETY: Both retained CF objects remain live for the synchronous call.
     let error = unsafe {
@@ -1357,6 +1399,7 @@ fn set_attribute(
     attribute: &str,
     value: CFTypeRef,
 ) -> Result<(), DriverError> {
+    begin_native_dispatch()?;
     let attribute = CFString::new(attribute);
     // SAFETY: All three retained CF values remain live for the call.
     let error = unsafe {

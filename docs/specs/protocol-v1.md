@@ -312,3 +312,31 @@ configuration; action values share the runtime validator's constants. Text
 limits count UTF-8 bytes. Hosts should derive UI/schema bounds from this object
 and cap session authority by their own remaining round duration. Capabilities
 do not grant authority; the runtime still validates every request.
+
+## macOS application scenes
+
+`observe_application_scene` accepts the same input as `observe_window` and
+returns `window_observed`. It requires a live session-scoped anchor window
+and the `application_scene` capture capability. It does not require or grant
+unfiltered display-capture authority. Platforms without isolated scene capture
+return `unsupported`.
+
+On macOS, the screenshot covers the display containing the anchor window's
+center and includes only the anchor application's ScreenCaptureKit surfaces.
+Its `screenshot.mapping.screen_bounds` is the coordinate authority;
+`window_screen_bounds` and accessibility elements still describe the anchor.
+Menus and popups owned by that application are included; cross-process helpers,
+authentication dialogs, and other applications are excluded. A scene currently
+covers one display. Move the anchor or choose another window for another display.
+
+The scene fingerprint binds display identity, display bounds, anchor generation,
+anchor geometry, and visual state. Session close invalidates its observations
+and artifacts. Foreground pixel dispatch still checks native process ownership;
+background clicks against scene observations return `unsupported` before dispatch.
+Exact-window observation remains available for background delivery. No implicit
+capture fallback can expose an unfiltered desktop.
+
+MCP `observe_window` selects this operation with `application_scene=true`;
+CLI `window observe` uses `--application-scene`. Go, Python and TypeScript expose
+`ObserveApplicationScene`, `observe_application_scene`, and
+`observeApplicationScene`, respectively.

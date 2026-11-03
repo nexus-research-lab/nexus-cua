@@ -42,6 +42,8 @@ pub enum PolicyOperation {
     ListDisplays,
     /// Observe one guarded window.
     ObserveWindow,
+    /// Capture only an authorized application's scene on its anchor display.
+    ObserveApplicationScene,
     /// Capture one exact physical display.
     ObserveDisplay,
     /// Read bounded plain text from the system clipboard.
@@ -70,6 +72,7 @@ impl PolicyOperation {
             Command::ListWindows(_) => Self::ListWindows,
             Command::ListDisplays(_) => Self::ListDisplays,
             Command::ObserveWindow(_) => Self::ObserveWindow,
+            Command::ObserveApplicationScene(_) => Self::ObserveApplicationScene,
             Command::ObserveDisplay(_) => Self::ObserveDisplay,
             Command::ReadClipboard(_) => Self::ReadClipboard,
             Command::WriteClipboard(_) => Self::WriteClipboard,

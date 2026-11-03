@@ -223,6 +223,18 @@ export class Client {
     );
   }
 
+  async observeApplicationScene(input, timeoutMs = 30_000) {
+    validateSessionTarget(input, "window_ref");
+    if (!ACCESSIBILITY_MODES.has(input.accessibility)) {
+      throw new TypeError(`invalid accessibility mode ${String(input.accessibility)}`);
+    }
+    return this._requestResult(
+      { operation: "observe_application_scene", input: { ...input } },
+      timeoutMs,
+      "window_observed",
+    );
+  }
+
   async readClipboard(sessionId, timeoutMs = 30_000) {
     const output = await this._requestResult(
       { operation: "read_clipboard", input: { session_id: requiredString(sessionId, "sessionId") } },
@@ -517,7 +529,7 @@ function validateResultData(resultType, value) {
   const data = objectValue(value, `${resultType} data`);
   if (resultType === "capabilities") {
     if (!new Set(["macos", "windows", "unsupported"]).has(data.platform)) throw new Error("unknown platform");
-    assertClosedArray(data.capture_modes, new Set(["window", "display"]), "capture mode");
+    assertClosedArray(data.capture_modes, new Set(["window", "display", "application_scene"]), "capture mode");
     assertClosedArray(data.input_routes, new Set(["semantic", "system", "background", "foreground"]), "input route");
     assertClosedArray(data.application_lifecycle, new Set(["launch"]), "application lifecycle operation");
     assertClosedArray(data.clipboard, new Set(["read_text", "write_text"]), "clipboard operation");

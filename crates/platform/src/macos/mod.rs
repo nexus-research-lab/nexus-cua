@@ -11,7 +11,6 @@ mod semantic;
 mod stream;
 mod window_state;
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -24,9 +23,10 @@ use nexus_cua_protocol::{
     Platform, PointerButton, SensitiveText, StatePredicate,
 };
 use nexus_cua_runtime::{
-    DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverClipboardSnapshot,
-    DriverClipboardWriteOutput, DriverDisplay, DriverError, DriverErrorKind, DriverLaunchOutput,
-    DriverLaunchableApplication, DriverObservation, DriverVerification, DriverWindow,
+    DesktopDriver, DriverAction, DriverActionGuard, DriverActionOutput, DriverApplication,
+    DriverClipboardSnapshot, DriverClipboardWriteOutput, DriverDisplay, DriverError,
+    DriverErrorKind, DriverLaunchOutput, DriverLaunchableApplication, DriverObservation,
+    DriverVerification, DriverWindow,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
@@ -42,6 +42,7 @@ use crate::observation::{contains_rect, fingerprint, fingerprints_match};
 
 /// macOS native driver. Platform actors are initialized lazily on first use.
 pub struct MacosDriver {
+    action_guard: Option<DriverActionGuard>,
     capture: CaptureActor,
     semantic: SemanticActor,
     input: InputActor,
@@ -57,6 +58,7 @@ impl MacosDriver {
     pub fn new() -> Result<Self, DriverError> {
         initialize_appkit()?;
         Ok(Self {
+            action_guard: None,
             capture: CaptureActor::spawn(),
             semantic: SemanticActor::spawn(),
             input: InputActor::spawn()?,
@@ -96,6 +98,7 @@ impl MacosDriver {
         window: &DriverWindow,
         include_screenshot: bool,
         accessibility: AccessibilityMode,
+        application_scene: bool,
     ) -> Result<DriverObservation, DriverError> {
         if include_screenshot && !ScreenCaptureAccess.preflight() {
             return Err(DriverError::new(
@@ -105,30 +108,18 @@ impl MacosDriver {
             .retryable("grant_screen_recording_permission"));
         }
         let before = self.current_window(&window.key).await?;
+        let (capture_key, capture_bounds) = if application_scene && include_screenshot {
+            self.scene_target(&before).await?
+        } else {
+            (window.key.clone(), before.screen_bounds)
+        };
         if include_screenshot {
-            let minimized = if macos_accessibility_client::accessibility::application_is_trusted() {
-                self.semantic
-                    .window_minimized(
-                        before.key.clone(),
-                        before.pid,
-                        before.screen_bounds,
-                        before.title.clone(),
-                    )
-                    .await
-                    .ok()
-            } else {
-                None
-            };
-            if minimized == Some(true) || (minimized.is_none() && !before.visible) {
-                return Err(DriverError::new(DriverErrorKind::TargetUnavailable,
-                    "target is minimized or offscreen; restore the window or activate the application")
-                    .retryable("restore_window"));
-            }
+            self.require_capturable_window(&before).await?;
         }
         let capture = async {
             if include_screenshot {
                 self.capture
-                    .capture_scoped(capture_session, window.key.clone(), before.screen_bounds)
+                    .capture_scoped(capture_session, capture_key.clone(), capture_bounds)
                     .await
                     .map(Some)
             } else {
@@ -152,7 +143,12 @@ impl MacosDriver {
         };
         let (captured, semantics) = tokio::join!(capture, semantics);
         let captured = captured?;
-        let semantics = semantics?;
+        let semantics = semantics.map_err(|mut error| {
+            if !before.foreground && error.kind == DriverErrorKind::TargetUnavailable {
+                error.recovery_action = Some("focus_window".to_owned());
+            }
+            error
+        })?;
         let after = self.current_window(&window.key).await?;
         if before.screen_bounds != after.screen_bounds {
             return Err(DriverError::new(
@@ -162,12 +158,12 @@ impl MacosDriver {
             .retryable("observe_window"));
         }
         let fingerprint = fingerprint(
-            &after.key,
+            &capture_key,
             after.screen_bounds,
             captured.as_ref().map(|(image, _bounds)| image),
         );
         let (screenshot, screenshot_screen_bounds) = match captured {
-            Some((image, bounds)) if bounds == after.screen_bounds => (Some(image), Some(bounds)),
+            Some((image, bounds)) if bounds == capture_bounds => (Some(image), Some(bounds)),
             Some(_) => {
                 return Err(DriverError::new(
                     DriverErrorKind::StaleObservation,
@@ -189,8 +185,66 @@ impl MacosDriver {
             elements,
             elements_complete,
             elements_truncation,
-            fingerprint,
+            fingerprint: if application_scene && include_screenshot {
+                format!("scene|{capture_key}|{capture_bounds:?}|{fingerprint}")
+            } else {
+                fingerprint
+            },
         })
+    }
+
+    async fn require_capturable_window(&self, window: &NativeWindow) -> Result<(), DriverError> {
+        let minimized = if macos_accessibility_client::accessibility::application_is_trusted() {
+            self.semantic
+                .window_minimized(
+                    window.key.clone(),
+                    window.pid,
+                    window.screen_bounds,
+                    window.title.clone(),
+                )
+                .await
+                .ok()
+        } else {
+            None
+        };
+        if minimized == Some(true) || (minimized.is_none() && !window.visible) {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "target is minimized or offscreen; restore the window or activate the application",
+            )
+            .retryable("restore_window"));
+        }
+        Ok(())
+    }
+
+    async fn scene_target(
+        &self,
+        window: &NativeWindow,
+    ) -> Result<(String, nexus_cua_protocol::ScreenRect), DriverError> {
+        let x = window.screen_bounds.x + window.screen_bounds.width / 2.0;
+        let y = window.screen_bounds.y + window.screen_bounds.height / 2.0;
+        let display = self
+            .capture
+            .list_displays()
+            .await?
+            .into_iter()
+            .find(|display| {
+                let bounds = display.screen_bounds;
+                x >= bounds.x
+                    && y >= bounds.y
+                    && x < bounds.x + bounds.width
+                    && y < bounds.y + bounds.height
+            })
+            .ok_or_else(|| {
+                DriverError::new(
+                    DriverErrorKind::TargetUnavailable,
+                    "anchor window has no current display",
+                )
+            })?;
+        let id = display.key.strip_prefix("sc-display:").ok_or_else(|| {
+            DriverError::new(DriverErrorKind::Platform, "invalid native display identity")
+        })?;
+        Ok((format!("scene:{id}:{}", window.key), display.screen_bounds))
     }
 }
 
@@ -230,7 +284,11 @@ impl DesktopDriver for MacosDriver {
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
             platform: Platform::Macos,
             primary_modifier: "command".to_owned(),
-            capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
+            capture_modes: vec![
+                CaptureMode::Window,
+                CaptureMode::Display,
+                CaptureMode::ApplicationScene,
+            ],
             accessibility_tree: true,
             input_routes: vec![
                 InputRoute::Semantic,
@@ -285,7 +343,7 @@ impl DesktopDriver for MacosDriver {
     }
 
     async fn list_applications(&self) -> Result<Vec<DriverApplication>, DriverError> {
-        let windows = self.windows().await?;
+        let mut applications = self.capture.list_applications().await?;
         let permit = Arc::clone(&self.provenance_workers)
             .try_acquire_owned()
             .map_err(|_| {
@@ -304,13 +362,23 @@ impl DesktopDriver for MacosDriver {
                     "macOS provenance cache is unavailable",
                 )
             })?;
-            let mut applications = HashMap::new();
-            for window in windows {
-                applications
-                    .entry(window.application_key.clone())
-                    .or_insert_with(|| discovered_application(&window, &mut cache));
+            for application in &mut applications {
+                if let ApplicationProvenance::Macos {
+                    executable_path,
+                    signing_team_id,
+                    designated_requirement,
+                    ..
+                } = &mut application.provenance
+                {
+                    let signing = executable_path
+                        .as_deref()
+                        .map(|path| cache.inspect(&application.key, path))
+                        .unwrap_or_default();
+                    *signing_team_id = signing.team_id;
+                    *designated_requirement = signing.designated_requirement;
+                }
             }
-            Ok(applications.into_values().collect())
+            Ok(applications)
         })
         .await
         .map_err(|_| {
@@ -485,7 +553,7 @@ impl DesktopDriver for MacosDriver {
         include_screenshot: bool,
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
-        self.observe_window_owned(None, window, include_screenshot, accessibility)
+        self.observe_window_owned(None, window, include_screenshot, accessibility, false)
             .await
     }
 
@@ -501,6 +569,24 @@ impl DesktopDriver for MacosDriver {
             window,
             include_screenshot,
             accessibility,
+            false,
+        )
+        .await
+    }
+
+    async fn observe_application_scene_scoped(
+        &self,
+        session_id: &nexus_cua_protocol::SessionId,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        self.observe_window_owned(
+            Some(session_id.as_str().to_owned()),
+            window,
+            include_screenshot,
+            accessibility,
+            true,
         )
         .await
     }
@@ -533,6 +619,15 @@ impl DesktopDriver for MacosDriver {
         fingerprint_value: &str,
     ) -> Result<bool, DriverError> {
         let current = self.current_window(&window.key).await?;
+        if fingerprint_value.starts_with("scene|") {
+            let (key, bounds) = self.scene_target(&current).await?;
+            let (image, _) = self.capture.capture(key.clone(), bounds).await?;
+            let actual = format!(
+                "scene|{key}|{bounds:?}|{}",
+                fingerprint(&key, current.screen_bounds, Some(&image))
+            );
+            return Ok(fingerprints_match(fingerprint_value, &actual));
+        }
         if fingerprint_value.contains(":visual:") {
             let (image, captured_bounds) = self
                 .capture
@@ -560,6 +655,40 @@ impl DesktopDriver for MacosDriver {
         } else {
             Ok(fingerprint(&current.key, current.screen_bounds, None) == fingerprint_value)
         }
+    }
+
+    async fn perform_action_scoped(
+        &self,
+        window: &DriverWindow,
+        action: DriverAction,
+        allow_foreground: bool,
+        restore_foreground: bool,
+        guard: DriverActionGuard,
+    ) -> Result<DriverActionOutput, DriverError> {
+        guard.check()?;
+        let scoped = Self {
+            capture: self.capture.guarded(guard.clone()),
+            semantic: self.semantic.guarded(guard.clone()),
+            input: self.input.guarded(guard.clone()),
+            clipboard: self.clipboard.clone(),
+            provenance_workers: Arc::clone(&self.provenance_workers),
+            provenance_cache: Arc::clone(&self.provenance_cache),
+            action_guard: Some(guard),
+        };
+        scoped
+            .perform_action(window, action, allow_foreground, restore_foreground)
+            .await
+            .map_err(|error| {
+                if scoped
+                    .action_guard
+                    .as_ref()
+                    .is_some_and(DriverActionGuard::was_dispatched)
+                {
+                    error.mutation_indeterminate()
+                } else {
+                    error
+                }
+            })
     }
 
     async fn perform_action(
@@ -702,6 +831,61 @@ impl DesktopDriver for MacosDriver {
 }
 
 impl MacosDriver {
+    async fn focus_window(&self, current: &NativeWindow) -> Result<(), DriverError> {
+        if !macos_accessibility_client::accessibility::application_is_trusted() {
+            return Err(DriverError::new(
+                DriverErrorKind::PermissionRequired,
+                "window focus requires accessibility permission",
+            )
+            .mutation_not_dispatched());
+        }
+        main_thread::activate_application(
+            current.pid,
+            current.application_key.clone(),
+            self.action_guard.clone(),
+        )
+        .await?;
+        // Stage Manager reports transformed CG bounds while AX keeps the full
+        // window geometry. Activate only on this explicit authorized action,
+        // then wait for read-only identity convergence before raising once.
+        let restored = tokio::time::timeout(std::time::Duration::from_millis(1000), async {
+            for _ in 0..16 {
+                let window = self.current_window(&current.key).await?;
+                if self
+                    .semantic
+                    .window_minimized(
+                        window.key.clone(),
+                        window.pid,
+                        window.screen_bounds,
+                        window.title.clone(),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    return Ok(window);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(DriverError::new(
+                DriverErrorKind::TargetUnresponsive,
+                "window geometry did not converge after activation",
+            ))
+        })
+        .await
+        .map_err(|_| {
+            DriverError::new(
+                DriverErrorKind::TargetUnresponsive,
+                "window activation did not settle before its deadline",
+            )
+            .mutation_indeterminate()
+        })?
+        .map_err(DriverError::mutation_indeterminate)?;
+        self.semantic
+            .raise_window(restored.pid, restored.screen_bounds, restored.title)
+            .await
+            .map_err(DriverError::mutation_indeterminate)
+    }
+
     async fn dispatch_action(
         &self,
         current: &NativeWindow,
@@ -709,9 +893,7 @@ impl MacosDriver {
     ) -> Result<DriverActionOutput, DriverError> {
         let (delivery_mode, effect_status, evidence_kind) = match action {
             DriverAction::FocusWindow => {
-                self.semantic
-                    .raise_window(current.pid, current.screen_bounds, current.title.clone())
-                    .await?;
+                self.focus_window(current).await?;
                 (
                     DeliveryMode::Foreground,
                     ActionEffectStatus::Unverified,

@@ -33,6 +33,7 @@ class Platform(ClosedString):
 
 
 class CaptureMode(ClosedString):
+    APPLICATION_SCENE = "application_scene"
     WINDOW = "window"
     DISPLAY = "display"
 

@@ -111,6 +111,7 @@ define_class!(
                     latest.has_frame = false;
                     unsafe { self.ivars().frame.replace(None); }
                     latest.unavailable = true;
+                    latest.stopped = status == Some(5);
                     latest.callback_at = Some(Instant::now());
                 }
                 _ => {}
@@ -279,6 +280,10 @@ impl CaptureStream {
             .map_err(|_| unavailable("capture conversion exceeded its deadline"))?
             .map(Some)
     }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.slot.latest.lock().map_or(true, |state| state.stopped)
+    }
 }
 
 impl FrameSlot {
@@ -303,16 +308,19 @@ impl FrameSlot {
                 FRAME_WAIT
             };
         loop {
-            if latest.stopped || latest.unavailable {
+            if latest.stopped {
                 return Err(unavailable("capture stream target is unavailable"));
             }
             let refreshed = latest.callback_at.is_some_and(|time| time >= requested);
             let remaining = deadline.saturating_duration_since(Instant::now());
             if latest_only || refreshed || remaining.is_zero() {
-                if latest.has_frame {
+                if latest.has_frame && !latest.unavailable {
                     return Ok(true);
                 }
                 if remaining.is_zero() {
+                    if latest.unavailable {
+                        return Err(unavailable("capture target remained suspended or blank"));
+                    }
                     return Ok(false);
                 }
             }
@@ -386,5 +394,12 @@ mod tests {
         let slot = FrameSlot::default();
         assert!(!slot.wait_for_frame(false).unwrap());
         assert!(!slot.latest.lock().unwrap().stopped);
+    }
+
+    #[test]
+    fn suspended_target_never_reuses_cached_pixels_or_requests_a_fallback() {
+        let slot = static_slot();
+        slot.latest.lock().unwrap().unavailable = true;
+        assert!(slot.wait_for_frame(true).is_err());
     }
 }

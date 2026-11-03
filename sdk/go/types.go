@@ -32,8 +32,9 @@ const (
 type CaptureMode string
 
 const (
-	CaptureModeWindow  CaptureMode = "window"
-	CaptureModeDisplay CaptureMode = "display"
+	CaptureModeWindow           CaptureMode = "window"
+	CaptureModeApplicationScene CaptureMode = "application_scene"
+	CaptureModeDisplay          CaptureMode = "display"
 )
 
 type InputRoute string

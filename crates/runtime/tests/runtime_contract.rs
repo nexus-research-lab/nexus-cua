@@ -38,6 +38,7 @@ struct MockDriver {
     action_failure: Option<MutationStatus>,
     restore_foreground_requested: AtomicBool,
     action_gate: Option<Arc<ActionGate>>,
+    verification_gate: Option<Arc<ActionGate>>,
     forced_restoration: Option<ForegroundRestorationStatus>,
     clipboard: Mutex<(u64, String)>,
 }
@@ -63,6 +64,7 @@ impl MockDriver {
             action_failure: None,
             restore_foreground_requested: AtomicBool::new(false),
             action_gate: None,
+            verification_gate: None,
             forced_restoration: None,
             clipboard: Mutex::new((1, "fixture clipboard".to_owned())),
         }
@@ -82,6 +84,7 @@ impl MockDriver {
             action_failure: None,
             restore_foreground_requested: AtomicBool::new(false),
             action_gate: None,
+            verification_gate: None,
             forced_restoration: None,
             clipboard: Mutex::new((1, "fixture clipboard".to_owned())),
         }
@@ -202,7 +205,11 @@ impl DesktopDriver for MockDriver {
             runtime_version: "test".to_owned(),
             platform: Platform::Macos,
             primary_modifier: "command".to_owned(),
-            capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
+            capture_modes: vec![
+                CaptureMode::Window,
+                CaptureMode::Display,
+                CaptureMode::ApplicationScene,
+            ],
             accessibility_tree: true,
             input_routes: vec![
                 InputRoute::Semantic,
@@ -296,6 +303,25 @@ impl DesktopDriver for MockDriver {
         display: &DriverDisplay,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
         Ok((RgbaImage::new(2, 2, vec![255; 16]), display.screen_bounds))
+    }
+
+    async fn observe_application_scene_scoped(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        let mut observation = self
+            .observe_window(window, include_screenshot, accessibility)
+            .await?;
+        observation.screenshot_screen_bounds = include_screenshot.then_some(ScreenRect {
+            x: -100.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        });
+        Ok(observation)
     }
 
     async fn observe_window(
@@ -444,6 +470,10 @@ impl DesktopDriver for MockDriver {
         _window: &DriverWindow,
         fingerprint: &str,
     ) -> Result<bool, DriverError> {
+        if let Some(gate) = &self.verification_gate {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        }
         let revision = *self.revision.lock().await;
         Ok(fingerprint == format!("revision-{revision}"))
     }
@@ -2113,4 +2143,103 @@ async fn multi_application_window_listing_enumerates_once_with_full_authority_sc
     assert_eq!(driver.last_window_scope.lock().await.len(), 2);
     runtime.shutdown().await;
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn scene_observation_keeps_session_authority_and_rejects_background_delivery() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime");
+    let session_id = open_session(&runtime, PermissionMode::Bounded).await;
+    let (window_ref, _) = observed_fixture_window(&runtime, &session_id).await;
+    let input = ObserveWindowInput {
+        session_id: session_id.clone(),
+        window_ref: window_ref.clone(),
+        include_screenshot: true,
+        accessibility: AccessibilityMode::Disabled,
+    };
+    let CommandResult::WindowObserved(scene) = runtime
+        .execute(Command::ObserveApplicationScene(input.clone()))
+        .await
+        .expect("scene without desktop grant")
+    else {
+        panic!("scene result")
+    };
+    let screenshot = scene.screenshot.as_ref().expect("scene screenshot");
+    assert!(screenshot.mapping.screen_bounds.x < 0.0);
+    assert_ne!(screenshot.mapping.screen_bounds, scene.window_screen_bounds);
+    let error = runtime
+        .execute(Command::PerformAction(
+            nexus_cua_protocol::PerformActionInput {
+                session_id: session_id.clone(),
+                window_ref,
+                observation_id: scene.observation_id,
+                action: Action::ClickPoint {
+                    point: NormalizedPoint { x: 500.0, y: 500.0 },
+                    button: nexus_cua_protocol::PointerButton::Left,
+                    count: 1,
+                    delivery: DeliveryPreference::Background,
+                },
+            },
+        ))
+        .await
+        .expect_err("scene must not route menu coordinates to the anchor's background window");
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    let second = open_session(&runtime, PermissionMode::ReadOnly).await;
+    let calls = driver.observation_calls.load(Ordering::SeqCst);
+    let error = runtime
+        .execute(Command::ObserveApplicationScene(ObserveWindowInput {
+            session_id: second.clone(),
+            ..input.clone()
+        }))
+        .await
+        .expect_err("cross-session anchor");
+    assert_eq!(error.code, ErrorCode::ReferenceNotFound);
+    assert_eq!(driver.observation_calls.load(Ordering::SeqCst), calls);
+    runtime
+        .execute(Command::CloseSession(SessionInput { session_id }))
+        .await
+        .expect("close");
+    assert!(!PathBuf::from(&screenshot.path).exists());
+    let error = runtime
+        .execute(Command::ObserveApplicationScene(input))
+        .await
+        .expect_err("closed scene");
+    assert_eq!(error.code, ErrorCode::SessionUnavailable);
+    runtime
+        .execute(Command::CloseSession(SessionInput { session_id: second }))
+        .await
+        .expect("close second");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn close_during_native_preflight_prevents_the_later_dispatch() {
+    let root = artifact_root();
+    let gate = Arc::new(ActionGate::default());
+    let driver = Arc::new(MockDriver {
+        verification_gate: Some(Arc::clone(&gate)),
+        ..MockDriver::new()
+    });
+    let runtime =
+        Arc::new(Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime"));
+    let input = fixture_invoke_input(&runtime).await;
+    let session_id = input.session_id.clone();
+    let task_runtime = Arc::clone(&runtime);
+    let task =
+        tokio::spawn(async move { task_runtime.execute(Command::PerformAction(input)).await });
+    gate.entered.notified().await;
+    runtime
+        .execute(Command::CloseSession(SessionInput { session_id }))
+        .await
+        .expect("close while preflight is pending");
+    gate.release.notify_one();
+    let error = task
+        .await
+        .expect("join")
+        .expect_err("closed authority must not dispatch");
+    assert_eq!(error.code, ErrorCode::SessionUnavailable);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    assert_eq!(*driver.revision.lock().await, 1);
+    let _ = std::fs::remove_dir_all(root);
 }

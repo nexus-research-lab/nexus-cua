@@ -569,6 +569,7 @@ fn operation_name(command: &Command) -> &'static str {
         Command::ListWindows(_) => "list_windows",
         Command::ListDisplays(_) => "list_displays",
         Command::ObserveWindow(_) => "observe_window",
+        Command::ObserveApplicationScene(_) => "observe_application_scene",
         Command::ObserveDisplay(_) => "observe_display",
         Command::ReadClipboard(_) => "read_clipboard",
         Command::WriteClipboard(_) => "write_clipboard",

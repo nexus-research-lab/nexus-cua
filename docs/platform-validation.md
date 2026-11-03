@@ -534,3 +534,49 @@ still open. Workspace Clippy and builds passed on GNU Rust 1.88; local full
 `make check` passed. The harness now retries transient observation failures at
 most three times, fails immediately on driver errors and reports phase/request
 metadata; mismatch errors no longer dump fixture accessibility state.
+
+## macOS application discovery and scenes (2026-11-03, in progress)
+
+The current local worktree adds system application discovery independent of
+windows and capability-negotiated application-scene capture. Live diagnostics
+confirmed a newly started windowless fixture can be discovered and admitted
+into a read-only session after an earlier discovery snapshot; its window list
+is empty, and exit removes its old generation. Workspace notifications are
+processed on the bounded main-thread discovery path without idle polling.
+
+A live application-scene screenshot displayed the fixture's native popup menu
+while excluding other applications and the desktop. A scene-coordinate click
+on `Menu Beta` incremented the fixture counter from zero to one. Screenshots
+were removed by session close. This is a local diagnostic, not Nexus task 3/3
+acceptance, cross-process helper coverage, or a release-runner performance claim.
+Runtime tests cover cross-session anchor rejection, scene background-click
+rejection, closed-session rejection and screenshot cleanup. All SDK fixture
+checks include the new observation operation.
+
+The user confirmed the visible fixture moves into Stage Manager's left strip.
+Read-only native diagnostics found `AXMinimized=false`, AX size 960×748, and
+CG/ScreenCaptureKit size 104×134 for the transformed thumbnail. This explains
+why the old test's requirement for standard minimization did not describe the
+observed behavior; it does not prove standard minimization acceptance.
+
+Stage Manager recovery now explicitly activates the authorized app before
+waiting for AX/CG geometry to converge and raising once. Cached AX state must
+revalidate geometry before reporting a non-minimized window as normal. An early
+live cycle exposed transient blank/suspended capture frames after restoration;
+the bounded recovery now passes three consecutive local cycles with
+`scripts/validate_macos_stage_manager.py`. No desktop preference has been changed.
+
+## macOS session revocation during dispatch (2026-11-03)
+
+Runtime-issued session guards now cross the native actor queues and check close
+and expiry immediately before mutation. A deterministic runtime test pauses
+native preflight, closes the session, and verifies no later dispatch. Guard tests
+distinguish rejection before dispatch from cancellation after partial effects.
+
+`scripts/validate_macos_cancellation.py` observed a real button-down during a
+three-second fixture press, closed the session through a separate client, and
+observed release after 23.5 ms on this machine. The SDK reported session
+unavailable with indeterminate mutation status. This single local measurement
+is not a latency guarantee. The script releases its session and retains no
+screenshots. User takeover detection, presence and host emergency-stop UI remain
+unimplemented; session close does not undo already delivered input.

@@ -46,7 +46,7 @@ func (transport *fixtureTransport) RoundTrip(_ context.Context, payload []byte, 
 func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 	requests := loadRawArray(t, "requests.json")
 	results := loadRawArray(t, "results.json")
-	if len(requests) != 17 || len(results) != 17 {
+	if len(requests) != 18 || len(results) != 18 {
 		t.Fatalf("unexpected fixture inventory: requests=%d results=%d", len(requests), len(results))
 	}
 	resultByOperation := make(map[string]json.RawMessage)
@@ -151,6 +151,13 @@ func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := client.ReconcileMutation(ctx, "fixture-action", 0, timeout); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.ObserveApplicationScene(ctx, ObserveWindowInput{
+		SessionID: "session_fixture", WindowRef: "window_fixture", IncludeScreenshot: true,
+		Accessibility: AccessibilityInteractive,
+	}, timeout); err != nil {
 		t.Fatal(err)
 	}
 

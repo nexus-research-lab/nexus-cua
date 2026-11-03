@@ -3,7 +3,7 @@ export const DEFAULT_MAX_FRAME_BYTES: number;
 export const DEFAULT_RECONCILIATION_HORIZON_MS: number;
 
 export type Platform = "macos" | "windows" | "unsupported";
-export type CaptureMode = "window" | "display";
+export type CaptureMode = "window" | "display" | "application_scene";
 export type InputRoute = "semantic" | "system" | "background" | "foreground";
 export type ClipboardOperation = "read_text" | "write_text";
 export type PermissionState = "granted" | "denied" | "not_determined" | "not_applicable" | "unknown";
@@ -297,6 +297,7 @@ export class Client {
   listDisplays(sessionId: string, timeoutMs?: number): Promise<DisplaySummary[]>;
   observeDisplay(input: ObserveDisplayInput, timeoutMs?: number): Promise<DisplayObservation>;
   observeWindow(input: ObserveWindowInput, timeoutMs?: number): Promise<WindowObservation>;
+  observeApplicationScene(input: ObserveWindowInput, timeoutMs?: number): Promise<WindowObservation>;
   readClipboard(sessionId: string, timeoutMs?: number): Promise<ClipboardSnapshot>;
   writeClipboard(input: ClipboardWriteInput, timeoutMs?: number): Promise<{ output: ClipboardWriteOutput; request: ClipboardRequest }>;
   reconcileClipboard(request: ClipboardRequest, timeoutMs: number): Promise<ClipboardWriteOutput>;

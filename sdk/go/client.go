@@ -224,6 +224,14 @@ func (client *Client) ObserveWindow(ctx context.Context, input ObserveWindowInpu
 	return requestResult[WindowObservation](client, ctx, timeout, commandEnvelope{Operation: "observe_window", Input: input}, "window_observed")
 }
 
+// ObserveApplicationScene captures only the authorized application on the anchor display.
+func (client *Client) ObserveApplicationScene(ctx context.Context, input ObserveWindowInput, timeout time.Duration) (WindowObservation, error) {
+	if !contains(accessibilityModes, string(input.Accessibility)) {
+		return WindowObservation{}, fmt.Errorf("nexus-cua: invalid accessibility mode %q", input.Accessibility)
+	}
+	return requestResult[WindowObservation](client, ctx, timeout, commandEnvelope{Operation: "observe_application_scene", Input: input}, "window_observed")
+}
+
 func (client *Client) ReadClipboard(ctx context.Context, sessionID SessionID, timeout time.Duration) (ClipboardSnapshot, error) {
 	return requestResult[ClipboardSnapshot](client, ctx, timeout, commandEnvelope{
 		Operation: "read_clipboard",

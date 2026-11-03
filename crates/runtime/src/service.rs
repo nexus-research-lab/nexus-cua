@@ -346,7 +346,8 @@ impl Runtime {
             Command::ListApps(input) => self.list_apps(input).await,
             Command::ListWindows(input) => self.list_windows(input).await,
             Command::ListDisplays(input) => self.list_displays(input).await,
-            Command::ObserveWindow(input) => self.observe_window(input).await,
+            Command::ObserveWindow(input) => self.observe_window(input, false).await,
+            Command::ObserveApplicationScene(input) => self.observe_window(input, true).await,
             Command::ObserveDisplay(input) => self.observe_display(input).await,
             Command::ReadClipboard(input) => self.read_clipboard(input).await,
             Command::WriteClipboard(input) => self.write_clipboard(input).await.map_err(|error| {
@@ -762,7 +763,7 @@ impl Runtime {
         })?;
         let session = Arc::new(Session {
             driver: Arc::clone(&self.driver),
-            closed: AtomicBool::new(true),
+            closed: Arc::new(AtomicBool::new(true)),
             id: session_id.clone(),
             manifest: input.manifest,
             allowed_applications,
@@ -1080,6 +1081,7 @@ impl Runtime {
     async fn observe_window(
         &self,
         input: nexus_cua_protocol::ObserveWindowInput,
+        application_scene: bool,
     ) -> Result<CommandResult, CuaError> {
         let session = self.session(&input.session_id).await?;
         let window = {
@@ -1099,6 +1101,7 @@ impl Runtime {
                 &window,
                 input.include_screenshot,
                 input.accessibility,
+                application_scene,
             )
             .await?;
         if session.closed.load(Ordering::Acquire) || session.expires_at <= Instant::now() {
@@ -1146,12 +1149,13 @@ impl Runtime {
         let mut state = session.state.lock().await;
         state.invalidate_window_observations(&input.window_ref);
         state.trim_observations(self.config.max_observations_per_session);
-        let (record, elements) = project_observation(
+        let (mut record, elements) = project_observation(
             &observation,
             &input.window_ref,
             screenshot.as_ref().map(|artifact| artifact.mapping),
             self.config.max_elements_per_observation,
         );
+        record.application_scene = application_scene;
         let observation_id = record.id.clone();
         let elements_complete = observation.elements_complete
             && observation.elements.len() <= self.config.max_elements_per_observation;
@@ -1184,20 +1188,27 @@ impl Runtime {
         window: &DriverWindow,
         include_screenshot: bool,
         accessibility: nexus_cua_protocol::AccessibilityMode,
+        application_scene: bool,
     ) -> Result<DriverObservation, CuaError> {
-        let first = self
-            .driver
-            .observe_window_scoped(session_id, window, include_screenshot, accessibility)
-            .await;
-        if matches!(
-            &first,
-            Err(error) if error.kind == DriverErrorKind::StaleObservation
-        ) {
-            return self
-                .driver
-                .observe_window_scoped(session_id, window, include_screenshot, accessibility)
-                .await
-                .map_err(Into::into);
+        let observe = || async {
+            if application_scene {
+                self.driver
+                    .observe_application_scene_scoped(
+                        session_id,
+                        window,
+                        include_screenshot,
+                        accessibility,
+                    )
+                    .await
+            } else {
+                self.driver
+                    .observe_window_scoped(session_id, window, include_screenshot, accessibility)
+                    .await
+            }
+        };
+        let first = observe().await;
+        if matches!(&first, Err(error) if error.kind == DriverErrorKind::StaleObservation) {
+            return observe().await.map_err(Into::into);
         }
         first.map_err(Into::into)
     }
@@ -1316,11 +1327,12 @@ impl Runtime {
             driver_action.supports_foreground_restoration();
         let result = self
             .driver
-            .perform_action(
+            .perform_action_scoped(
                 &window,
                 driver_action,
                 session.manifest.allow_foreground_input,
                 session.manifest.restore_foreground_after_input,
+                session.action_guard(),
             )
             .await;
         self.invalidate_after_action_attempt(

@@ -581,6 +581,9 @@ struct ObserveWindowArgs {
     include_screenshot: Option<bool>,
     /// Semantic detail: disabled, interactive, or full. Defaults to interactive.
     accessibility: Option<AccessibilityMode>,
+    /// On capable platforms, include this application's menus and popups on
+    /// the anchor display. Other applications are excluded. Defaults to false.
+    application_scene: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -612,7 +615,7 @@ struct PerformActionArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct TerminateApplicationArgs {
+struct GuardedWindowArgs {
     /// Stable host-generated mutation identity; preserve it for reconciliation.
     #[schemars(length(min = 1, max = 128))]
     request_id: String,
@@ -1273,7 +1276,7 @@ impl NexusCuaMcp {
 
     #[tool(
         name = "observe_window",
-        description = "Observe one exact window. Returns structured accessibility state and, by default, a verified PNG image block. Every call supersedes older observations for that window.",
+        description = "Observe one exact window, or set application_scene=true on a capable platform to include that application's menus and popups on its anchor display. Other applications are excluded. Accessibility describes the anchor window; visual coordinates always refer to the returned screenshot mapping. Every call supersedes older observations for the anchor.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -1289,12 +1292,17 @@ impl NexusCuaMcp {
             Ok(session_id) => session_id,
             Err(error) => return Ok(error),
         };
-        let command = Command::ObserveWindow(ObserveWindowInput {
+        let input = ObserveWindowInput {
             session_id,
             window_ref: WindowRef::new(args.window_ref),
             include_screenshot: args.include_screenshot.unwrap_or(true),
             accessibility: args.accessibility.unwrap_or(AccessibilityMode::Interactive),
-        });
+        };
+        let command = if args.application_scene.unwrap_or(false) {
+            Command::ObserveApplicationScene(input)
+        } else {
+            Command::ObserveWindow(input)
+        };
         let observation = match self.execute(command).await {
             Ok(CommandResult::WindowObserved(observation)) => observation,
             Ok(_) => return Err(unexpected_result()),
@@ -1302,7 +1310,7 @@ impl NexusCuaMcp {
         };
         let structured_content = public_observation_value(observation.as_ref())?;
         let mut summary = format!(
-            "Observed window {} at {}; {} accessibility element(s).",
+            "Observed anchor window {} at {}; {} accessibility element(s). Use the screenshot mapping for visual coordinates.",
             observation.window_ref,
             observation.captured_at,
             observation.elements.len()
@@ -1464,6 +1472,29 @@ impl NexusCuaMcp {
     }
 
     #[tool(
+        name = "focus_window",
+        description = "Explicitly activate and focus the authorized anchor window. Requires foreground authority. For an inactive or Stage Manager window, obtain a guard with observe_window(include_screenshot=false, accessibility=disabled), then focus and re-observe. Observation never activates implicitly.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn focus_window(
+        &self,
+        Parameters(args): Parameters<GuardedWindowArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch_action(
+            RequestId::new(args.request_id),
+            WindowRef::new(args.window_ref),
+            ObservationId::new(args.observation_id),
+            Action::FocusWindow,
+        )
+        .await
+    }
+
+    #[tool(
         name = "terminate_application",
         description = "Cooperatively exit the exact application generation that owns an observed window. Requires explicit terminate_application authority and invalidates that application's observations in every session.",
         annotations(
@@ -1475,7 +1506,7 @@ impl NexusCuaMcp {
     )]
     async fn terminate_application(
         &self,
-        Parameters(args): Parameters<TerminateApplicationArgs>,
+        Parameters(args): Parameters<GuardedWindowArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.dispatch_action(
             RequestId::new(args.request_id),

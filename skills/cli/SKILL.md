@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=a695d1f8fa9da4fa0fa25a94b19cb2cf1480934ed5fd327e1db229353115e97e -->
+<!-- generated: product=0.1.0 catalogue_sha256=5ed17338f9921bebdf9b92e59272f362f9c54191e34f175b0f82020bafa6ac4f -->
 
 ## Operating contract
 
@@ -63,7 +63,7 @@ the process owning WindowFromPoint, permitting same-process popups. Pointer
 actions do not first raise the target and erase evidence of foreign occlusion.
 Move-only and explicit background clicks are exempt from this foreground check.
 Scroll first moves the cursor to its target. Unowned points fail not_dispatched
-with observe_window guidance. This does not implement application-scene capture.
+with observe_window guidance. When capabilities advertise `application_scene`, pass `application_scene=true` to MCP `observe_window` (CLI: `window observe --application-scene`) to see the authorized application's menus and popups on the anchor display. Other applications are excluded. Accessibility still describes the anchor window; use the returned screenshot mapping for visual coordinates and foreground delivery for scene clicks. Helpers owned by another process are not included.
 
 C4: `serve` and `mcp serve` accept `--max-image-edge` (default 1568, range 1..4096).
 RuntimeConfig exposes the same model-image budget. macOS window streams and
@@ -85,6 +85,14 @@ configuration; action values share the runtime validator's constants. Text
 limits count UTF-8 bytes. Hosts should derive UI/schema bounds from this object
 and cap session authority by their own remaining round duration. Capabilities
 do not grant authority; the runtime still validates every request.
+
+Inactive/Stage Manager window recovery: a visible thumbnail is not proof of
+normal window geometry, and `unknown` must not be treated as minimized. If
+accessibility cannot resolve the inactive window, obtain a geometry-only guard
+with `observe_window(include_screenshot=false, accessibility=disabled)`, then
+explicitly `focus_window` with foreground authority and re-observe. Never
+activate as a side effect of a read. Do not retry an indeterminate activation;
+reconcile the request and inspect current state first.
 
 ## CLI binding
 
@@ -109,7 +117,7 @@ Read operations:
 
 Cold launch and cooperative termination use `nexuscua app launch` and
 `nexuscua app terminate`; pass only stable identities or opaque refs returned by
-this binding. Every other mutation uses one of: `nexuscua action write_clipboard`, `nexuscua action click_normalized`, `nexuscua action click_view_normalized`, `nexuscua action type_text`, `nexuscua action press_keys`, `nexuscua action scroll`, `nexuscua action drag_normalized`, `nexuscua action invoke_element`, `nexuscua action set_element_value`, `nexuscua action set_range_value`, `nexuscua action perform_action`.
+this binding. Every other mutation uses one of: `nexuscua action write_clipboard`, `nexuscua action click_normalized`, `nexuscua action click_view_normalized`, `nexuscua action type_text`, `nexuscua action press_keys`, `nexuscua action scroll`, `nexuscua action drag_normalized`, `nexuscua action invoke_element`, `nexuscua action set_element_value`, `nexuscua action set_range_value`, `nexuscua action focus_window`, `nexuscua action perform_action`.
 
 Mutation and verify argument objects are bounded JSON delivered directly on stdin.
 Do not write argument files or echo sensitive clipboard/text values through an
