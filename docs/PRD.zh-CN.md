@@ -2357,3 +2357,11 @@ presence/紧急停止/用户接管与系统指示验收（D4）、`observe_after
 
 这些文档只负责各自技术细节，不能再引入另一套产品命名、安装 profile、Skill
 策略、路线图或发布逻辑。
+
+#### 台前调度恢复补充（rc.4）
+
+AX 窗口匹配在 restore/resize/raise 的首个原生写入之前失败时，必须返回
+`not_dispatched`；不能让宿主永久等待一个未执行动作的对账。匹配不到当前窗口时
+建议对同一窗口重新做纯元数据观察并明确 `focus_window`。激活应用之后再失败仍是
+`indeterminate`，不能降级为未派发。`validate_macos_stage_manager.py` 覆盖缩略状态
+下 restore 被拒后，沿用相同授权聚焦并重新截图；此诊断不替代完整发布验收。

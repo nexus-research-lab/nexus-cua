@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "clap",
@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-host"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "base64",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-mcp"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-platform"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "accessibility-sys",
  "async-trait",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-protocol"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "schemars",
  "serde",
@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-provider"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "core-foundation",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-remote-harness"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "base64",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-runtime"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "fs2",
@@ -1134,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-transport"
-version = "0.2.0-rc.3"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "nexus-cua-protocol",

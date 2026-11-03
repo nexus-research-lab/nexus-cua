@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.2.0-rc.3 catalogue_sha256=19d319ae636c1847aa612478c3d5a4c719073d9c0b217c939c7262af0d26f552 -->
+<!-- generated: product=0.2.0-rc.4 catalogue_sha256=f5b8fe494c08445a507eca9a04b27cff099dddbb9a21b48c32787e0385e3eb7a -->
 
 ## Operating contract
 

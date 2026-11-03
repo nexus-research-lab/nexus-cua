@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the configured nexuscua MCP server when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.2.0-rc.3 catalogue_sha256=bb5cafacde591ee2353199fc1b194b72c945ad4fd42d3c5ba9f7ac75b8de2aed -->
+<!-- generated: product=0.2.0-rc.4 catalogue_sha256=4b74b1c734766a4acc4bda32de18cbd4fea9b4d1dfb031df06f167fe647ce8f1 -->
 
 ## Operating contract
 

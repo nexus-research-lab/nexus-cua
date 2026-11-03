@@ -1,6 +1,6 @@
 # Nexus Computer Use Protocol v1
 
-Status: normative for the `0.2.0-rc.3` testing prerelease.
+Status: normative for the `0.2.0-rc.4` testing prerelease.
 
 The protocol identifier is `nexus.cua.v1`. Messages use closed, tagged JSON
 objects. Unknown fields are rejected by decoders at every trust boundary. The
@@ -380,3 +380,13 @@ permission. A foreground-enabled session fails admission with
 takeover detection cannot be authorized. No permission prompt is raised by a
 read operation. Monitoring failure stops affected session actions with a
 non-retryable `driver_failure`; it is not reported as observed user input.
+
+### macOS background window recovery
+
+Stage Manager thumbnail geometry is not proof of minimization. When capture or
+AX lookup returns `focus_window` recovery, observe the exact window with
+`include_screenshot=false` and `accessibility=disabled`, perform one explicitly
+authorized focus, then observe normally. Failed AX window lookup before any
+native window mutation is `not_dispatched`; focus activation followed by a failed
+raise remains indeterminate. Failed action attempts consume the observation,
+so recovery requires a fresh observation within the same valid grant.

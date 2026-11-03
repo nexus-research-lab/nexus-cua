@@ -10,8 +10,9 @@ import argparse
 import time
 
 from nexus_cua import (
-    AccessibilityMode, ActionKind, CapabilityManifest, Client, Config,
-    FocusWindow, InvokeElement, PermissionMode, select_application, select_window,
+    AccessibilityMode, ActionKind, CapabilityManifest, Client, Config, CUAError,
+    ErrorCode, FocusWindow, InvokeElement, MutationStatus, PermissionMode,
+    SetWindowMinimized, select_application, select_window,
 )
 
 
@@ -25,11 +26,15 @@ def main() -> None:
                              "dev.nexus.cua.native-fixture")
     session = client.open_session(CapabilityManifest(
         mode=PermissionMode.BOUNDED, application_refs=(app.discovery_ref,),
-        allowed_actions=(ActionKind.FOCUS_WINDOW, ActionKind.INVOKE_ELEMENT),
+        allowed_actions=(ActionKind.FOCUS_WINDOW, ActionKind.INVOKE_ELEMENT,
+                         ActionKind.SET_WINDOW_MINIMIZED),
         allow_foreground_input=True, ttl_seconds=120,
     ))
     try:
         window = select_window(client.list_windows(session.session_id), "Generation")
+        initial = client.observe_window(session.session_id, window.window_ref,
+                                        include_screenshot=False, accessibility=AccessibilityMode.DISABLED)
+        client.perform_action(session.session_id, window.window_ref, initial.observation_id, FocusWindow())
         for attempt in range(3):
             full = client.observe_window(session.session_id, window.window_ref,
                                          include_screenshot=False, accessibility=AccessibilityMode.FULL)
@@ -53,6 +58,19 @@ def main() -> None:
                 raise RuntimeError("Stage Manager thumbnail transition not observed; this is not the standard minimized-window test")
             guard = client.observe_window(session.session_id, window.window_ref,
                                           include_screenshot=False, accessibility=AccessibilityMode.DISABLED)
+            try:
+                client.perform_action(session.session_id, window.window_ref, guard.observation_id,
+                                      SetWindowMinimized(False))
+            except CUAError as error:
+                if (error.code is not ErrorCode.TARGET_UNAVAILABLE
+                        or error.mutation_status is not MutationStatus.NOT_DISPATCHED
+                        or error.recovery_action != "focus_window"):
+                    raise RuntimeError(f"preflight returned {error.code.value}/{error.mutation_status.value}") from None
+            else:
+                raise RuntimeError("transformed AX target unexpectedly accepted restore")
+            # Failed admission consumes the old observation, but not the grant.
+            guard = client.observe_window(session.session_id, window.window_ref,
+                                          include_screenshot=False, accessibility=AccessibilityMode.DISABLED)
             client.perform_action(session.session_id, window.window_ref, guard.observation_id, FocusWindow())
             restored = client.observe_window(session.session_id, window.window_ref,
                                              include_screenshot=True, accessibility=AccessibilityMode.FULL)
@@ -60,7 +78,7 @@ def main() -> None:
                 raise RuntimeError("restored window has no fixture controls")
             if restored.window_screen_bounds.width < full.window_screen_bounds.width / 2:
                 raise RuntimeError("restored observation still uses thumbnail geometry")
-            print(f"stage_manager_recovery attempt={attempt + 1} passed", flush=True)
+            print(f"stage_manager_recovery attempt={attempt + 1} passed restore_not_dispatched=true same_session=true", flush=True)
     finally:
         client.close_session(session.session_id)
 

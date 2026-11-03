@@ -816,7 +816,7 @@ fn matching_window_unavailable() -> DriverError {
         DriverErrorKind::TargetUnavailable,
         "matching accessibility window is unavailable",
     )
-    .retryable("observe_window")
+    .retryable("focus_window")
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -1288,10 +1288,13 @@ fn raise_window(
     bounds: ScreenRect,
     title: &str,
 ) -> Result<(), DriverError> {
-    ensure_accessibility_permission()?;
+    ensure_accessibility_permission().map_err(DriverError::mutation_not_dispatched)?;
     let application = AxElement::application(pid);
-    application.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)?;
-    let window = find_window(pid, window_number, bounds, title)?;
+    application
+        .set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)
+        .map_err(DriverError::mutation_not_dispatched)?;
+    let window = find_window(pid, window_number, bounds, title)
+        .map_err(DriverError::mutation_not_dispatched)?;
     if copy_attribute(&application, kAXFrontmostAttribute)
         .ok()
         .as_ref()
@@ -1332,8 +1335,9 @@ fn set_window_bounds(
     title: &str,
     requested_bounds: ScreenRect,
 ) -> Result<(), DriverError> {
-    ensure_accessibility_permission()?;
-    let window = find_window(pid, window_number, current_bounds, title)?;
+    ensure_accessibility_permission().map_err(DriverError::mutation_not_dispatched)?;
+    let window = find_window(pid, window_number, current_bounds, title)
+        .map_err(DriverError::mutation_not_dispatched)?;
     set_ax_point(
         &window,
         kAXPositionAttribute,
@@ -1354,8 +1358,11 @@ fn set_window_minimized(
     title: &str,
     minimized: bool,
 ) -> Result<(), DriverError> {
-    ensure_accessibility_permission()?;
-    let window = find_window(pid, window_number, current_bounds, title)?;
+    // These reads precede the first AX setter. A missing/transformed target
+    // cannot leave a mutation pending; failures after the setter stay unknown.
+    ensure_accessibility_permission().map_err(DriverError::mutation_not_dispatched)?;
+    let window = find_window(pid, window_number, current_bounds, title)
+        .map_err(DriverError::mutation_not_dispatched)?;
     set_boolean(&window, kAXMinimizedAttribute, minimized)?;
     confirm_window_minimized(&window, minimized)
 }

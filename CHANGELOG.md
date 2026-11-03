@@ -5,6 +5,17 @@ file.
 
 ## [Unreleased]
 
+## [0.2.0-rc.4] - 2026-11-03
+
+macOS Apple Silicon testing prerelease; no change to the wire contract.
+
+### Fixed
+
+- Report failed AX window lookup before focus, resize, or restore as
+  `not_dispatched`, so a Stage Manager thumbnail cannot create a false pending
+  mutation. Missing AX window matches direct the caller to bounded focus
+  recovery. Failures after any native dispatch remain indeterminate.
+
 ## [0.2.0-rc.3] - 2026-11-03
 
 macOS Apple Silicon testing prerelease; no change to the wire contract.
