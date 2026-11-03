@@ -258,6 +258,7 @@ type ActionLimits struct {
 }
 
 type DriverCapabilities struct {
+	ObserveAfter         bool                            `json:"observe_after"`
 	ActionLimits         ActionLimits                    `json:"action_limits"`
 	PrimaryModifier      string                          `json:"primary_modifier"`
 	ProtocolVersion      string                          `json:"protocol_version"`
@@ -505,6 +506,8 @@ type ClipboardWriteOutput struct {
 }
 
 type ActionOutput struct {
+	Observation            *WindowObservation          `json:"observation,omitempty"`
+	ObservationError       *CUAError                   `json:"observation_error,omitempty"`
 	DeliveryMode           DeliveryMode                `json:"delivery_mode"`
 	Dispatched             bool                        `json:"dispatched"`
 	EffectStatus           ActionEffectStatus          `json:"effect_status"`
@@ -699,7 +702,14 @@ type BoundsContained struct {
 
 func (BoundsContained) closedPredicate() {}
 
+type ObserveAfterOptions struct {
+	IncludeScreenshot bool              `json:"include_screenshot"`
+	Accessibility     AccessibilityMode `json:"accessibility"`
+	ApplicationScene  bool              `json:"application_scene"`
+}
+
 type PerformActionInput struct {
+	ObserveAfter  *ObserveAfterOptions
 	SessionID     SessionID
 	WindowRef     WindowRef
 	ObservationID ObservationID

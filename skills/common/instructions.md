@@ -22,6 +22,13 @@ more precise interface.
    reconciliation with the same ID; never submit the intent under a new ID.
 5. After a successful or indeterminate mutation, obtain a fresh observation or
    deterministic verification before deciding what happened or mutating again.
+   If capabilities advertise `observe_after`, generic `perform_action` may
+   request `{include_screenshot: true, accessibility: "interactive",
+   application_scene: false}` in that field. Use its fresh `observation` as the
+   next guard. The old guard remains consumed. `observation_error` affects only
+   the follow-up read: preserve the action result and do not replay the action.
+   Bounded visual settling does not prove business completion. Flat tools keep
+   their existing separate observe flow.
 6. Use only cleanup exposed by the selected binding. Cooperatively terminate an
    application only when the task explicitly requires it; the host owns adapter
    session shutdown. Leave unrelated applications and user state alone.

@@ -644,6 +644,8 @@ fn fixture_observation() -> CommandResult {
 
 fn fixture_action_output() -> CommandResult {
     CommandResult::ActionPerformed(ActionOutput {
+        observation: None,
+        observation_error: None,
         delivery_mode: DeliveryMode::System,
         dispatched: true,
         effect_status: ActionEffectStatus::Confirmed,
@@ -1236,6 +1238,7 @@ async fn run_controller(
         &bootstrap,
         mutation_id,
         Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: SessionId::new("session_remote_fixture"),
             window_ref: WindowRef::new("window_remote_fixture"),
             observation_id: ObservationId::new("observation_remote_fixture"),
@@ -1336,6 +1339,7 @@ mod tests {
             mutation_id.clone(),
             2_000,
             Command::PerformAction(PerformActionInput {
+                observe_after: None,
                 session_id: SessionId::new("session_remote_fixture"),
                 window_ref: WindowRef::new("window_remote_fixture"),
                 observation_id: ObservationId::new("observation_remote_fixture"),

@@ -295,6 +295,7 @@ impl DesktopDriver for MacosDriver {
 
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            observe_after: false,
             action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -639,7 +640,7 @@ impl DesktopDriver for MacosDriver {
         let current = self.current_window(&window.key).await?;
         if fingerprint_value.starts_with("scene|") {
             let (key, bounds) = self.scene_target(&current).await?;
-            let (image, _) = self.capture.capture(key.clone(), bounds).await?;
+            let (image, _) = self.capture.capture_signature(key.clone(), bounds).await?;
             let actual = format!(
                 "scene|{key}|{bounds:?}|{}",
                 fingerprint(&key, current.screen_bounds, Some(&image))
@@ -649,7 +650,7 @@ impl DesktopDriver for MacosDriver {
         if fingerprint_value.contains(":visual:") {
             let (image, captured_bounds) = self
                 .capture
-                .capture(window.key.clone(), current.screen_bounds)
+                .capture_signature(window.key.clone(), current.screen_bounds)
                 .await?;
             if captured_bounds != current.screen_bounds {
                 return Ok(false);
@@ -673,6 +674,35 @@ impl DesktopDriver for MacosDriver {
         } else {
             Ok(fingerprint(&current.key, current.screen_bounds, None) == fingerprint_value)
         }
+    }
+
+    async fn settle_window(
+        &self,
+        window: &DriverWindow,
+        application_scene: bool,
+    ) -> Result<(), DriverError> {
+        let current = self.current_window(&window.key).await?;
+        let (key, bounds) = if application_scene {
+            self.scene_target(&current).await?
+        } else {
+            (window.key.clone(), current.screen_bounds)
+        };
+        let mut previous = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            let (image, _) = self.capture.capture_signature(key.clone(), bounds).await?;
+            let signature = fingerprint(&key, bounds, Some(&image));
+            if previous
+                .as_ref()
+                .is_some_and(|value: &String| fingerprints_match(value, &signature))
+            {
+                break;
+            }
+            previous = Some(signature);
+        }
+        Ok(())
     }
 
     async fn perform_action_scoped(

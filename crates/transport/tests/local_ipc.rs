@@ -25,6 +25,7 @@ struct CapabilityDriver;
 impl DesktopDriver for CapabilityDriver {
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            observe_after: false,
             action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: "test".to_owned(),

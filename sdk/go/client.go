@@ -445,11 +445,12 @@ func (client *Client) PerformAction(ctx context.Context, input PerformActionInpu
 		return ActionOutput{}, nil, err
 	}
 	wireInput := struct {
-		SessionID     SessionID      `json:"session_id"`
-		WindowRef     WindowRef      `json:"window_ref"`
-		ObservationID ObservationID  `json:"observation_id"`
-		Action        map[string]any `json:"action"`
-	}{input.SessionID, input.WindowRef, input.ObservationID, action}
+		ObserveAfter  *ObserveAfterOptions `json:"observe_after,omitempty"`
+		SessionID     SessionID            `json:"session_id"`
+		WindowRef     WindowRef            `json:"window_ref"`
+		ObservationID ObservationID        `json:"observation_id"`
+		Action        map[string]any       `json:"action"`
+	}{input.ObserveAfter, input.SessionID, input.WindowRef, input.ObservationID, action}
 	request := &ActionRequest{
 		requestID: requestID,
 		command:   commandEnvelope{Operation: "perform_action", Input: wireInput},

@@ -31,7 +31,7 @@ class ScriptedTransport:
         if self.fail_once:
             self.fail_once = False
             raise TimeoutError("fixture timeout")
-        result = self.results[request["command"]["operation"]]
+        result = self.results[request["request_id"] if request["request_id"] in self.results else request["command"]["operation"]]
         return json.dumps(
             {
                 "protocol_version": nexus_cua.PROTOCOL_VERSION,
@@ -60,7 +60,7 @@ class ClientTests(unittest.TestCase):
         requests = json.loads((FIXTURES / "requests.json").read_text())
         results = json.loads((FIXTURES / "results.json").read_text())
         result_by_operation = {
-            request["command"]["operation"]: results[index]
+            request["request_id"]: results[index]
             for index, request in enumerate(requests)
         }
         transport = ScriptedTransport(result_by_operation)
@@ -125,6 +125,12 @@ class ClientTests(unittest.TestCase):
         client.reconcile_mutation("fixture-action", wait=0)
         client.observe_application_scene("session_fixture", "window_fixture")
 
+        after, _ = client.perform_action(
+            "session_fixture", "window_fixture", "observation_fixture",
+            nexus_cua.FocusWindow(), observe_after=nexus_cua.ObserveAfterOptions(),
+        )
+        self.assertIsNotNone(after.observation)
+        self.assertEqual(after.observation.observation_id, "observation_after_fixture")
         self.assertEqual(transport.requests, requests)
 
     def test_every_stable_error_fixture_decodes(self) -> None:

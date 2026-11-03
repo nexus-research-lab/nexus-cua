@@ -479,6 +479,7 @@ async fn validate_session(
     .await?;
     let stale_retry = client
         .send_outcome(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: initial.observation_id.clone(),
@@ -533,6 +534,7 @@ async fn validate_session(
     }
     let outside = client
         .send_outcome(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: after_text.observation_id.clone(),
@@ -1510,6 +1512,7 @@ async fn perform(
     };
     let result = client
         .send(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: observation.observation_id.clone(),

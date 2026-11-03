@@ -396,8 +396,30 @@
           "description": "Truthful outcome of any host-authorized foreground restoration attempt.",
           "$ref": "#/$defs/ForegroundRestorationStatus"
         },
+        "observation": {
+          "description": "Fresh observation when requested; the old guard always remains consumed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WindowObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation_error": {
+          "description": "Post-action read failure, which never changes the recorded mutation result.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CuaError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "observation_invalidated": {
-          "description": "Whether callers must observe again before another mutation.",
+          "description": "Whether pre-action observations were invalidated. A returned fresh\nobservation, when present, may guard the next mutation.",
           "type": "boolean"
         }
       },
@@ -1259,6 +1281,11 @@
           "items": {
             "$ref": "#/$defs/InputRoute"
           }
+        },
+        "observe_after": {
+          "description": "Whether action requests may include bounded post-action observation.",
+          "type": "boolean",
+          "default": false
         },
         "platform": {
           "description": "Host operating system.",

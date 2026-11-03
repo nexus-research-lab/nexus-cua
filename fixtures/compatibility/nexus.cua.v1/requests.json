@@ -216,5 +216,27 @@
         "accessibility": "interactive"
       }
     }
+  },
+{
+  "protocol_version": "nexus.cua.v1",
+  "request_id": "fixture-action-observe-after",
+  "timeout_ms": 30000,
+  "authorization": "fixture-transport-token",
+  "command": {
+    "operation": "perform_action",
+    "input": {
+      "session_id": "session_fixture",
+      "window_ref": "window_fixture",
+      "observation_id": "observation_fixture",
+      "action": {
+        "kind": "focus_window"
+      },
+      "observe_after": {
+        "include_screenshot": true,
+        "accessibility": "interactive",
+        "application_scene": false
+      }
+    }
   }
+}
 ]

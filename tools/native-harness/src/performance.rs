@@ -703,6 +703,7 @@ async fn perform_command(
     let expected_kind = action.kind();
     match client
         .send(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: observation.observation_id.clone(),

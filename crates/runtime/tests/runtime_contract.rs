@@ -26,6 +26,7 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 struct MockDriver {
+    fail_observe_after_mutation: bool,
     session_guard: std::sync::Mutex<Option<nexus_cua_runtime::DriverActionGuard>>,
     window_enumerations: AtomicUsize,
     last_window_scope: Mutex<Vec<String>>,
@@ -53,6 +54,7 @@ struct ActionGate {
 impl MockDriver {
     fn new() -> Self {
         Self {
+            fail_observe_after_mutation: false,
             session_guard: std::sync::Mutex::new(None),
             window_enumerations: AtomicUsize::new(0),
             last_window_scope: Mutex::new(Vec::new()),
@@ -74,6 +76,7 @@ impl MockDriver {
 
     fn stale_once() -> Self {
         Self {
+            fail_observe_after_mutation: false,
             session_guard: std::sync::Mutex::new(None),
             window_enumerations: AtomicUsize::new(0),
             last_window_scope: Mutex::new(Vec::new()),
@@ -214,6 +217,7 @@ impl DesktopDriver for MockDriver {
     }
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            observe_after: false,
             action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: "nexus.cua.v1".to_owned(),
             runtime_version: "test".to_owned(),
@@ -345,6 +349,12 @@ impl DesktopDriver for MockDriver {
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
         self.observation_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_observe_after_mutation && *self.revision.lock().await > 1 {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "post-action capture failed",
+            ));
+        }
         let mut stale_remaining = self.stale_observations_remaining.lock().await;
         if *stale_remaining > 0 {
             *stale_remaining -= 1;
@@ -952,6 +962,7 @@ async fn foreground_click_input(
         panic!("unexpected observation result");
     };
     nexus_cua_protocol::PerformActionInput {
+        observe_after: None,
         session_id,
         window_ref,
         observation_id: observation.observation_id,
@@ -1063,6 +1074,7 @@ async fn runtime_policy_denies_before_observation_consumption() {
     };
     let action = |count| {
         Command::PerformAction(nexus_cua_protocol::PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window_ref.clone(),
             observation_id: observation.observation_id.clone(),
@@ -1405,6 +1417,7 @@ async fn successful_mutation_invalidates_its_observation() {
         _ => panic!("unexpected observation result"),
     };
     let input = nexus_cua_protocol::PerformActionInput {
+        observe_after: None,
         session_id,
         window_ref,
         observation_id,
@@ -1460,6 +1473,7 @@ async fn numeric_range_action_is_bounded_by_the_guarded_native_metadata() {
     let outside = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: session_id.clone(),
                 window_ref: window_ref.clone(),
                 observation_id: observation.observation_id.clone(),
@@ -1477,6 +1491,7 @@ async fn numeric_range_action_is_bounded_by_the_guarded_native_metadata() {
     let output = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: session_id.clone(),
                 window_ref: window_ref.clone(),
                 observation_id: observation.observation_id,
@@ -1498,6 +1513,7 @@ async fn numeric_range_action_is_bounded_by_the_guarded_native_metadata() {
     let error = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id,
                 window_ref,
                 observation_id: observation.observation_id,
@@ -1633,6 +1649,7 @@ async fn fixture_invoke_input(runtime: &Runtime) -> nexus_cua_protocol::PerformA
         panic!("unexpected observation result");
     };
     nexus_cua_protocol::PerformActionInput {
+        observe_after: None,
         session_id,
         window_ref,
         observation_id: observation.observation_id,
@@ -1673,6 +1690,7 @@ async fn coordinates_outside_observed_window_fail_before_dispatch() {
     let error = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id,
                 window_ref,
                 observation_id,
@@ -1756,6 +1774,7 @@ async fn cooperative_termination_is_system_routed_and_invalidates_peer_sessions(
     let terminated = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: first_session,
                 window_ref: first_window,
                 observation_id: first_observation.observation_id,
@@ -1780,6 +1799,7 @@ async fn cooperative_termination_is_system_routed_and_invalidates_peer_sessions(
     let error = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: second_session,
                 window_ref: second_window,
                 observation_id: second_observation_id,
@@ -1949,6 +1969,7 @@ async fn background_click_does_not_require_foreground_authority() {
     let output = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id,
                 window_ref,
                 observation_id,
@@ -2185,6 +2206,7 @@ async fn scene_observation_keeps_session_authority_and_rejects_background_delive
     let error = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: session_id.clone(),
                 window_ref,
                 observation_id: scene.observation_id,
@@ -2295,6 +2317,128 @@ async fn user_takeover_during_preflight_rejects_dispatch_and_later_actions() {
     assert_eq!(later_error.code, ErrorCode::UserActive);
     assert!(!later_error.retryable);
     assert_eq!(*driver.revision.lock().await, 1);
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn action_can_return_a_fresh_usable_observation_without_reusing_its_guard() {
+    let (runtime, root) = runtime();
+    let mut input = fixture_invoke_input(&runtime).await;
+    let old = input.clone();
+    input.observe_after = Some(nexus_cua_protocol::ObserveAfterOptions {
+        include_screenshot: true,
+        accessibility: AccessibilityMode::Full,
+        application_scene: false,
+    });
+    let CommandResult::ActionPerformed(output) = runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("action and observation")
+    else {
+        panic!("wrong result")
+    };
+    let after = output.observation.expect("fresh observation");
+    assert!(output.observation_error.is_none());
+    assert_ne!(after.observation_id, old.observation_id);
+    let stale = runtime
+        .execute(Command::PerformAction(old.clone()))
+        .await
+        .expect_err("old guard consumed");
+    assert_eq!(stale.code, ErrorCode::StaleObservation);
+    let mut next = old;
+    next.observation_id = after.observation_id;
+    next.action = Action::InvokeElement {
+        element_ref: after.elements[0].element_ref.clone(),
+    };
+    runtime
+        .execute(Command::PerformAction(next))
+        .await
+        .expect("next action uses returned guard");
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn post_action_read_failure_does_not_hide_successful_mutation() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver {
+        fail_observe_after_mutation: true,
+        ..MockDriver::new()
+    });
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime");
+    let mut input = fixture_invoke_input(&runtime).await;
+    input.observe_after = Some(nexus_cua_protocol::ObserveAfterOptions {
+        include_screenshot: false,
+        accessibility: AccessibilityMode::Full,
+        application_scene: false,
+    });
+    let CommandResult::ActionPerformed(output) = runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("mutation is still successful")
+    else {
+        panic!("wrong result")
+    };
+    assert!(output.dispatched);
+    assert!(output.observation.is_none());
+    let error = output.observation_error.expect("separate read failure");
+    assert_eq!(error.code, ErrorCode::TargetUnavailable);
+    assert_eq!(error.mutation_status, MutationStatus::NotApplicable);
+    assert_eq!(*driver.revision.lock().await, 2);
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn observe_after_cannot_bypass_read_policy_or_consume_the_action_guard() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let mut config = RuntimeConfig::new(&root);
+    config.policy = RuntimePolicyStack::from_layers(
+        Some(RuntimePolicyLayer {
+            schema_version: 1,
+            allow: PolicyAllow {
+                operations: vec![
+                    PolicyOperation::DiscoverApplications,
+                    PolicyOperation::OpenSession,
+                    PolicyOperation::ListWindows,
+                    PolicyOperation::ObserveWindow,
+                    PolicyOperation::PerformAction,
+                ],
+                actions: vec![
+                    ActionKind::TerminateApplication,
+                    ActionKind::InvokeElement,
+                    ActionKind::SetRangeValue,
+                    ActionKind::ClickPoint,
+                ],
+                action_rules: Vec::new(),
+            },
+            deny: PolicyDeny::default(),
+        }),
+        None,
+    )
+    .expect("policy");
+    let runtime = Runtime::new(driver.clone(), config).expect("runtime");
+    let mut input = fixture_invoke_input(&runtime).await;
+    input.observe_after = Some(nexus_cua_protocol::ObserveAfterOptions {
+        include_screenshot: true,
+        accessibility: AccessibilityMode::Full,
+        application_scene: true,
+    });
+    let error = runtime
+        .execute(Command::PerformAction(input.clone()))
+        .await
+        .expect_err("scene denied");
+    assert_eq!(error.code, ErrorCode::CapabilityDenied);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    assert_eq!(*driver.revision.lock().await, 1);
+    input.observe_after = None;
+    runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("same guard remains usable");
+    assert_eq!(*driver.revision.lock().await, 2);
     runtime.shutdown().await;
     let _ = std::fs::remove_dir_all(root);
 }

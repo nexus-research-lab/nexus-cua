@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=092a2c2d83d54d7ded8ec3ae4e6690cec848bd4253dbf5b8fd0e09dc45275a25 -->
+<!-- generated: product=0.2.0-rc.1 catalogue_sha256=2d726ae3e481a30325fe9b3478d9fefad74201c2421f5cae13805498a13049e4 -->
 
 ## Operating contract
 
@@ -29,6 +29,13 @@ more precise interface.
    reconciliation with the same ID; never submit the intent under a new ID.
 5. After a successful or indeterminate mutation, obtain a fresh observation or
    deterministic verification before deciding what happened or mutating again.
+   If capabilities advertise `observe_after`, generic `perform_action` may
+   request `{include_screenshot: true, accessibility: "interactive",
+   application_scene: false}` in that field. Use its fresh `observation` as the
+   next guard. The old guard remains consumed. `observation_error` affects only
+   the follow-up read: preserve the action result and do not replay the action.
+   Bounded visual settling does not prove business completion. Flat tools keep
+   their existing separate observe flow.
 6. Use only cleanup exposed by the selected binding. Cooperatively terminate an
    application only when the task explicitly requires it; the host owns adapter
    session shutdown. Leave unrelated applications and user state alone.

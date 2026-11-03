@@ -16,6 +16,7 @@ from .types import (
     AccessibilityMode,
     Action,
     ActionOutput,
+    ObserveAfterOptions,
     ApplicationLaunchOutput,
     ApplicationSummary,
     CapabilityManifest,
@@ -475,6 +476,7 @@ class Client:
         observation_id: str,
         action: Action,
         timeout: float = 30.0,
+        *, observe_after: ObserveAfterOptions | None = None,
     ) -> tuple[ActionOutput, ActionRequest]:
         command = {
             "operation": "perform_action",
@@ -485,6 +487,8 @@ class Client:
                 "action": action_wire(action),
             },
         }
+        if observe_after is not None:
+            command["input"]["observe_after"] = observe_after.to_wire()
         request = ActionRequest(self._request_id(), command, self._clock())
         return self._wait_for_action(request, timeout), request
 

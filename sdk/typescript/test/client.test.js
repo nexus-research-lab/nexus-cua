@@ -46,16 +46,16 @@ function fixtureClient(transport, requestIds) {
 test("compatibility fixtures cover the complete public client", async () => {
   const requests = fixture("requests.json");
   const results = fixture("results.json");
-  assert.equal(requests.length, 18);
-  assert.equal(results.length, 18);
+  assert.equal(requests.length, 19);
+  assert.equal(results.length, 19);
   const resultByOperation = new Map(
-    requests.map((request, index) => [request.command.operation, results[index]]),
+    requests.map((request, index) => [request.request_id, results[index]]),
   );
   const sent = [];
   const client = fixtureClient(async (_endpoint, payload) => {
     const request = JSON.parse(payload.toString("utf8"));
     sent.push(request);
-    return response(request, resultByOperation.get(request.command.operation));
+    return response(request, resultByOperation.get(request.request_id));
   }, requests.map((request) => request.request_id));
 
   await client.getCapabilities();
@@ -116,6 +116,12 @@ test("compatibility fixtures cover the complete public client", async () => {
     include_screenshot: true, accessibility: "interactive",
   });
 
+  const after = await client.performAction({
+    session_id: "session_fixture", window_ref: "window_fixture",
+    observation_id: "observation_fixture", action: { kind: "focus_window" },
+    observe_after: { include_screenshot: true, accessibility: "interactive", application_scene: false },
+  });
+  assert.equal(after.output.observation.observation_id, "observation_after_fixture");
   assert.deepEqual(sent, requests);
 });
 

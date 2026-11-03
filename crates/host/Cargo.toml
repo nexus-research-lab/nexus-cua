@@ -12,9 +12,9 @@ repository.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 hex.workspace = true
-nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
-nexus-cua-runtime = { version = "0.1.0", path = "../runtime" }
-nexus-cua-transport = { version = "0.1.0", path = "../transport" }
+nexus-cua-protocol = { version = "0.2.0-rc.1", path = "../protocol" }
+nexus-cua-runtime = { version = "0.2.0-rc.1", path = "../runtime" }
+nexus-cua-transport = { version = "0.2.0-rc.1", path = "../transport" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

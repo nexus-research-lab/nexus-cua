@@ -98,6 +98,7 @@ impl WindowsDriver {
 impl DesktopDriver for WindowsDriver {
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            observe_after: false,
             action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),

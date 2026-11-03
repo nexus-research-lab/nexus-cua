@@ -148,6 +148,7 @@ async fn validate_preflight(
                 request_id("fault_preflight_action"),
                 PROVIDER_TIMEOUT_MS,
                 Command::PerformAction(PerformActionInput {
+                    observe_after: None,
                     session_id: target.session_id.clone(),
                     window_ref: target.window.window_ref.clone(),
                     observation_id: fresh.observation_id,
@@ -222,6 +223,7 @@ async fn validate_dispatch(
         .element_ref
         .clone();
     let command = Command::PerformAction(PerformActionInput {
+        observe_after: None,
         session_id: target.session_id.clone(),
         window_ref: target.window.window_ref.clone(),
         observation_id: observation.observation_id,

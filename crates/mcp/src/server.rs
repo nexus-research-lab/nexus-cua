@@ -389,6 +389,18 @@ impl NexusCuaMcp {
         observation_id: ObservationId,
         action: Action,
     ) -> Result<CallToolResult, McpError> {
+        self.dispatch_action_observed(request_id, window_ref, observation_id, action, None)
+            .await
+    }
+
+    async fn dispatch_action_observed(
+        &self,
+        request_id: RequestId,
+        window_ref: WindowRef,
+        observation_id: ObservationId,
+        action: Action,
+        observe_after: Option<nexus_cua_protocol::ObserveAfterOptions>,
+    ) -> Result<CallToolResult, McpError> {
         let _operation = self.operation_lock.lock().await;
         let session_id = match self.session_id().await {
             Ok(session_id) => session_id,
@@ -398,6 +410,7 @@ impl NexusCuaMcp {
             .execute_mutation(
                 request_id.clone(),
                 Command::PerformAction(PerformActionInput {
+                    observe_after,
                     session_id,
                     window_ref: window_ref.clone(),
                     observation_id,
@@ -407,15 +420,70 @@ impl NexusCuaMcp {
             .await
         {
             Ok(CommandResult::ActionPerformed(output)) => {
-                self.image_mappings
-                    .lock()
-                    .await
-                    .invalidate_window(&window_ref);
-                mutation_structured(&request_id, &output)
+                self.action_result(&request_id, &window_ref, output).await
             }
             Ok(_) => Err(unexpected_result()),
             Err(error) => Ok(error),
         }
+    }
+
+    async fn action_result(
+        &self,
+        request_id: &RequestId,
+        window_ref: &WindowRef,
+        mut output: nexus_cua_protocol::ActionOutput,
+    ) -> Result<CallToolResult, McpError> {
+        let mut image = None;
+        if let Some(observation) = &mut output.observation {
+            if let Some(screenshot) = &observation.screenshot {
+                let cached = {
+                    let mut mappings = self.image_mappings.lock().await;
+                    let cached = mappings.get(&observation.observation_id, window_ref);
+                    mappings.invalidate_window(window_ref);
+                    cached
+                };
+                let bytes = if let Some(cached) = cached {
+                    Ok(cached.bytes.to_vec())
+                } else {
+                    self.runtime
+                        .take_artifact(screenshot, self.max_image_bytes)
+                        .await
+                };
+                match bytes {
+                    Ok(bytes) => {
+                        image = Some(ContentBlock::image(
+                            base64::engine::general_purpose::STANDARD.encode(&bytes),
+                            screenshot.mime_type.clone(),
+                        ));
+                        self.image_mappings.lock().await.insert(
+                            observation.observation_id.clone(),
+                            window_ref.clone(),
+                            screenshot.mapping,
+                            bytes,
+                        );
+                    }
+                    Err(error) => {
+                        output.observation_error = Some(error);
+                        observation.screenshot = None;
+                    }
+                }
+            } else {
+                self.image_mappings
+                    .lock()
+                    .await
+                    .invalidate_window(window_ref);
+            }
+        } else {
+            self.image_mappings
+                .lock()
+                .await
+                .invalidate_window(window_ref);
+        }
+        let mut result = mutation_structured(request_id, &output)?;
+        if let Some(image) = image {
+            result.content.push(image);
+        }
+        Ok(result)
     }
 
     async fn rebuild_session(&self) -> Result<(), CallToolResult> {
@@ -602,6 +670,8 @@ struct WriteClipboardArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PerformActionArgs {
+    /// Return a fresh same-target observation without a second tool call.
+    observe_after: Option<nexus_cua_protocol::ObserveAfterOptions>,
     /// Stable host-generated mutation identity; preserve it for reconciliation.
     #[schemars(length(min = 1, max = 128))]
     request_id: String,
@@ -1462,11 +1532,12 @@ impl NexusCuaMcp {
         &self,
         Parameters(args): Parameters<PerformActionArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch_action(
+        self.dispatch_action_observed(
             RequestId::new(args.request_id),
             WindowRef::new(args.window_ref),
             ObservationId::new(args.observation_id),
             args.action,
+            args.observe_after,
         )
         .await
     }
@@ -1953,6 +2024,7 @@ fn mutation_structured(
 ) -> Result<CallToolResult, McpError> {
     let mut value = serde_json::to_value(value)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    remove_private_artifact_path(&mut value);
     let Some(object) = value.as_object_mut() else {
         return Err(McpError::internal_error(
             "mutation result must serialize as an object",
@@ -2105,6 +2177,9 @@ fn public_observation_value(observation: &impl Serialize) -> Result<Value, McpEr
 }
 
 fn remove_private_artifact_path(value: &mut Value) {
+    if let Some(observation) = value.get_mut("observation") {
+        remove_private_artifact_path(observation);
+    }
     if let Some(screenshot) = value.get_mut("screenshot").and_then(Value::as_object_mut) {
         screenshot.remove("path");
     }
@@ -2383,6 +2458,27 @@ mod tests {
 
         assert!(value["screenshot"].get("path").is_none());
         assert_eq!(value["screenshot"]["artifact_ref"], "artifact_test");
+    }
+
+    #[test]
+    fn mutation_observation_hides_the_private_artifact_path() {
+        let result = mutation_structured(
+            &RequestId::new("action_test"),
+            &json!({
+                "dispatched": true,
+                "observation": {"screenshot": {
+                    "artifact_ref": "artifact_test", "path": "/private/artifact.png"
+                }}
+            }),
+        )
+        .unwrap();
+        let value = result.structured_content.unwrap();
+        assert!(value["observation"]["screenshot"].get("path").is_none());
+        assert_eq!(
+            value["observation"]["screenshot"]["artifact_ref"],
+            "artifact_test"
+        );
+        assert_eq!(value["dispatched"], true);
     }
 
     #[test]

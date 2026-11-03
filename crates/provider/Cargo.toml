@@ -11,9 +11,9 @@ description = "Registered local authority provider for Nexus Computer Use Runtim
 async-trait.workspace = true
 fs2.workspace = true
 hex.workspace = true
-nexus-cua-mcp = { version = "0.1.0", path = "../mcp" }
-nexus-cua-platform = { version = "0.1.0", path = "../platform" }
-nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
+nexus-cua-mcp = { version = "0.2.0-rc.1", path = "../mcp" }
+nexus-cua-platform = { version = "0.2.0-rc.1", path = "../platform" }
+nexus-cua-protocol = { version = "0.2.0-rc.1", path = "../protocol" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

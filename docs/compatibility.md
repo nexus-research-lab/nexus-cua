@@ -1,6 +1,6 @@
 # Protocol Compatibility Policy
 
-Status: normative for the `0.1.x` development line.
+Status: normative for the `0.2.0-rc.1` testing prerelease.
 
 Package and wire compatibility are independent. Hosts pin the package version
 they install and negotiate the exact `protocol_version` they speak. The current
@@ -20,8 +20,9 @@ The published `v0.1.0` tag was a pipeline test without production users. The
 all pointer actions now take `NormalizedPoint` (0..1000), and scroll requires
 an explicit target point. Old SDKs and test binaries must be rebuilt together;
 there is no legacy pixel-coordinate fallback or parallel compatibility layer.
-Hosts must pin a matching runtime and SDK source revision. A future supported
-preview will establish the compatibility baseline before distribution.
+Hosts must pin a matching runtime and SDK source revision. The `v0.2.0-rc.1` testing prerelease includes this reset, user-takeover errors,
+application-scene capture and optional post-action observation. It requires the
+matching SDK revision; it is not a stable production compatibility promise.
 
 ## Generated schemas
 

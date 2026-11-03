@@ -128,6 +128,9 @@ impl Default for ActionLimits {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DriverCapabilities {
+    /// Whether action requests may include bounded post-action observation.
+    #[serde(default)]
+    pub observe_after: bool,
     /// Effective runtime limits; hosts must not invent larger input bounds.
     pub action_limits: ActionLimits,
     /// Stable protocol identifier.

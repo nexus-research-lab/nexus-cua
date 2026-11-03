@@ -68,11 +68,11 @@ impl QueueFrame {
             *self.0.get() = frame;
         }
     }
-    unsafe fn copy_pixels(&self) -> Option<RgbaImage> {
+    unsafe fn copy_pixels(&self, signature_only: bool) -> Option<RgbaImage> {
         unsafe {
             (&*self.0.get())
                 .as_ref()
-                .and_then(|frame| copy_buffer(frame))
+                .and_then(|frame| copy_buffer(frame, signature_only))
         }
     }
 }
@@ -136,7 +136,7 @@ fn frame_status(sample: &CMSampleBuffer) -> Option<i64> {
     })
 }
 
-fn copy_buffer(buffer: &CVPixelBuffer) -> Option<RgbaImage> {
+fn copy_buffer(buffer: &CVPixelBuffer, signature_only: bool) -> Option<RgbaImage> {
     if CVPixelBufferGetPixelFormatType(buffer) != u32::from_be_bytes(*b"BGRA") {
         return None;
     }
@@ -155,17 +155,37 @@ fn copy_buffer(buffer: &CVPixelBuffer) -> Option<RgbaImage> {
     let result = if base.is_null() || pitch < width * 4 {
         None
     } else {
-        let mut pixels = vec![0_u8; bytes];
-        for row in 0..height {
-            // The locked CVPixelBuffer owns at least RowBytes per row. Copy only
-            // validated BGRA bytes; no native object leaves the callback queue.
-            let source = unsafe { std::slice::from_raw_parts(base.add(row * pitch), width * 4) };
-            for (bgra, rgba) in source.as_chunks::<4>().0.iter().zip(
-                pixels[row * width * 4..(row + 1) * width * 4]
-                    .as_chunks_mut::<4>()
-                    .0
-                    .iter_mut(),
-            ) {
+        let (output_width, output_height) = if signature_only {
+            (32, 32)
+        } else {
+            (width, height)
+        };
+        let mut pixels = vec![0_u8; output_width * output_height * 4];
+        for row in 0..output_height {
+            let source_y = if signature_only {
+                crate::observation::sample_coordinate(
+                    u32::try_from(row).ok()?,
+                    u32::try_from(height).ok()?,
+                ) as usize
+            } else {
+                row
+            };
+            // The locked buffer owns pitch bytes per row; only owned sampled
+            // RGBA bytes cross the capture queue for visual revalidation.
+            let source =
+                unsafe { std::slice::from_raw_parts(base.add(source_y * pitch), width * 4) };
+            for column in 0..output_width {
+                let source_x = if signature_only {
+                    crate::observation::sample_coordinate(
+                        u32::try_from(column).ok()?,
+                        u32::try_from(width).ok()?,
+                    ) as usize
+                } else {
+                    column
+                };
+                let bgra = &source[source_x * 4..source_x * 4 + 4];
+                let offset = (row * output_width + column) * 4;
+                let rgba = &mut pixels[offset..offset + 4];
                 rgba.copy_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
                 let alpha = u16::from(rgba[3]);
                 if alpha != 0 && alpha != 255 {
@@ -176,8 +196,8 @@ fn copy_buffer(buffer: &CVPixelBuffer) -> Option<RgbaImage> {
             }
         }
         Some(RgbaImage::new(
-            u32::try_from(width).ok()?,
-            u32::try_from(height).ok()?,
+            u32::try_from(output_width).ok()?,
+            u32::try_from(output_height).ok()?,
             pixels,
         ))
     };
@@ -251,7 +271,11 @@ impl CaptureStream {
         Ok(capture)
     }
 
-    pub(super) fn snapshot(&self, latest_only: bool) -> Result<Option<RgbaImage>, DriverError> {
+    pub(super) fn snapshot(
+        &self,
+        latest_only: bool,
+        signature_only: bool,
+    ) -> Result<Option<RgbaImage>, DriverError> {
         if !self.slot.wait_for_frame(latest_only)? {
             return Ok(None);
         }
@@ -268,7 +292,7 @@ impl CaptureStream {
             let image = if available {
                 // SAFETY: This closure executes on the same serial queue as
                 // output(), and returns only owned Rust pixels.
-                unsafe { slot.frame.copy_pixels() }
+                unsafe { slot.frame.copy_pixels(signature_only) }
             } else {
                 None
             };

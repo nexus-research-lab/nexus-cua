@@ -1,6 +1,6 @@
 # Nexus Computer Use Protocol v1
 
-Status: normative for the `0.1.x` development line.
+Status: normative for the `0.2.0-rc.1` testing prerelease.
 
 The protocol identifier is `nexus.cua.v1`. Messages use closed, tagged JSON
 objects. Unknown fields are rejected by decoders at every trust boundary. The
@@ -33,6 +33,19 @@ the same ID with an equal or longer bounded `timeout_ms` to reconcile.
    fingerprint before executing.
 8. A successful mutation invalidates all observations for that window.
 9. Closing or expiring the session releases leases and deletes artifacts.
+
+When capabilities advertise `observe_after=true`, a `perform_action` input may
+include `observe_after: {include_screenshot, accessibility, application_scene}`.
+The options select the normal window or application-scene observation path;
+the matching read policy is checked before mutation. After a successful action,
+macOS performs at most three visual samples, spaced 50 ms apart, before the
+normal fresh observation. This is best-effort settling, not business-completion
+verification. A returned `observation` has a new guard; `observation_invalidated`
+refers only to the old guards. Read failure is returned as `observation_error`
+without changing the action's dispatch/effect evidence. Never repeat a mutation
+because its follow-up observation failed. Reconciliation retains the original
+command, including these options, and does not re-execute the action.
+Omitting the options preserves the separate action/observe flow.
 
 ## Authorization
 

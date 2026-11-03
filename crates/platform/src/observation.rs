@@ -4,7 +4,15 @@ use nexus_cua_protocol::ScreenRect;
 use nexus_cua_runtime::RgbaImage;
 use sha2::{Digest, Sha256};
 
-const VISUAL_GRID: u32 = 32;
+pub(crate) const VISUAL_GRID: u32 = 32;
+
+pub(crate) fn sample_coordinate(index: u32, dimension: u32) -> u32 {
+    let sample = (u64::from(index) * u64::from(dimension) + u64::from(VISUAL_GRID / 2))
+        / u64::from(VISUAL_GRID);
+    u32::try_from(sample.min(u64::from(dimension.saturating_sub(1))))
+        .expect("sample fits the dimension")
+}
+
 const MAX_AVERAGE_LUMA_DIFFERENCE: u64 = 8;
 const MATERIAL_LUMA_DIFFERENCE: u8 = 24;
 const MAX_MATERIAL_CHANGE_RATIO_DENOMINATOR: usize = 5;
@@ -74,13 +82,9 @@ fn visual_signature(image: &RgbaImage) -> Vec<u8> {
     }
     let mut signature = Vec::with_capacity((VISUAL_GRID * VISUAL_GRID) as usize);
     for grid_y in 0..VISUAL_GRID {
-        let y = ((u64::from(grid_y) * u64::from(image.height) + u64::from(VISUAL_GRID / 2))
-            / u64::from(VISUAL_GRID))
-        .min(u64::from(image.height - 1));
+        let y = u64::from(sample_coordinate(grid_y, image.height));
         for grid_x in 0..VISUAL_GRID {
-            let x = ((u64::from(grid_x) * u64::from(image.width) + u64::from(VISUAL_GRID / 2))
-                / u64::from(VISUAL_GRID))
-            .min(u64::from(image.width - 1));
+            let x = u64::from(sample_coordinate(grid_x, image.width));
             let index = usize::try_from((y * u64::from(image.width) + x) * 4).unwrap_or(0);
             let pixel = image.pixels.get(index..index + 3).unwrap_or(&[0, 0, 0]);
             let luma =
@@ -127,6 +131,28 @@ mod tests {
         let first = fingerprint("window:a", BOUNDS, Some(&image(100)));
         let second = fingerprint("window:a", BOUNDS, Some(&image(106)));
         assert!(fingerprints_match(&first, &second));
+    }
+
+    #[test]
+    fn sampled_pixels_preserve_the_full_frame_visual_guard() {
+        let (width, height) = (1568, 997);
+        let pixels = (0..width * height * 4)
+            .map(|offset| u8::try_from(offset % 251).unwrap())
+            .collect();
+        let full = RgbaImage::new(width, height, pixels);
+        let mut small = Vec::new();
+        for y in 0..VISUAL_GRID {
+            for x in 0..VISUAL_GRID {
+                let offset = ((sample_coordinate(y, height) * width + sample_coordinate(x, width))
+                    * 4) as usize;
+                small.extend_from_slice(&full.pixels[offset..offset + 4]);
+            }
+        }
+        let sampled = RgbaImage::new(VISUAL_GRID, VISUAL_GRID, small);
+        assert_eq!(
+            fingerprint("target", BOUNDS, Some(&full)),
+            fingerprint("target", BOUNDS, Some(&sampled))
+        );
     }
 
     #[test]

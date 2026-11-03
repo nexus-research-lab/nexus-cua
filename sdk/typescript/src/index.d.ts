@@ -58,6 +58,7 @@ export interface ActionLimits {
 }
 
 export interface DriverCapabilities {
+  observe_after: boolean;
   action_limits: ActionLimits;
   primary_modifier: string;
   protocol_version: string;
@@ -221,7 +222,10 @@ export interface ClipboardWriteOutput {
   evidence_kind: ActionEvidenceKind;
 }
 
+export interface ObserveAfterOptions { include_screenshot: boolean; accessibility: AccessibilityMode; application_scene?: boolean }
 export interface ActionOutput {
+  observation?: WindowObservation;
+  observation_error?: { code: ErrorCode; message: string; retryable: boolean; recovery_action: string | null; mutation_status: MutationStatus };
   delivery_mode: DeliveryMode;
   dispatched: boolean;
   effect_status: ActionEffectStatus;
@@ -271,7 +275,7 @@ export type StatePredicate =
 
 export interface ObserveDisplayInput { session_id: string; display_ref: string }
 export interface ObserveWindowInput { session_id: string; window_ref: string; include_screenshot: boolean; accessibility: AccessibilityMode }
-export interface PerformActionInput { session_id: string; window_ref: string; observation_id: string; action: Action }
+export interface PerformActionInput { session_id: string; window_ref: string; observation_id: string; action: Action; observe_after?: ObserveAfterOptions }
 export interface VerifyStateInput { session_id: string; window_ref: string; predicate: StatePredicate }
 
 export class ActionRequest { readonly requestId: string; toString(): string }

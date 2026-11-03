@@ -282,6 +282,7 @@ export class Client {
           window_ref: input.window_ref,
           observation_id: input.observation_id,
           action,
+          ...(input.observe_after === undefined ? {} : { observe_after: structuredClone(input.observe_after) }),
         },
       },
       this._now(),
@@ -543,6 +544,10 @@ function validateResultData(resultType, value) {
     const coherent = (data.effect_status === "confirmed" && data.evidence_kind === "native_readback")
       || (data.effect_status === "unverified" && data.evidence_kind === "dispatch_acceptance");
     if (!coherent) throw new Error(`incoherent ${resultType} effect evidence`);
+    if (resultType === "action_performed") {
+      if (data.observation != null) validateResultData("window_observed", data.observation);
+      if (data.observation_error != null) decodeCuaError(data.observation_error);
+    }
   } else if (resultType === "mutation_reconciled") {
     const result = closedObject(data, [
       "request_id", "runtime_epoch", "worker_epoch", "admission", "disposition",

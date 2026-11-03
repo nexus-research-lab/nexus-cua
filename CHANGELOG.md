@@ -5,6 +5,21 @@ file.
 
 ## [Unreleased]
 
+## [0.2.0-rc.1] - 2026-11-03
+
+macOS Apple Silicon testing prerelease. Local checks and bounded native tests
+are not production signing, notarization, clean-machine or full release acceptance.
+
+### Performance
+
+- Revalidate warm macOS captures by copying only the existing 32×32 visual
+  signature samples from the capture queue; full observations retain full image quality.
+- Add capability-negotiated `observe_after` to actions and all three SDKs.
+  It returns a fresh observation in one request, with bounded visual settling.
+  A post-action read failure preserves the successful mutation result and
+  appears separately as `observation_error`.
+
+
 - Stop macOS foreground-enabled session actions on outside mouse or keyboard
   input. Passive monitoring ignores marked runtime events, latches `user_active`
   until a new host grant, releases held synthetic inputs, and fails closed if

@@ -516,6 +516,7 @@ mod tests {
 
     fn action_command(action: Action) -> Command {
         Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: nexus_cua_protocol::SessionId::new("session"),
             window_ref: nexus_cua_protocol::WindowRef::new("window"),
             observation_id: nexus_cua_protocol::ObservationId::new("observation"),

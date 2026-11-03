@@ -279,6 +279,8 @@ class DriverCapabilities:
     clipboard: tuple[ClipboardOperation, ...]
     actions: tuple[ActionKind, ...]
 
+    observe_after: bool = False
+
     @classmethod
     def from_wire(cls, value: Any) -> DriverCapabilities:
         data = closed_object(
@@ -296,6 +298,7 @@ class DriverCapabilities:
                 "clipboard",
                 "actions",
             },
+            {"observe_after"},
         )
         return cls(
             ActionLimits.from_wire(data["action_limits"]),
@@ -311,6 +314,7 @@ class DriverCapabilities:
             ),
             enum_tuple(ClipboardOperation, data["clipboard"]),
             enum_tuple(ActionKind, data["actions"]),
+            bool_value(data.get("observe_after", False)),
         )
 
 
@@ -967,6 +971,16 @@ class ClipboardWriteOutput:
 
 
 @dataclass(frozen=True)
+class ObserveAfterOptions:
+    include_screenshot: bool = True
+    accessibility: AccessibilityMode = AccessibilityMode.INTERACTIVE
+    application_scene: bool = False
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"include_screenshot": self.include_screenshot, "accessibility": self.accessibility.value, "application_scene": self.application_scene}
+
+
+@dataclass(frozen=True)
 class ActionOutput:
     delivery_mode: DeliveryMode
     dispatched: bool
@@ -974,6 +988,9 @@ class ActionOutput:
     evidence_kind: ActionEvidenceKind
     foreground_restoration: ForegroundRestorationStatus
     observation_invalidated: bool
+
+    observation: WindowObservation | None = None
+    observation_error: CUAError | None = None
 
     @classmethod
     def from_wire(cls, value: Any) -> ActionOutput:
@@ -987,6 +1004,7 @@ class ActionOutput:
                 "foreground_restoration",
                 "observation_invalidated",
             },
+            {"observation", "observation_error"},
         )
         effect_status = enum_value(ActionEffectStatus, data["effect_status"])
         evidence_kind = enum_value(ActionEvidenceKind, data["evidence_kind"])
@@ -1010,6 +1028,8 @@ class ActionOutput:
                 ForegroundRestorationStatus, data["foreground_restoration"]
             ),
             bool_value(data["observation_invalidated"]),
+            WindowObservation.from_wire(data["observation"]) if data.get("observation") is not None else None,
+            CUAError.from_wire(data["observation_error"]) if data.get("observation_error") is not None else None,
         )
 
 
@@ -1435,13 +1455,13 @@ def predicate_wire(value: StatePredicate) -> dict[str, Any]:
 E = TypeVar("E", bound=ClosedString)
 
 
-def closed_object(value: Any, required: set[str]) -> dict[str, Any]:
+def closed_object(value: Any, required: set[str], optional: set[str] | None = None) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("expected an object")
     keys = set(value.keys())
-    if keys != required:
+    if not required <= keys or keys - required - (optional or set()):
         missing = required - keys
-        unknown = keys - required
+        unknown = keys - required - (optional or set())
         raise ValueError(
             f"object shape mismatch; missing={sorted(missing)} unknown={sorted(unknown)}"
         )

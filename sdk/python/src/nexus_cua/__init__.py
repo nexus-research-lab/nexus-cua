@@ -64,6 +64,7 @@ from .types import (
     MutationReconciliation,
     MutationStatus,
     ObservationID,
+    ObserveAfterOptions,
     OpenSessionOutput,
     PermissionMode,
     PermissionState,

@@ -1089,6 +1089,30 @@
       "description": "Identity for one immutable window or display observation.",
       "type": "string"
     },
+    "ObserveAfterOptions": {
+      "description": "Bounded post-action observation of the same authorized target.",
+      "type": "object",
+      "properties": {
+        "accessibility": {
+          "description": "Accessibility detail requested for the resulting state.",
+          "$ref": "#/$defs/AccessibilityMode"
+        },
+        "application_scene": {
+          "description": "Include same-process menus and popups on the anchor display.",
+          "type": "boolean",
+          "default": false
+        },
+        "include_screenshot": {
+          "description": "Include an image using the configured capture size limit.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "include_screenshot",
+        "accessibility"
+      ]
+    },
     "ObserveDisplayInput": {
       "description": "Input for capturing one exact physical display.",
       "type": "object",
@@ -1162,6 +1186,17 @@
         "observation_id": {
           "description": "Fresh observation guarding the action.",
           "$ref": "#/$defs/ObservationId"
+        },
+        "observe_after": {
+          "description": "Optional fresh observation returned with the action result.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObserveAfterOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "session_id": {
           "description": "Runtime-issued session identity.",

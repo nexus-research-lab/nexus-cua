@@ -316,6 +316,7 @@ impl Runtime {
         match command {
             Command::GetCapabilities => {
                 let mut capabilities = self.driver.capabilities().await?;
+                capabilities.observe_after = true;
                 capabilities.action_limits = nexus_cua_protocol::ActionLimits::default();
                 capabilities.action_limits.max_session_ttl_seconds =
                     u32::try_from(self.config.max_session_ttl.as_secs()).unwrap_or(u32::MAX);
@@ -1255,6 +1256,69 @@ impl Runtime {
         &self,
         input: nexus_cua_protocol::PerformActionInput,
     ) -> Result<CommandResult, CuaError> {
+        let after = input.observe_after.as_ref().map(|options| {
+            let observation = nexus_cua_protocol::ObserveWindowInput {
+                session_id: input.session_id.clone(),
+                window_ref: input.window_ref.clone(),
+                include_screenshot: options.include_screenshot,
+                accessibility: options.accessibility,
+            };
+            if options.application_scene {
+                Command::ObserveApplicationScene(observation)
+            } else {
+                Command::ObserveWindow(observation)
+            }
+        });
+        if let Some(command) = &after {
+            self.config.policy.authorize(command).map_err(|error| {
+                error.with_mutation_status(nexus_cua_protocol::MutationStatus::NotDispatched)
+            })?;
+        }
+        let result = self.perform_action_only(input).await?;
+        let CommandResult::ActionPerformed(mut output) = result else {
+            return Ok(result);
+        };
+        if let Some(command) = after {
+            let (input, scene) = match command {
+                Command::ObserveWindow(input) => (input, false),
+                Command::ObserveApplicationScene(input) => (input, true),
+                _ => unreachable!("post-action read is a window observation"),
+            };
+            match self.observe_after_action(input, scene).await {
+                Ok(CommandResult::WindowObserved(observation)) => {
+                    output.observation = Some(observation);
+                }
+                Err(error) => output.observation_error = Some(error),
+                _ => unreachable!("window observation result"),
+            }
+        }
+        Ok(CommandResult::ActionPerformed(output))
+    }
+
+    async fn observe_after_action(
+        &self,
+        input: nexus_cua_protocol::ObserveWindowInput,
+        scene: bool,
+    ) -> Result<CommandResult, CuaError> {
+        if input.include_screenshot {
+            let session = self.session(&input.session_id).await?;
+            let window = session
+                .state
+                .lock()
+                .await
+                .windows
+                .get(&input.window_ref)
+                .cloned()
+                .ok_or_else(reference_not_found)?;
+            self.driver.settle_window(&window, scene).await?;
+        }
+        self.observe_window(input, scene).await
+    }
+
+    async fn perform_action_only(
+        &self,
+        input: nexus_cua_protocol::PerformActionInput,
+    ) -> Result<CommandResult, CuaError> {
         let session = self.session(&input.session_id).await?;
         validate_action_authority(&session, &input.action)?;
         let _foreground_lane = if input.action.requires_foreground() {
@@ -1539,6 +1603,8 @@ fn project_action_output(
         "computer-use action dispatched"
     );
     Ok(CommandResult::ActionPerformed(ActionOutput {
+        observation: None,
+        observation_error: None,
         delivery_mode: result.delivery_mode,
         dispatched: true,
         effect_status: result.effect_status,

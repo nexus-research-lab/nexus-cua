@@ -543,6 +543,18 @@ pub trait DesktopDriver: Send + Sync {
     /// Revokes capture ownership immediately; native resources are released on their actor.
     fn session_closed(&self, _session_id: &nexus_cua_protocol::SessionId) {}
 
+    /// Performs bounded read-only settling before a requested post-action observation.
+    ///
+    /// # Errors
+    /// Returns a native read failure without changing the action's recorded outcome.
+    async fn settle_window(
+        &self,
+        _window: &DriverWindow,
+        _application_scene: bool,
+    ) -> Result<(), DriverError> {
+        Ok(())
+    }
+
     /// Observes a target while binding retained capture resources to its authority lifetime.
     async fn observe_window_scoped(
         &self,

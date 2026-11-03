@@ -193,12 +193,20 @@ impl CaptureActor {
         receiver.await.map_err(actor_stopped)?
     }
 
-    pub(super) async fn capture(
+    pub(super) async fn capture_signature(
         &self,
         target_key: String,
         expected_bounds: ScreenRect,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
-        self.capture_scoped(None, target_key, expected_bounds).await
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::Capture {
+            session_id: None,
+            target_key,
+            expected_bounds,
+            signature_only: true,
+            reply,
+        })?;
+        receiver.await.map_err(actor_stopped)?
     }
 
     pub(super) async fn capture_scoped(
@@ -209,6 +217,7 @@ impl CaptureActor {
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(CaptureCommand::Capture {
+            signature_only: false,
             session_id,
             target_key,
             expected_bounds,
@@ -301,6 +310,7 @@ enum CaptureCommand {
         reply: oneshot::Sender<Result<Vec<NativeDisplay>, DriverError>>,
     },
     Capture {
+        signature_only: bool,
         session_id: Option<String>,
         target_key: String,
         expected_bounds: ScreenRect,
@@ -367,6 +377,7 @@ fn actor_loop(
                 let _ = reply.send(load_displays());
             }
             CaptureCommand::Capture {
+                signature_only,
                 session_id,
                 target_key,
                 expected_bounds,
@@ -382,7 +393,10 @@ fn actor_loop(
                         &target_key,
                         expected_bounds,
                         recycle_sender,
-                        max_image_edge,
+                        FrameRead {
+                            max_image_edge,
+                            signature_only,
+                        },
                     )
                 } else {
                     capture_target(
@@ -510,6 +524,12 @@ fn prune_streams(streams: &mut Vec<WarmStream>, live_sessions: &Mutex<HashSet<St
     streams.retain(|stream| !stream.owners.is_empty() && stream.last_used.elapsed() < STREAM_IDLE);
 }
 
+#[derive(Clone, Copy)]
+struct FrameRead {
+    max_image_edge: u32,
+    signature_only: bool,
+}
+
 fn stream_capture(
     streams: &mut Vec<WarmStream>,
     live_sessions: &Mutex<HashSet<String>>,
@@ -517,7 +537,7 @@ fn stream_capture(
     target_key: &str,
     bounds: ScreenRect,
     recycle_sender: &SyncSender<Vec<u8>>,
-    max_image_edge: u32,
+    read: FrameRead,
 ) -> Result<(RgbaImage, ScreenRect), DriverError> {
     let authorized = || {
         session_id.is_none_or(|id| {
@@ -550,7 +570,7 @@ fn stream_capture(
         }
         let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
         let scale = f64::from(unsafe { filter.filter.pointPixelScale() }).max(1.0);
-        let (width, height) = capture_size(bounds, scale, max_image_edge)?;
+        let (width, height) = capture_size(bounds, scale, read.max_image_edge)?;
         let stream = super::stream::CaptureStream::start(&filter.filter, width, height)?;
         streams.push(WarmStream {
             target_key: target_key.to_owned(),
@@ -569,7 +589,10 @@ fn stream_capture(
         stream.owners.insert(id.to_owned());
     }
     stream.last_used = Instant::now();
-    let image = match stream.stream.snapshot(session_id.is_none()) {
+    let image = match stream
+        .stream
+        .snapshot(session_id.is_none(), read.signature_only)
+    {
         Ok(Some(image)) => image,
         Ok(None) => {
             let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
@@ -578,7 +601,7 @@ fn stream_capture(
                 bounds,
                 None,
                 recycle_sender.clone(),
-                max_image_edge,
+                read.max_image_edge,
             )?
         }
         Err(error) => {

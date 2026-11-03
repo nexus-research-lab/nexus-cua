@@ -922,6 +922,7 @@ mod tests {
     impl DesktopDriver for TransportDriver {
         async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
             Ok(DriverCapabilities {
+                observe_after: false,
                 action_limits: nexus_cua_protocol::ActionLimits::default(),
                 protocol_version: "nexus.cua.v1".to_owned(),
                 runtime_version: "transport-test".to_owned(),
@@ -997,6 +998,7 @@ mod tests {
     impl DesktopDriver for MutationDriver {
         async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
             Ok(DriverCapabilities {
+                observe_after: false,
                 action_limits: nexus_cua_protocol::ActionLimits::default(),
                 protocol_version: "nexus.cua.v1".to_owned(),
                 runtime_version: "transport-mutation-test".to_owned(),
