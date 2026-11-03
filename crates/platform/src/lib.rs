@@ -56,3 +56,17 @@ pub fn system_driver() -> Result<Arc<dyn DesktopDriver>, DriverError> {
         "the native driver is not available in this build",
     ))
 }
+
+/// Runs a host future while servicing bounded native main-thread requests.
+/// Call on the process main thread around the runtime host's async entry point.
+/// macOS input hit testing requires this dispatcher; other platforms pass through.
+pub async fn with_native_main_thread<F: std::future::Future>(future: F) -> F::Output {
+    #[cfg(target_os = "macos")]
+    {
+        macos::main_thread::run(future).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        future.await
+    }
+}

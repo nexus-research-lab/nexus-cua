@@ -5,6 +5,7 @@ mod clipboard;
 mod input;
 mod keyboard_layout;
 mod launch;
+pub(crate) mod main_thread;
 pub(crate) mod provenance;
 mod semantic;
 mod stream;

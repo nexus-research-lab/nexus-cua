@@ -1342,8 +1342,8 @@ async fn wait_for_minimized(
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
-                "fixture window did not report minimized=true (present={}, listed={})",
-                current.is_some(),
+                "fixture window did not report minimized state (state={:?}, listed={})",
+                current.map(|window| window.state),
                 windows.len()
             )
             .into());

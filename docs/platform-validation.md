@@ -453,11 +453,14 @@ C8: exhaustive per-axis round trips cover 3840×2160, 1366×768 and 1×1 images.
 Nonfinite/out-of-bounds rejection is tested. Native 4× zoom on a 4×4 pixel
 target is pending; arithmetic tests alone do not establish input acceptance.
 
-C6: source routes guarded action points and both drag endpoints through input
-ownership checks; native coverage remains pending. Deterministic tests cover
-topmost process selection and runtime overlay exclusion.
-Native foreign occlusion, same-process popup, and AX-free custom-view scrolling
-remain pending. CG rectangle ordering does not prove click-through semantics.
+C6: Mac full native validation now passes core actions, window replacement and
+session expiry after replacing CG rectangle ordering with AppKit mouse-down hit
+testing. The 31-second run stops at fixture minimization, so full acceptance is
+not claimed. The earlier pointer failure was reproduced with a full-screen Dock
+window (layer 20) above ordinary apps; a content-free AppKit probe correctly hit
+the underlying app. There is no process-name or layer bypass. Main-thread requests
+are capped at 16 with a 250ms deadline; input dispatch remains serialized.
+Native same-process menu and custom-view scrolling coverage is still pending.
 
 ## C4 capture conversion and output budget (2026-11-02)
 
@@ -481,3 +484,13 @@ DISPLAY1 monitor creation (3840×2560). The full candidate passed display overvi
 before failing initial UIA cache construction. This does not establish the
 original E_INVALIDARG root cause or acceptance of subsequent window actions.
 Local full make check and Windows GNU 1.88 workspace Clippy/tests passed.
+
+## Static capture timing on the local optimized candidate (2026-11-02)
+
+With foreground input disabled and accessibility disabled, a background fixture
+remained observable after five seconds without content changes. Twenty subsequent
+observations measured p50 100.37ms, p95 103.60ms, max 104.13ms. PNG output was
+1568×1222, at most 167871 bytes; no PNG remained after session close. This is a
+local optimized-build diagnostic, not release-runner acceptance, a 4K-video CPU
+measurement, or proof of the 100ms native stream-stop bound. The corresponding
+debug run measured p95 816.60ms and is not used for performance acceptance.

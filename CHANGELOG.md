@@ -5,6 +5,9 @@ file.
 
 ## [Unreleased]
 
+- Fix C6 macOS pointer ownership for Dock/Stage Manager pass-through surfaces
+  using bounded main-thread AppKit hit testing instead of rectangle ordering.
+
 - C9: advertise effective session and action bounds through a closed capability
   object shared with runtime validation and all three SDKs.
 

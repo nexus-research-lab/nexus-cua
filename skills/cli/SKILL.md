@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=0dd54f272e4123b47277a9838ade0719a5e6eff1fb3e20c10d22e1f237599490 -->
+<!-- generated: product=0.1.0 catalogue_sha256=a695d1f8fa9da4fa0fa25a94b19cb2cf1480934ed5fd327e1db229353115e97e -->
 
 ## Operating contract
 
@@ -57,8 +57,8 @@ final pixel mapping. Dedicated model-facing normalized tools retain integer
 inputs. NaN, infinity, negative, and out-of-range coordinates are rejected.
 
 C6: Foreground click, hold, scroll and both drag endpoints are checked on the
-serialized input actor before pointer dispatch. macOS uses front-to-back on-screen
-window ownership across layers, excluding runtime-owned windows; Windows checks
+serialized input actor before pointer dispatch. macOS requests AppKit mouse-down hit testing on the main thread through a
+bounded queue, then resolves ownership on the serialized input actor; Windows checks
 the process owning WindowFromPoint, permitting same-process popups. Pointer
 actions do not first raise the target and erase evidence of foreign occlusion.
 Move-only and explicit background clicks are exempt from this foreground check.

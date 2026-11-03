@@ -431,8 +431,8 @@ enrichment applies after scope filtering. Empty authority never means all apps.
 The public request and SDK interfaces are unchanged.
 
 C6: Foreground click, hold, scroll and both drag endpoints are checked on the
-serialized input actor before pointer dispatch. macOS uses front-to-back on-screen
-window ownership across layers, excluding runtime-owned windows; Windows checks
+serialized input actor before pointer dispatch. macOS requests AppKit mouse-down hit testing on the main thread through a
+bounded queue, then resolves ownership on the serialized input actor; Windows checks
 the process owning WindowFromPoint, permitting same-process popups. Pointer
 actions do not first raise the target and erase evidence of foreign occlusion.
 Move-only and explicit background clicks are exempt from this foreground check.

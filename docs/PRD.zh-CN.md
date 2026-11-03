@@ -2124,6 +2124,8 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C3 Nexus 分支必须在不依赖本机 `go.work` 时可构建（高）
 
+实施状态：已完成。经用户批准推送 Runtime 236fb58；Nexus d2d1f504d 固定精确 SDK 伪版本与校验和，新增独立构建目标并在后端 CI 禁用 workspace。干净 clone 的 GOWORK=off 全量 Go 构建和两个 CUA 接入包测试通过；Nexus 分支尚未推送。
+
 - **问题**：Nexus `go.mod` 仍锁定 2026-10-20 的旧 SDK 伪版本，能编译只是因为有
   被 gitignore 的本地 `go.work` 指向本机 nexus-cua；`GOWORK=off go build` 报
   `undefined: nexuscua.NormalizedPoint`。
@@ -2166,16 +2168,17 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C6 指针命中检查改为窗口层级判断，并覆盖全部像素动作（中）
 
-实施状态：源码已修复；检查覆盖两平台全部指定像素动作并移入输入 actor，保留窗口顺序回归，删除仅复述动作枚举映射的测试；真实动作覆盖由原生回归验收。原生遮挡、同进程菜单、自绘滚动仍待验收；矩形归属不等于完整的透明/穿透窗口输入语义。
+实施状态：源码已修复；检查覆盖两平台全部指定像素动作并移入输入 actor，实机发现 Dock/Stage Manager 的全屏穿透层会被矩形排序误判，改用主线程 AppKit 真实 mouse-down 命中，原生引用不离开所属线程。删除仅复述动作枚举/矩形排序的测试。当前 Mac 原生核心动作、窗口替换和会话过期路径通过；完整回归仍阻塞于 fixture 最小化，同进程菜单及自绘滚动尚待专门验收。
 
 - **问题**：macOS 滚动前不移动指针，只依赖事件位置字段；命中检查使用 AX
   `AXUIElementCopyElementAtPosition`，在 AX 支持差的应用（Java/Qt/游戏/画布）中
   失败，同一应用的弹出菜单也会因"窗口身份不符"被拒；Windows 要求根窗口等于
   目标窗口，同样拒绝同进程弹窗；点击、长按、拖拽没有命中检查。
 - **修复**：
-  1. macOS：用系统在屏窗口列表按从前到后顺序找到第一个包含该点的窗口（跳过本
-     进程窗口，为 §2.6 overlay 预留），要求其所属进程等于授权进程，层级不限，
-     因此包含该应用的菜单和弹窗。
+  1. macOS：通过有界主线程队列调用 AppKit 实际 mouse-down 窗口命中，输入 actor
+     用该窗口的 CG 元数据核验授权进程（跳过 runtime 自身窗口）。原先矩形排序
+     方案会把 Dock/Stage Manager 的全屏穿透层误当遮挡，已由真实命中替代。
+     不依赖 AX，不按应用名或窗口层级建立绕过白名单。
   2. Windows：`WindowFromPoint` 后取所属进程，要求等于授权进程，不再要求根窗口
      相等。
   3. 命中检查放在输入 actor 上、紧挨派发之前执行。适用于前台 `click_point`、
@@ -2210,7 +2213,7 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C9 Nexus 授权与动作暴露（中，Nexus 仓）
 
-实施状态：Runtime 已增加与校验共享的 action_limits，三 SDK/schema 同步；Nexus 目标授权、回合时限、敏感动作审批、恢复/窗口/数值/长按/启动入口已实现；Runtime 全量 make check 已通过，Nexus 检查收尾中。真实 Nexus 权限 UI 和恢复窗口验收仍待执行；固定 SDK 提交属于 C3。
+实施状态：Runtime 已增加与校验共享的 action_limits，三 SDK/schema 同步；Nexus 目标授权、回合时限、敏感动作审批、恢复/窗口/数值/长按/启动入口已实现；Runtime 与 Nexus 全量 make check 均已通过；Nexus C9 为 4ebe4ec12。真实 Nexus 权限 UI 和恢复窗口验收仍待执行；固定 SDK 提交属于 C3。
 
 - **问题**：TTL 改为固定 30 分钟但仍不续期、不与回合绑定；前台输入仍无条件授予；
   逐动作审批仍位于观察之后（N3）；恢复最小化等动作仍未暴露（N5）。
