@@ -812,14 +812,14 @@ fn sample_process(pid: u32) -> Result<ResourceSample, Box<dyn Error>> {
         if fields.len() != 4 {
             return Err("Windows process sample has an unexpected shape".into());
         }
-        return Ok(ResourceSample {
+        Ok(ResourceSample {
             elapsed_seconds: 0.0,
             resident_bytes: fields[0].parse()?,
             peak_resident_bytes: Some(fields[1].parse()?),
             cpu_seconds: fields[2].parse()?,
             handles: Some(fields[3].parse()?),
             files: None,
-        });
+        })
     }
     #[cfg(not(windows))]
     {
