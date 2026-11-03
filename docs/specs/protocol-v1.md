@@ -45,6 +45,11 @@ refers only to the old guards. Read failure is returned as `observation_error`
 without changing the action's dispatch/effect evidence. Never repeat a mutation
 because its follow-up observation failed. Reconciliation retains the original
 command, including these options, and does not re-execute the action.
+Replaying the same request ID returns the original embedded observation
+without capturing again. A later observation of the same window supersedes its
+guard, and its single-use screenshot artifact may already have been consumed,
+in which case adapters report `observation_error` instead of an image. Observe
+again rather than act on a replayed observation.
 Omitting the options preserves the separate action/observe flow.
 
 ## Authorization

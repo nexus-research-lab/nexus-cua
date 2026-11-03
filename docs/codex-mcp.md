@@ -200,6 +200,7 @@ enabled_tools = [
   "list_displays",
   "observe_display",
   "observe_window",
+  "focus_window",
   "read_clipboard",
   "write_clipboard",
   "zoom",

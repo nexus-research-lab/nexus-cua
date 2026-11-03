@@ -66,6 +66,19 @@ impl DriverActionGuard {
         }
     }
 
+    /// Clears a held-input marker after the native monitor confirms release.
+    /// This records no new activity and never latches takeover.
+    ///
+    /// # Panics
+    /// Panics if internal activity bookkeeping was poisoned by another panic.
+    pub fn record_input_released(&self) {
+        self.dispatch
+            .activity
+            .lock()
+            .expect("activity state contains no native objects")
+            .input_held = false;
+    }
+
     pub(crate) async fn wait_until_idle(&self) -> Result<(), DriverError> {
         self.wait_for_idle(
             crate::activity::INPUT_QUIET_PERIOD,
@@ -989,6 +1002,19 @@ mod action_guard_tests {
             guard.begin_dispatch().unwrap_err().kind,
             crate::DriverErrorKind::Busy
         );
+        assert!(guard.check().is_ok());
+    }
+
+    #[test]
+    fn confirmed_release_clears_held_input_without_takeover() {
+        let guard = fresh_guard();
+        guard.record_user_input_state(true);
+        guard.dispatch.activity.lock().unwrap().last_input =
+            Some(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
+        guard.begin_dispatch().unwrap_err();
+        guard.record_input_released();
+        guard.begin_dispatch().unwrap();
+        guard.record_input_released();
         assert!(guard.check().is_ok());
     }
 

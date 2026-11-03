@@ -23,8 +23,14 @@ const DEADLINE: Duration = Duration::from_millis(500);
 // Identification is paired with the source PID; this is not an authority token.
 const EVENT_MARKER: i64 = 0x4e58_4355_4149_4e50;
 
+// kCGEventSourceStateHIDSystemState: hardware state only, excluding posted events.
+const HID_SYSTEM_STATE: i32 = 1;
+
 unsafe extern "C" {
     fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
+    fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
+    fn CGEventSourceButtonState(state: i32, button: u32) -> bool;
+    fn CGEventSourceFlagsState(state: i32) -> u64;
 }
 
 pub(super) fn mark(event: &CGEvent) {
@@ -81,15 +87,19 @@ struct PressedInputs {
     modifiers: bool,
 }
 
+fn holds_modifier(flags: CGEventFlags) -> bool {
+    flags.intersects(
+        CGEventFlags::CGEventFlagShift
+            | CGEventFlags::CGEventFlagControl
+            | CGEventFlags::CGEventFlagAlternate
+            | CGEventFlags::CGEventFlagCommand
+            | CGEventFlags::CGEventFlagSecondaryFn,
+    )
+}
+
 impl PressedInputs {
     fn update(&mut self, kind: CGEventType, code: i64, flags: CGEventFlags) {
-        self.modifiers = flags.intersects(
-            CGEventFlags::CGEventFlagShift
-                | CGEventFlags::CGEventFlagControl
-                | CGEventFlags::CGEventFlagAlternate
-                | CGEventFlags::CGEventFlagCommand
-                | CGEventFlags::CGEventFlagSecondaryFn,
-        );
+        self.modifiers = holds_modifier(flags);
         match kind {
             CGEventType::KeyDown | CGEventType::KeyUp => {
                 if let Ok(code) = usize::try_from(code)
@@ -125,6 +135,48 @@ impl PressedInputs {
 
     fn held(&self) -> bool {
         self.modifiers || self.buttons != 0 || self.keys.iter().any(|keys| *keys != 0)
+    }
+
+    // A tap can miss a release, for example while Secure Event Input hides
+    // keyboard events. Hardware state may only clear tracked input, never add it.
+    fn reconcile_releases(
+        &mut self,
+        key_down: impl Fn(u16) -> bool,
+        button_down: impl Fn(u32) -> bool,
+        flags: CGEventFlags,
+    ) {
+        if !holds_modifier(flags) {
+            self.modifiers = false;
+        }
+        for (word, keys) in (0_u16..).zip(self.keys.iter_mut()) {
+            for bit in 0..64 {
+                if *keys & (1 << bit) != 0 && !key_down(word * 64 + bit) {
+                    *keys &= !(1 << bit);
+                }
+            }
+        }
+        for button in 0..32 {
+            if self.buttons & (1 << button) != 0 && !button_down(button) {
+                self.buttons &= !(1 << button);
+            }
+        }
+    }
+}
+
+fn reconcile_hardware_releases(guards: &mut Guards) {
+    if !guards.1.held() {
+        return;
+    }
+    // SAFETY: These CoreGraphics state reads take plain values and retain nothing.
+    guards.1.reconcile_releases(
+        |key| unsafe { CGEventSourceKeyState(HID_SYSTEM_STATE, key) },
+        |button| unsafe { CGEventSourceButtonState(HID_SYSTEM_STATE, button) },
+        CGEventFlags::from_bits_truncate(unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) }),
+    );
+    if !guards.1.held() {
+        for guard in &guards.0 {
+            guard.record_input_released();
+        }
     }
 }
 
@@ -229,6 +281,7 @@ fn monitor(
             if guards.0.is_empty() || !healthy.load(Ordering::Acquire) {
                 return true;
             }
+            reconcile_hardware_releases(&mut guards);
         }
         CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, TICK, false);
     }
@@ -335,6 +388,23 @@ mod tests {
             CGEventFlags::CGEventFlagAlphaShift,
         );
         assert!(!state.held()); // Caps Lock is a toggle, not a held modifier.
+    }
+
+    #[test]
+    fn hardware_state_clears_missed_releases_but_never_adds_input() {
+        let mut state = PressedInputs::default();
+        let command = CGEventFlags::CGEventFlagCommand;
+        state.update(CGEventType::KeyDown, 12, command);
+        state.update(CGEventType::KeyDown, 200, command);
+        state.update(CGEventType::RightMouseDown, 1, command);
+        state.reconcile_releases(|key| key == 200, |_| true, command);
+        assert_eq!(state.keys, [0, 0, 0, 1 << (200 - 192)]);
+        assert_eq!(state.buttons, 1 << 1);
+        assert!(state.modifiers);
+        state.reconcile_releases(|_| false, |_| false, CGEventFlags::empty());
+        assert!(!state.held());
+        state.reconcile_releases(|_| true, |_| true, command);
+        assert!(!state.held());
     }
 
     #[test]
