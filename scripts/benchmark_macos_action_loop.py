@@ -54,6 +54,13 @@ def measure(client, count, combined):
             before = counter(observed)
             target = next(e for e in observed.elements if e.name == "Increment Counter")
             started = time.perf_counter()
+            replay_command = {"operation": "perform_action", "input": {
+                "session_id": session.session_id, "window_ref": window.window_ref,
+                "observation_id": observed.observation_id,
+                "action": {"kind": "invoke_element", "element_ref": target.element_ref},
+            }}
+            if combined:
+                replay_command["input"]["observe_after"] = ObserveAfterOptions(accessibility=AccessibilityMode.FULL).to_wire()
             output, request = client.perform_action(
                 session.session_id, window.window_ref, observed.observation_id,
                 InvokeElement(target.element_ref),
@@ -69,7 +76,7 @@ def measure(client, count, combined):
             if combined and not replay_checked:
                 # Exercise dispatcher replay with the exact identity/options,
                 # including its original returned observation, without mutation.
-                replay = client._request_with_id(request.request_id, request._command, 30)
+                replay = client._request_with_id(request.request_id, replay_command, 30)
                 data = replay["outcome"]["result"]["data"]
                 if data["observation"]["observation_id"] != observed.observation_id:
                     raise RuntimeError("replay did not retain the original observation")
