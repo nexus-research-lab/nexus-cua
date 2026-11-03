@@ -260,8 +260,17 @@ class PackageChannelTests(unittest.TestCase):
     def create_tar_gzip(
         self, payload: Path, archive: Path, archive_root: str
     ) -> None:
+        runtime_name = self.channels["npm"]["platforms"]["darwin-arm64"]["runtime"]
+
+        def macos_mode(member: tarfile.TarInfo) -> tarfile.TarInfo:
+            # Windows chmod cannot represent POSIX execute bits. This fixture
+            # models a macOS archive, whose runtime mode is part of its contract.
+            if member.name == f"{archive_root}/{runtime_name}":
+                member.mode = 0o755
+            return member
+
         with tarfile.open(archive, mode="w:gz") as bundle:
-            bundle.add(payload, arcname=archive_root)
+            bundle.add(payload, arcname=archive_root, filter=macos_mode)
 
     def create_zip(self, payload: Path, archive: Path, archive_root: str) -> None:
         with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
