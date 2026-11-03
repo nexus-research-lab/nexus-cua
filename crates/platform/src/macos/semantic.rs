@@ -3,6 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -107,6 +108,7 @@ impl SemanticActor {
         &self,
         key: String,
         pid: i32,
+        window_number: u32,
         bounds: ScreenRect,
         title: String,
     ) -> Result<bool, DriverError> {
@@ -114,6 +116,7 @@ impl SemanticActor {
         self.admit(SemanticCommand::WindowMinimized {
             key,
             pid,
+            window_number,
             bounds,
             title,
             reply,
@@ -136,6 +139,7 @@ impl SemanticActor {
     pub(super) async fn snapshot(
         &self,
         pid: i32,
+        window_number: u32,
         window_bounds: ScreenRect,
         window_title: String,
         mode: AccessibilityMode,
@@ -143,6 +147,7 @@ impl SemanticActor {
         let (reply, receiver) = oneshot::channel();
         self.admit(SemanticCommand::Snapshot {
             pid,
+            window_number,
             window_bounds,
             window_title,
             mode,
@@ -169,6 +174,7 @@ impl SemanticActor {
     pub(super) async fn invoke_at_point(
         &self,
         pid: i32,
+        window_number: u32,
         window_bounds: ScreenRect,
         window_title: String,
         point: ScreenPoint,
@@ -176,6 +182,7 @@ impl SemanticActor {
         let (reply, receiver) = oneshot::channel();
         self.admit(SemanticCommand::InvokeAtPoint {
             pid,
+            window_number,
             window_bounds,
             window_title,
             point,
@@ -188,12 +195,14 @@ impl SemanticActor {
     pub(super) async fn raise_window(
         &self,
         pid: i32,
+        window_number: u32,
         window_bounds: ScreenRect,
         window_title: String,
     ) -> Result<(), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(SemanticCommand::RaiseWindow {
             pid,
+            window_number,
             window_bounds,
             window_title,
             reply,
@@ -204,6 +213,7 @@ impl SemanticActor {
     pub(super) async fn set_window_bounds(
         &self,
         pid: i32,
+        window_number: u32,
         current_bounds: ScreenRect,
         window_title: String,
         requested_bounds: ScreenRect,
@@ -211,6 +221,7 @@ impl SemanticActor {
         let (reply, receiver) = oneshot::channel();
         self.admit(SemanticCommand::SetWindowBounds {
             pid,
+            window_number,
             current_bounds,
             window_title,
             requested_bounds,
@@ -223,6 +234,7 @@ impl SemanticActor {
     pub(super) async fn set_window_minimized(
         &self,
         pid: i32,
+        window_number: u32,
         current_bounds: ScreenRect,
         window_title: String,
         minimized: bool,
@@ -230,6 +242,7 @@ impl SemanticActor {
         let (reply, receiver) = oneshot::channel();
         self.admit(SemanticCommand::SetWindowMinimized {
             pid,
+            window_number,
             current_bounds,
             window_title,
             minimized,
@@ -263,12 +276,14 @@ enum SemanticCommand {
     WindowMinimized {
         key: String,
         pid: i32,
+        window_number: u32,
         bounds: ScreenRect,
         title: String,
         reply: oneshot::Sender<Result<bool, DriverError>>,
     },
     Snapshot {
         pid: i32,
+        window_number: u32,
         window_bounds: ScreenRect,
         window_title: String,
         mode: AccessibilityMode,
@@ -281,6 +296,7 @@ enum SemanticCommand {
     },
     InvokeAtPoint {
         pid: i32,
+        window_number: u32,
         window_bounds: ScreenRect,
         window_title: String,
         point: ScreenPoint,
@@ -288,12 +304,14 @@ enum SemanticCommand {
     },
     RaiseWindow {
         pid: i32,
+        window_number: u32,
         window_bounds: ScreenRect,
         window_title: String,
         reply: oneshot::Sender<Result<(), DriverError>>,
     },
     SetWindowBounds {
         pid: i32,
+        window_number: u32,
         current_bounds: ScreenRect,
         window_title: String,
         requested_bounds: ScreenRect,
@@ -301,6 +319,7 @@ enum SemanticCommand {
     },
     SetWindowMinimized {
         pid: i32,
+        window_number: u32,
         current_bounds: ScreenRect,
         window_title: String,
         minimized: bool,
@@ -350,6 +369,7 @@ impl SemanticState {
         &mut self,
         key: &str,
         pid: i32,
+        window_number: u32,
         bounds: ScreenRect,
         title: &str,
     ) -> Result<bool, DriverError> {
@@ -357,8 +377,10 @@ impl SemanticState {
             if self.state_windows.len() >= 64 {
                 self.state_windows.clear();
             }
-            self.state_windows
-                .insert(key.to_owned(), find_window(pid, bounds, title)?);
+            self.state_windows.insert(
+                key.to_owned(),
+                find_window(pid, window_number, bounds, title)?,
+            );
         }
         // A generation-bound native AX object survives geometry animations. This
         // cache is only used for state reads, never as mutation authority.
@@ -368,7 +390,14 @@ impl SemanticState {
                 .ok_or_else(|| provider_failure("AXMinimized is not a boolean"))?;
             if !minimized {
                 let (actual_title, actual_bounds) = read_window_identity(window)?;
-                if !window_identity_matches(actual_bounds, actual_title.as_deref(), bounds, title) {
+                if !window_identity_matches(
+                    read_window_number(window),
+                    window_number,
+                    actual_bounds,
+                    actual_title.as_deref(),
+                    bounds,
+                    title,
+                ) {
                     return Err(DriverError::new(
                         DriverErrorKind::TargetUnavailable,
                         "window geometry is transformed or changing",
@@ -387,92 +416,122 @@ impl SemanticState {
     fn run(mut self, receiver: &Receiver<(SemanticCommand, Option<DriverActionGuard>)>) {
         while let Ok((command, guard)) = receiver.recv() {
             ACTION_GUARD.with(|slot| *slot.borrow_mut() = guard);
-            match command {
-                SemanticCommand::WindowMinimized {
-                    key,
-                    pid,
-                    bounds,
-                    title,
-                    reply,
-                } => {
-                    let result = self.window_minimized(&key, pid, bounds, &title);
-                    let _ = reply.send(result);
-                }
-                SemanticCommand::Snapshot {
-                    pid,
-                    window_bounds,
-                    window_title,
-                    mode,
-                    reply,
-                } => {
-                    let _ = reply.send(self.snapshot(pid, window_bounds, &window_title, mode));
-                }
-                SemanticCommand::Perform {
-                    element_key,
-                    action,
-                    reply,
-                } => {
-                    let _ = reply.send(self.perform(&element_key, action));
-                }
-                SemanticCommand::InvokeAtPoint {
-                    pid,
-                    window_bounds,
-                    window_title,
-                    point,
-                    reply,
-                } => {
-                    let _ = reply.send(invoke_at_point(pid, window_bounds, &window_title, point));
-                }
-                SemanticCommand::RaiseWindow {
-                    pid,
-                    window_bounds,
-                    window_title,
-                    reply,
-                } => {
-                    let _ = reply.send(raise_window(pid, window_bounds, &window_title));
-                }
-                SemanticCommand::SetWindowBounds {
-                    pid,
-                    current_bounds,
-                    window_title,
-                    requested_bounds,
-                    reply,
-                } => {
-                    let _ = reply.send(set_window_bounds(
-                        pid,
-                        current_bounds,
-                        &window_title,
-                        requested_bounds,
-                    ));
-                }
-                SemanticCommand::SetWindowMinimized {
-                    pid,
-                    current_bounds,
-                    window_title,
-                    minimized,
-                    reply,
-                } => {
-                    let _ = reply.send(set_window_minimized(
-                        pid,
-                        current_bounds,
-                        &window_title,
-                        minimized,
-                    ));
-                }
-            }
+            self.handle_command(command);
             ACTION_GUARD.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    fn handle_command(&mut self, command: SemanticCommand) {
+        match command {
+            SemanticCommand::WindowMinimized {
+                key,
+                pid,
+                window_number,
+                bounds,
+                title,
+                reply,
+            } => {
+                let result = self.window_minimized(&key, pid, window_number, bounds, &title);
+                let _ = reply.send(result);
+            }
+            SemanticCommand::Snapshot {
+                pid,
+                window_number,
+                window_bounds,
+                window_title,
+                mode,
+                reply,
+            } => {
+                let _ = reply.send(self.snapshot(
+                    pid,
+                    window_number,
+                    window_bounds,
+                    &window_title,
+                    mode,
+                ));
+            }
+            SemanticCommand::Perform {
+                element_key,
+                action,
+                reply,
+            } => {
+                let _ = reply.send(self.perform(&element_key, action));
+            }
+            SemanticCommand::InvokeAtPoint {
+                pid,
+                window_number,
+                window_bounds,
+                window_title,
+                point,
+                reply,
+            } => {
+                let _ = reply.send(invoke_at_point(
+                    pid,
+                    window_number,
+                    window_bounds,
+                    &window_title,
+                    point,
+                ));
+            }
+            SemanticCommand::RaiseWindow {
+                pid,
+                window_number,
+                window_bounds,
+                window_title,
+                reply,
+            } => {
+                let _ = reply.send(raise_window(
+                    pid,
+                    window_number,
+                    window_bounds,
+                    &window_title,
+                ));
+            }
+            SemanticCommand::SetWindowBounds {
+                pid,
+                window_number,
+                current_bounds,
+                window_title,
+                requested_bounds,
+                reply,
+            } => {
+                let _ = reply.send(set_window_bounds(
+                    pid,
+                    window_number,
+                    current_bounds,
+                    &window_title,
+                    requested_bounds,
+                ));
+            }
+            SemanticCommand::SetWindowMinimized {
+                pid,
+                window_number,
+                current_bounds,
+                window_title,
+                minimized,
+                reply,
+            } => {
+                let _ = reply.send(set_window_minimized(
+                    pid,
+                    window_number,
+                    current_bounds,
+                    &window_title,
+                    minimized,
+                ));
+            }
         }
     }
 
     fn snapshot(
         &mut self,
         pid: i32,
+        window_number: u32,
         window_bounds: ScreenRect,
         window_title: &str,
         mode: AccessibilityMode,
     ) -> Result<SemanticSnapshot, DriverError> {
         ensure_accessibility_permission()?;
-        let root = find_window(pid, window_bounds, window_title)?;
+        let root = find_window(pid, window_number, window_bounds, window_title)?;
         self.next_snapshot = self.next_snapshot.wrapping_add(1);
         let snapshot_key = format!("ax:{pid}:{}", self.next_snapshot);
         let budget = snapshot_budget(mode);
@@ -608,18 +667,21 @@ impl SemanticState {
 
 fn invoke_at_point(
     pid: i32,
+    window_number: u32,
     window_bounds: ScreenRect,
     window_title: &str,
     point: ScreenPoint,
 ) -> Result<bool, DriverError> {
     ensure_accessibility_permission()?;
-    find_window(pid, window_bounds, window_title)?;
+    find_window(pid, window_number, window_bounds, window_title)?;
     let application = AxElement::application(pid);
     application.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)?;
     let mut element = element_at_position(&application, point.x, point.y)?;
     let element_window = copy_element(&element, kAXWindowAttribute)?;
     let (actual_title, actual_bounds) = read_window_identity(&element_window)?;
     if !window_identity_matches(
+        read_window_number(&element_window),
+        window_number,
         actual_bounds,
         actual_title.as_deref(),
         window_bounds,
@@ -697,6 +759,7 @@ fn snapshot_budget(mode: AccessibilityMode) -> SnapshotBudget {
 
 fn find_window(
     pid: i32,
+    window_number: u32,
     expected_bounds: ScreenRect,
     expected_title: &str,
 ) -> Result<AxElement, DriverError> {
@@ -708,7 +771,14 @@ fn find_window(
         expected_bounds.y + expected_bounds.height * 0.5,
     ) && let Ok(window) = copy_element(&element, kAXWindowAttribute)
         && let Ok((title, bounds)) = read_window_identity(&window)
-        && window_identity_matches(bounds, title.as_deref(), expected_bounds, expected_title)
+        && window_identity_matches(
+            read_window_number(&window),
+            window_number,
+            bounds,
+            title.as_deref(),
+            expected_bounds,
+            expected_title,
+        )
     {
         return Ok(window);
     }
@@ -717,8 +787,15 @@ fn find_window(
         .into_iter()
         .filter_map(|window| {
             let (title, bounds) = read_window_identity(&window).ok()?;
-            window_identity_matches(bounds, title.as_deref(), expected_bounds, expected_title)
-                .then_some(window)
+            window_identity_matches(
+                read_window_number(&window),
+                window_number,
+                bounds,
+                title.as_deref(),
+                expected_bounds,
+                expected_title,
+            )
+            .then_some(window)
         })
         .take(2);
     let Some(window) = matching_windows.next() else {
@@ -811,6 +888,32 @@ fn copy_children(element: &AxElement, attribute: &str) -> Result<Vec<AxElement>,
     // SAFETY: A successful create-rule AX copy returned this non-null object.
     let value = unsafe { CFType::wrap_under_create_rule(value) };
     Ok(children_from_value(&value))
+}
+
+fn read_window_number(element: &AxElement) -> Option<u32> {
+    type GetWindow = unsafe extern "C" fn(AXUIElementRef, *mut u32) -> i32;
+    static GET_WINDOW: OnceLock<Option<GetWindow>> = OnceLock::new();
+    let get_window = GET_WINDOW.get_or_init(|| {
+        // macOS has no public AX-to-CG window identity bridge. Resolve this
+        // optional system symbol at runtime, keeping the strict title/geometry
+        // fallback on systems where it is unavailable. Never retain AX objects
+        // here: they remain on this actor, and native IDs never leave the driver.
+        // SAFETY: The symbol name is NUL-terminated. ApplicationServices is
+        // already linked and remains loaded for the process lifetime.
+        let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"_AXUIElementGetWindow".as_ptr()) };
+        if symbol.is_null() {
+            None
+        } else {
+            // SAFETY: The resolved macOS bridge takes an AX element and a
+            // CGWindowID output pointer, returning AXError (signed 32-bit).
+            Some(unsafe { std::mem::transmute::<*mut c_void, GetWindow>(symbol) })
+        }
+    });
+    let get_window = get_window.as_ref()?;
+    let mut number = 0;
+    // SAFETY: The retained element is actor-owned and live; number is writable.
+    let error = unsafe { get_window(element.as_concrete_TypeRef(), &raw mut number) };
+    (error == kAXErrorSuccess && number != 0).then_some(number)
 }
 
 fn read_window_identity(
@@ -1156,6 +1259,8 @@ fn bounded_string(mut value: String) -> String {
 }
 
 fn window_identity_matches(
+    actual_number: Option<u32>,
+    expected_number: u32,
     bounds: Option<ScreenRect>,
     title: Option<&str>,
     expected_bounds: ScreenRect,
@@ -1172,14 +1277,21 @@ fn window_identity_matches(
         && (bounds.height - expected_bounds.height).abs() <= AX_GEOMETRY_TOLERANCE;
     let title_matches =
         expected_title.is_empty() || title.is_none_or(|title| title == expected_title);
-    geometry_matches && title_matches
+    // A native ID is stronger than the independently supplied CG/AX titles.
+    // Geometry remains mandatory: a Stage Manager thumbnail is not an input surface.
+    geometry_matches && actual_number.map_or(title_matches, |number| number == expected_number)
 }
 
-fn raise_window(pid: i32, bounds: ScreenRect, title: &str) -> Result<(), DriverError> {
+fn raise_window(
+    pid: i32,
+    window_number: u32,
+    bounds: ScreenRect,
+    title: &str,
+) -> Result<(), DriverError> {
     ensure_accessibility_permission()?;
     let application = AxElement::application(pid);
     application.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECONDS)?;
-    let window = find_window(pid, bounds, title)?;
+    let window = find_window(pid, window_number, bounds, title)?;
     if copy_attribute(&application, kAXFrontmostAttribute)
         .ok()
         .as_ref()
@@ -1215,12 +1327,13 @@ fn raise_window(pid: i32, bounds: ScreenRect, title: &str) -> Result<(), DriverE
 
 fn set_window_bounds(
     pid: i32,
+    window_number: u32,
     current_bounds: ScreenRect,
     title: &str,
     requested_bounds: ScreenRect,
 ) -> Result<(), DriverError> {
     ensure_accessibility_permission()?;
-    let window = find_window(pid, current_bounds, title)?;
+    let window = find_window(pid, window_number, current_bounds, title)?;
     set_ax_point(
         &window,
         kAXPositionAttribute,
@@ -1236,12 +1349,13 @@ fn set_window_bounds(
 
 fn set_window_minimized(
     pid: i32,
+    window_number: u32,
     current_bounds: ScreenRect,
     title: &str,
     minimized: bool,
 ) -> Result<(), DriverError> {
     ensure_accessibility_permission()?;
-    let window = find_window(pid, current_bounds, title)?;
+    let window = find_window(pid, window_number, current_bounds, title)?;
     set_boolean(&window, kAXMinimizedAttribute, minimized)?;
     confirm_window_minimized(&window, minimized)
 }
@@ -1482,14 +1596,67 @@ mod tests {
     };
 
     #[test]
+    fn native_window_identity_accepts_different_provider_titles() {
+        assert!(window_identity_matches(
+            Some(42),
+            42,
+            Some(EXPECTED),
+            Some("Profile picker"),
+            EXPECTED,
+            "Browser",
+        ));
+    }
+
+    #[test]
+    fn native_window_identity_rejects_another_window_with_identical_metadata() {
+        assert!(!window_identity_matches(
+            Some(43),
+            42,
+            Some(EXPECTED),
+            Some("Browser"),
+            EXPECTED,
+            "Browser",
+        ));
+    }
+
+    #[test]
+    fn native_window_identity_still_rejects_transformed_or_missing_geometry() {
+        for actual in [
+            Some(ScreenRect {
+                width: 80.0,
+                height: 60.0,
+                ..EXPECTED
+            }),
+            Some(ScreenRect {
+                x: 102.0,
+                ..EXPECTED
+            }),
+            None,
+        ] {
+            assert!(!window_identity_matches(
+                Some(42),
+                42,
+                actual,
+                Some("Browser"),
+                EXPECTED,
+                "Browser",
+            ));
+        }
+    }
+
+    #[test]
     fn window_identity_requires_matching_geometry() {
         assert!(window_identity_matches(
+            None,
+            42,
             Some(EXPECTED),
             Some("Fixture"),
             EXPECTED,
             "Fixture",
         ));
         assert!(window_identity_matches(
+            None,
+            42,
             Some(ScreenRect {
                 x: 100.5,
                 ..EXPECTED
@@ -1499,6 +1666,8 @@ mod tests {
             "Fixture",
         ));
         assert!(!window_identity_matches(
+            None,
+            42,
             Some(ScreenRect {
                 x: 102.0,
                 ..EXPECTED
@@ -1509,6 +1678,8 @@ mod tests {
         ));
         assert!(!window_identity_matches(
             None,
+            42,
+            None,
             Some("Fixture"),
             EXPECTED,
             "Fixture",
@@ -1518,18 +1689,24 @@ mod tests {
     #[test]
     fn window_identity_rejects_conflicting_titles() {
         assert!(!window_identity_matches(
+            None,
+            42,
             Some(EXPECTED),
             Some("Another Window"),
             EXPECTED,
             "Fixture",
         ));
         assert!(window_identity_matches(
+            None,
+            42,
             Some(EXPECTED),
             None,
             EXPECTED,
             "Fixture",
         ));
         assert!(window_identity_matches(
+            None,
+            42,
             Some(EXPECTED),
             Some("Any Window"),
             EXPECTED,

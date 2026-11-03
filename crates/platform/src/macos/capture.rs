@@ -57,6 +57,7 @@ const FOREGROUND_RESTORE_TIMEOUT: Duration = Duration::from_millis(250);
 pub(super) struct NativeWindow {
     pub(super) key: String,
     pub(super) pid: i32,
+    pub(super) window_number: u32,
     pub(super) application_key: String,
     pub(super) application_id: String,
     pub(super) bundle_id: Option<String>,
@@ -1061,6 +1062,7 @@ fn native_window(
     Some(NativeWindow {
         key: format!("sc:{}:{id}", application.generation),
         pid,
+        window_number: id,
         application_key: application.generation.clone(),
         application_id: application.application_id.clone(),
         bundle_id: application.bundle_id.clone(),

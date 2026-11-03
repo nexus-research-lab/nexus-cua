@@ -617,3 +617,20 @@ the intended down/up state explicitly. The reproducible entry point is
 `scripts/validate_macos_takeover.py` (`--manual` for physical input with voice cues).
 Final `make check` passed, including SDK error fixtures, guard-latch/preflight
 tests and native physical-input suppression-policy readback.
+
+
+## 2026-11-03 real Chrome window identity regression
+
+A bounded real-app check found that Chrome's profile picker exposes different
+CG and AX titles for the same native window number and geometry. The published
+rc.1 binary rejected its observation. The corrected driver accepted that exact
+window, returned a screenshot and all 33 AX nodes, and rejected it while its
+Stage Manager geometry was transformed until an explicit authorized focus.
+A subsequent old/new comparison against the same foreground window reproduced
+the rc.1 rejection and corrected observation success. No profile was selected
+and no browser text was entered. Contents and screenshots were not logged.
+
+The optional AX-to-CG system bridge retains a strict title/geometry fallback
+when unavailable. Regression tests cover mismatched native IDs, conflicting
+fallback titles, and missing/transformed geometry. This is one browser window
+on one Mac, not general browser-task or production acceptance.

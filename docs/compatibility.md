@@ -1,6 +1,6 @@
 # Protocol Compatibility Policy
 
-Status: normative for the `0.2.0-rc.1` testing prerelease.
+Status: normative for the `0.2.0-rc.2` testing prerelease.
 
 Package and wire compatibility are independent. Hosts pin the package version
 they install and negotiate the exact `protocol_version` they speak. The current
@@ -23,6 +23,9 @@ there is no legacy pixel-coordinate fallback or parallel compatibility layer.
 Hosts must pin a matching runtime and SDK source revision. The `v0.2.0-rc.1` testing prerelease includes this reset, user-takeover errors,
 application-scene capture and optional post-action observation. It requires the
 matching SDK revision; it is not a stable production compatibility promise.
+
+`v0.2.0-rc.2` fixes native macOS window identity and focus recovery without
+changing this wire contract. Hosts still pin the runtime and SDK versions.
 
 ## Generated schemas
 

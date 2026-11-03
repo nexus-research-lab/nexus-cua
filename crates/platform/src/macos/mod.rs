@@ -136,6 +136,7 @@ impl MacosDriver {
                 self.semantic
                     .snapshot(
                         before.pid,
+                        before.window_number,
                         before.screen_bounds,
                         before.title.clone(),
                         accessibility,
@@ -145,13 +146,17 @@ impl MacosDriver {
             }
         };
         let (captured, semantics) = tokio::join!(capture, semantics);
-        let captured = captured?;
-        let semantics = semantics.map_err(|mut error| {
+        let background_recovery = |mut error: DriverError| {
             if !before.foreground && error.kind == DriverErrorKind::TargetUnavailable {
                 error.recovery_action = Some("focus_window".to_owned());
             }
             error
-        })?;
+        };
+        // Capture may reject a suspended Stage Manager thumbnail before AX
+        // reports its transformed geometry. Both reads need the same explicit
+        // focus recovery; neither may activate the application implicitly.
+        let captured = captured.map_err(background_recovery)?;
+        let semantics = semantics.map_err(background_recovery)?;
         let after = self.current_window(&window.key).await?;
         if before.screen_bounds != after.screen_bounds {
             return Err(DriverError::new(
@@ -202,6 +207,7 @@ impl MacosDriver {
                 .window_minimized(
                     window.key.clone(),
                     window.pid,
+                    window.window_number,
                     window.screen_bounds,
                     window.title.clone(),
                 )
@@ -513,6 +519,7 @@ impl DesktopDriver for MacosDriver {
                 self.semantic.window_minimized(
                     window.key.clone(),
                     window.pid,
+                    window.window_number,
                     window.screen_bounds,
                     window.title.clone(),
                 )
@@ -831,6 +838,7 @@ impl DesktopDriver for MacosDriver {
                     .semantic
                     .snapshot(
                         current.pid,
+                        current.window_number,
                         current.screen_bounds,
                         current.title.clone(),
                         AccessibilityMode::Interactive,
@@ -854,6 +862,7 @@ impl DesktopDriver for MacosDriver {
                     .semantic
                     .snapshot(
                         current.pid,
+                        current.window_number,
                         current.screen_bounds,
                         current.title.clone(),
                         AccessibilityMode::Interactive,
@@ -905,6 +914,7 @@ impl MacosDriver {
                     .window_minimized(
                         window.key.clone(),
                         window.pid,
+                        window.window_number,
                         window.screen_bounds,
                         window.title.clone(),
                     )
@@ -930,7 +940,12 @@ impl MacosDriver {
         })?
         .map_err(DriverError::mutation_indeterminate)?;
         self.semantic
-            .raise_window(restored.pid, restored.screen_bounds, restored.title)
+            .raise_window(
+                restored.pid,
+                restored.window_number,
+                restored.screen_bounds,
+                restored.title,
+            )
             .await
             .map_err(DriverError::mutation_indeterminate)
     }
@@ -953,6 +968,7 @@ impl MacosDriver {
                 self.semantic
                     .set_window_bounds(
                         current.pid,
+                        current.window_number,
                         current.screen_bounds,
                         current.title.clone(),
                         bounds,
@@ -968,6 +984,7 @@ impl MacosDriver {
                 self.semantic
                     .set_window_minimized(
                         current.pid,
+                        current.window_number,
                         current.screen_bounds,
                         current.title.clone(),
                         minimized,
@@ -1080,6 +1097,7 @@ impl MacosDriver {
                 .semantic
                 .invoke_at_point(
                     current.pid,
+                    current.window_number,
                     current.screen_bounds,
                     current.title.clone(),
                     point,
@@ -1155,7 +1173,12 @@ impl MacosDriver {
 
     async fn focus_for_input(&self, window: &NativeWindow) -> Result<(), DriverError> {
         self.semantic
-            .raise_window(window.pid, window.screen_bounds, window.title.clone())
+            .raise_window(
+                window.pid,
+                window.window_number,
+                window.screen_bounds,
+                window.title.clone(),
+            )
             .await
             .map_err(DriverError::mutation_not_dispatched)
     }

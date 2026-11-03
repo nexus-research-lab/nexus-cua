@@ -5,6 +5,20 @@ file.
 
 ## [Unreleased]
 
+## [0.2.0-rc.2] - 2026-11-03
+
+macOS Apple Silicon testing prerelease; no change to the wire contract.
+
+### Fixed
+
+- Match macOS accessibility windows using the native window ID when the optional
+  system bridge is available, so differing CG/AX titles (including Chrome's
+  profile picker) do not reject the same window. Geometry remains mandatory;
+  mismatched IDs and Stage Manager thumbnail geometry are still rejected. Systems
+  without the bridge retain the strict title/geometry fallback.
+- Return explicit focus recovery when background capture rejects a suspended
+  macOS window, including when capture fails before accessibility inspection.
+
 ## [0.2.0-rc.1] - 2026-11-03
 
 macOS Apple Silicon testing prerelease. Local checks and bounded native tests

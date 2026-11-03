@@ -527,6 +527,13 @@ admission, failure to settle or raise remains indeterminate. Read-only queries
 never activate a window. AX state caching must not report a transformed thumbnail
 as `normal` merely because the original AX window says `AXMinimized=false`.
 
+macOS AX-to-CG association prefers an exact native window number from the optional
+system identity bridge. A known mismatched number always rejects the candidate;
+matching numbers allow independently supplied CG/AX titles to differ. Geometry
+must still agree within the existing one-point tolerance. When the bridge is
+unavailable, the strict title/geometry match remains required. Native window
+numbers are internal driver metadata, never public refs or caller authority.
+
 A blank/suspended ScreenCaptureKit frame invalidates cached pixels but may recover
 within the existing bounded frame deadline. A stopped stream is rebuilt on the
 next capture request. Persistent suspension is an error, never a stale-frame

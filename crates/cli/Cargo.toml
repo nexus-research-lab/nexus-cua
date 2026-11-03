@@ -16,12 +16,12 @@ path = "src/main.rs"
 async-trait.workspace = true
 clap.workspace = true
 hex.workspace = true
-nexus-cua-platform = { version = "0.2.0-rc.1", path = "../platform" }
-nexus-cua-mcp = { version = "0.2.0-rc.1", path = "../mcp" }
-nexus-cua-provider = { version = "0.2.0-rc.1", path = "../provider" }
-nexus-cua-protocol = { version = "0.2.0-rc.1", path = "../protocol" }
-nexus-cua-runtime = { version = "0.2.0-rc.1", path = "../runtime" }
-nexus-cua-transport = { version = "0.2.0-rc.1", path = "../transport" }
+nexus-cua-platform = { version = "0.2.0-rc.2", path = "../platform" }
+nexus-cua-mcp = { version = "0.2.0-rc.2", path = "../mcp" }
+nexus-cua-provider = { version = "0.2.0-rc.2", path = "../provider" }
+nexus-cua-protocol = { version = "0.2.0-rc.2", path = "../protocol" }
+nexus-cua-runtime = { version = "0.2.0-rc.2", path = "../runtime" }
+nexus-cua-transport = { version = "0.2.0-rc.2", path = "../transport" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
