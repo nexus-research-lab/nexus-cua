@@ -311,10 +311,19 @@ separate from this mechanism.
 
 macOS foreground-enabled sessions install a passive session-level event tap at
 admission. Native objects stay on its dedicated CF run-loop actor. The tap reads
-only event type and origin metadata, never text, key codes, pointer coordinates,
-or accessibility content. Runtime-generated events carry a marker and source PID;
-all other mouse, key, modifier and scroll events latch user takeover. Other
-automation is conservatively treated as outside input too. The input source
+event type and origin metadata plus fixed-size key/button down-state and modifier
+flags, never characters, pointer coordinates or accessibility content. There is
+no key/event history. Runtime-generated events carry a marker and source PID.
+Outside input between dispatches records only the latest activity time and held
+state. The runtime waits for two idle seconds (at most five seconds per request),
+then rejects observations predating that input. A fresh observation within the
+same grant permits a new action. Continued activity returns retryable
+`busy/not_dispatched` with `wait_for_idle_then_observe`; it does not revoke the
+grant or extend its deadline. Observation age starts before native capture.
+Input racing with preflight is checked again at native dispatch. Once dispatch
+begins, outside input latches takeover. Native actor clones retain a dispatch
+lease until they finish, including when the caller's future is cancelled.
+Other automation is conservatively treated as outside input too. The input source
 explicitly permits physical input during both post-event suppression and drags.
 
 Takeover returns `user_active` and forbids further actions in that session:

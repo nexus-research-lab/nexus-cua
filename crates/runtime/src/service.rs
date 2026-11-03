@@ -763,6 +763,7 @@ impl Runtime {
             )
         })?;
         let session = Arc::new(Session {
+            activity: Arc::default(),
             interruption: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             driver: Arc::clone(&self.driver),
             closed: Arc::new(AtomicBool::new(true)),
@@ -1101,6 +1102,7 @@ impl Runtime {
         if !session.allows_application(&window.application) {
             return Err(capability_denied());
         }
+        let capture_started_at = std::time::Instant::now();
         let mut observation = self
             .observe_driver_window(
                 &session.id,
@@ -1162,6 +1164,7 @@ impl Runtime {
             self.config.max_elements_per_observation,
         );
         record.application_scene = application_scene;
+        record.created_at = capture_started_at;
         let observation_id = record.id.clone();
         let elements_complete = observation.elements_complete
             && observation.elements.len() <= self.config.max_elements_per_observation;
@@ -1321,6 +1324,8 @@ impl Runtime {
     ) -> Result<CommandResult, CuaError> {
         let session = self.session(&input.session_id).await?;
         validate_action_authority(&session, &input.action)?;
+        let mut guard = session.action_guard();
+        guard.wait_until_idle().await?;
         let _foreground_lane = if input.action.requires_foreground() {
             Some(self.foreground_lane.try_lock().map_err(|_| {
                 public_error(
@@ -1357,6 +1362,8 @@ impl Runtime {
                 return Err(stale_observation());
             }
             validate_action(&input.action, observation.screenshot_mapping)?;
+            guard.observed_at = Some(observation.created_at);
+            guard.check_observation()?;
             let driver_action = resolve_action(&input.action, observation)?;
             observation.status = ObservationStatus::InFlight;
             (window, observation.fingerprint.clone(), driver_action)
@@ -1365,7 +1372,12 @@ impl Runtime {
         let verification = self
             .driver
             .observation_is_current(&window, &fingerprint)
-            .await;
+            .await
+            .and_then(|current| {
+                guard.check()?;
+                guard.check_observation()?;
+                Ok(current)
+            });
         if !matches!(verification, Ok(true)) {
             self.invalidate_observation(&session, &input.observation_id)
                 .await;
@@ -1386,7 +1398,7 @@ impl Runtime {
                 driver_action,
                 session.manifest.allow_foreground_input,
                 session.manifest.restore_foreground_after_input,
-                session.action_guard(),
+                guard,
             )
             .await;
         self.invalidate_after_action_attempt(

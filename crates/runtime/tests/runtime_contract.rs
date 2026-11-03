@@ -2360,6 +2360,54 @@ async fn action_can_return_a_fresh_usable_observation_without_reusing_its_guard(
 }
 
 #[tokio::test]
+async fn idle_user_input_preserves_session_but_requires_a_new_observation() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).unwrap();
+    let mut input = fixture_invoke_input(&runtime).await;
+    driver
+        .session_guard
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .record_user_input();
+    let started = std::time::Instant::now();
+    let error = runtime
+        .execute(Command::PerformAction(input.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleObservation);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+    assert_eq!(*driver.revision.lock().await, 1);
+    let CommandResult::WindowObserved(observation) = runtime
+        .execute(Command::ObserveWindow(ObserveWindowInput {
+            session_id: input.session_id.clone(),
+            window_ref: input.window_ref.clone(),
+            include_screenshot: false,
+            accessibility: AccessibilityMode::Interactive,
+        }))
+        .await
+        .unwrap()
+    else {
+        panic!("observation expected")
+    };
+    input.observation_id = observation.observation_id;
+    input.action = Action::InvokeElement {
+        element_ref: observation.elements[0].element_ref.clone(),
+    };
+    runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("same session resumes after fresh observation");
+    assert_eq!(driver.session_starts.load(Ordering::SeqCst), 1);
+    assert_eq!(*driver.revision.lock().await, 2);
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn post_action_read_failure_does_not_hide_successful_mutation() {
     let root = artifact_root();
     let driver = Arc::new(MockDriver {

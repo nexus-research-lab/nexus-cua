@@ -11,8 +11,8 @@ use core_foundation::base::TCFType;
 use core_foundation::mach_port::CFMachPortRef;
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
 use core_graphics::event::{
-    CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
-    CallbackResult, EventField,
+    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGEventType, CallbackResult, EventField,
 };
 use nexus_cua_runtime::{DriverActionGuard, DriverError, DriverErrorKind};
 use objc2_core_graphics::CGPreflightListenEventAccess;
@@ -71,7 +71,62 @@ impl ActivityActor {
 }
 
 #[derive(Default)]
-struct Guards(Vec<DriverActionGuard>);
+struct Guards(Vec<DriverActionGuard>, PressedInputs);
+
+// Fixed-size physical key/button state, never characters or event history.
+#[derive(Default)]
+struct PressedInputs {
+    keys: [u64; 4],
+    buttons: u32,
+    modifiers: bool,
+}
+
+impl PressedInputs {
+    fn update(&mut self, kind: CGEventType, code: i64, flags: CGEventFlags) {
+        self.modifiers = flags.intersects(
+            CGEventFlags::CGEventFlagShift
+                | CGEventFlags::CGEventFlagControl
+                | CGEventFlags::CGEventFlagAlternate
+                | CGEventFlags::CGEventFlagCommand
+                | CGEventFlags::CGEventFlagSecondaryFn,
+        );
+        match kind {
+            CGEventType::KeyDown | CGEventType::KeyUp => {
+                if let Ok(code) = usize::try_from(code)
+                    && code < 256
+                {
+                    let mask = 1_u64 << (code % 64);
+                    if matches!(kind, CGEventType::KeyDown) {
+                        self.keys[code / 64] |= mask;
+                    } else {
+                        self.keys[code / 64] &= !mask;
+                    }
+                }
+            }
+            CGEventType::LeftMouseDown
+            | CGEventType::RightMouseDown
+            | CGEventType::OtherMouseDown => {
+                if let Ok(code) = u32::try_from(code)
+                    && code < 32
+                {
+                    self.buttons |= 1_u32 << code;
+                }
+            }
+            CGEventType::LeftMouseUp | CGEventType::RightMouseUp | CGEventType::OtherMouseUp => {
+                if let Ok(code) = u32::try_from(code)
+                    && code < 32
+                {
+                    self.buttons &= !(1_u32 << code);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn held(&self) -> bool {
+        self.modifiers || self.buttons != 0 || self.keys.iter().any(|keys| *keys != 0)
+    }
+}
 
 impl Drop for Guards {
     fn drop(&mut self) {
@@ -130,6 +185,9 @@ fn admit(registration: Registration, guards: &Mutex<Guards>) {
                 "user activity session budget is exhausted",
             ));
         }
+        if guards.1.held() {
+            registration.guard.record_user_input_state(true);
+        }
         guards.0.push(registration.guard);
         Ok(())
     });
@@ -147,7 +205,8 @@ fn monitor(
         // silent native disablement must not leave foreground input unprotected.
         if !unsafe { CGEventTapIsEnabled(tap.mach_port().as_concrete_TypeRef()) } {
             healthy.store(false, Ordering::Release);
-            for guard in &guards.lock().expect("activity registry is actor-owned").0 {
+            let guards = guards.lock().expect("activity registry is actor-owned");
+            for guard in &guards.0 {
                 guard.activity_monitor_failed();
             }
         }
@@ -216,11 +275,25 @@ fn make_tap(
             if lost {
                 healthy.store(false, Ordering::Release);
             }
-            for guard in &guards.lock().expect("activity registry is actor-owned").0 {
+            let mut guards = guards.lock().expect("activity registry is actor-owned");
+            if !lost {
+                let code = match kind {
+                    CGEventType::KeyDown | CGEventType::KeyUp => {
+                        event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)
+                    }
+                    CGEventType::RightMouseDown | CGEventType::RightMouseUp => 1,
+                    CGEventType::OtherMouseDown | CGEventType::OtherMouseUp => {
+                        event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER)
+                    }
+                    _ => 0, // Left button, or an event without a key/button code.
+                };
+                guards.1.update(kind, code, event.get_flags());
+            }
+            for guard in &guards.0 {
                 if lost {
                     guard.activity_monitor_failed();
                 } else {
-                    guard.user_took_over();
+                    guard.record_user_input_state(guards.1.held());
                 }
             }
             CallbackResult::Keep
@@ -238,6 +311,31 @@ fn unavailable() -> DriverError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_keys_buttons_and_modifiers_do_not_become_idle_without_release() {
+        let mut state = PressedInputs::default();
+        let none = CGEventFlags::empty();
+        state.update(CGEventType::KeyDown, 12, none);
+        state.update(CGEventType::KeyDown, 12, none); // autorepeat is one held key
+        state.update(CGEventType::LeftMouseDown, 0, none);
+        state.update(CGEventType::KeyUp, 12, none);
+        assert!(state.held());
+        state.update(CGEventType::LeftMouseUp, 0, none);
+        assert!(!state.held());
+        state.update(
+            CGEventType::FlagsChanged,
+            0,
+            CGEventFlags::CGEventFlagCommand,
+        );
+        assert!(state.held());
+        state.update(
+            CGEventType::FlagsChanged,
+            0,
+            CGEventFlags::CGEventFlagAlphaShift,
+        );
+        assert!(!state.held()); // Caps Lock is a toggle, not a held modifier.
+    }
 
     #[test]
     fn only_marked_events_from_this_process_are_ignored() {

@@ -5,6 +5,19 @@ file.
 
 ## [Unreleased]
 
+## [0.2.0-rc.3] - 2026-11-03
+
+macOS Apple Silicon testing prerelease; no change to the wire contract.
+
+### Fixed
+
+- Preserve bounded macOS authority when outside input occurs between actions.
+  Wait for two idle seconds (at most five seconds per request), then require a
+  fresh observation instead of latching takeover while the model is thinking.
+  Held inputs prevent idle. Input during native dispatch still cancels partial
+  actions and requires a new host grant; stop, expiry and monitor failure remain
+  terminal. Native actor jobs retain takeover coverage until they finish.
+
 ## [0.2.0-rc.2] - 2026-11-03
 
 macOS Apple Silicon testing prerelease; no change to the wire contract.

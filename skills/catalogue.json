@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "product_version": "0.2.0-rc.2",
+  "product_version": "0.2.0-rc.3",
   "mcp_alias": "nexuscua",
   "tools": [
     { "leaf": "get_status", "kind": "read", "vision": true },

@@ -1,6 +1,6 @@
 {
   "name": "@nexus-research-lab/nexus-cua",
-  "version": "0.2.0-rc.2",
+  "version": "0.2.0-rc.3",
   "description": "Typed trusted-host client for Nexus Computer Use Runtime",
   "type": "module",
   "main": "./src/index.js",

@@ -1,6 +1,6 @@
 # Nexus Computer Use Protocol v1
 
-Status: normative for the `0.2.0-rc.2` testing prerelease.
+Status: normative for the `0.2.0-rc.3` testing prerelease.
 
 The protocol identifier is `nexus.cua.v1`. Messages use closed, tagged JSON
 objects. Unknown fields are rejected by decoders at every trust boundary. The
@@ -356,7 +356,18 @@ CLI `window observe` uses `--application-scene`. Go, Python and TypeScript expos
 
 ## User takeover
 
-`user_active` means outside input took over a foreground-enabled macOS session.
+Outside input between macOS actions preserves the existing session authority.
+Before another action the runtime waits for two continuous idle seconds, with a
+five-second maximum per request. Held keys, modifiers and buttons prevent idle.
+Continued activity returns `busy/not_dispatched` with
+`wait_for_idle_then_observe`; hosts must bound retries. Observations captured
+before outside input return `stale_observation/not_dispatched`, including input
+that arrives during native preflight. Obtain a fresh observation and decide the
+next action without renewing or widening authority. Expiry and explicit stop
+remain terminal; idle waiting does not extend either deadline.
+
+`user_active` means outside input arrived during native action dispatch in a
+foreground-enabled macOS session.
 The error is not automatically retryable: later actions on that session remain
 rejected, even with a fresh observation. The host must obtain explicit renewed
 user intent before issuing a new grant. An action interrupted after native

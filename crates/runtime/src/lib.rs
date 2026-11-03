@@ -4,6 +4,7 @@
 //! platform handles. Platform drivers cannot grant authority or silently widen
 //! an input route.
 
+mod activity;
 mod artifact_store;
 mod driver;
 mod error;

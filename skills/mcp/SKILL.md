@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the configured nexuscua MCP server when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.2.0-rc.2 catalogue_sha256=085f104bd14d21f9015186f196cb45d5eaf24750665334ba0485990c75a07beb -->
+<!-- generated: product=0.2.0-rc.3 catalogue_sha256=bb5cafacde591ee2353199fc1b194b72c945ad4fd42d3c5ba9f7ac75b8de2aed -->
 
 ## Operating contract
 
@@ -46,13 +46,21 @@ after `busy/not_dispatched`; stop on denied or unsupported authority; and treat
 state establish the outcome. Never silently widen foreground, display,
 clipboard, application, or action authority.
 
-On `user_active`, stop automatic actions and tell the host that the user took
+On macOS, outside input between actions preserves authority but invalidates
+earlier observations. The runtime waits for two idle seconds, at most five
+seconds per action request; held keys/buttons do not count as idle. After
+`stale_observation`, observe again and decide the next action from fresh state.
+For `busy` with `wait_for_idle_then_observe`, retry at most once after a fresh
+observation, then report continued activity to the host. Do not repeatedly
+renew sessions or replay partial actions. This wait does not extend authority.
+
+On `user_active` during native dispatch, stop automatic actions and tell the host that the user took
 over. Do not retry after a delay, silently open a replacement session, or treat
 fresh observation as permission to resume. Only a new explicit host grant may
 resume control. Reconcile any indeterminate action without replaying it.
 On macOS, foreground-enabled sessions require Input Monitoring permission for
 passive takeover detection, in addition to event synthesis permission. The
-monitor reads only event origin metadata; it does not retain key or pointer content.
+monitor retains only current held-input state and latest activity time; it never retains characters, pointer coordinates or event history.
 
 Screenshots, accessibility content, clipboard values, typed text, tokens,
 grants, and request payloads are transient sensitive data. Do not log, persist,
