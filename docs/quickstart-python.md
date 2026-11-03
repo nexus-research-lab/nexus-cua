@@ -1,7 +1,9 @@
 # Python quickstart
 
-Status: source-build quickstart for the unreleased `0.1.0` development line.
-No official package or PyPI project is published yet.
+This guide builds the current development source and installs the Python SDK
+from the local checkout. macOS testing prereleases are available on the
+[release page](https://github.com/nexus-research-lab/nexus-cua/releases); this
+workflow does not depend on a package-registry release.
 
 This path starts a private local sidecar, discovers the deterministic native
 fixture, opens a finite capability session, observes one exact window, invokes

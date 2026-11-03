@@ -5,6 +5,12 @@ file.
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrite the public README with English and Chinese entry points, a source
+  quickstart, integration choices, current platform status, and a Nexus-family
+  CUA product icon.
+
 ## [0.2.0-rc.4] - 2026-11-03
 
 macOS Apple Silicon testing prerelease; no change to the wire contract.
