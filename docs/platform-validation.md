@@ -494,3 +494,43 @@ observations measured p50 100.37ms, p95 103.60ms, max 104.13ms. PNG output was
 local optimized-build diagnostic, not release-runner acceptance, a 4K-video CPU
 measurement, or proof of the 100ms native stream-stop bound. The corresponding
 debug run measured p95 816.60ms and is not used for performance acceptance.
+
+## C5 idle resource diagnostic (2026-11-02)
+
+The local optimized sidecar ran for 300.04 seconds without sessions or operations.
+The native harness sampled CPU at 0.0%; file descriptors stayed at 22. Physical
+footprint moved from 8,930,024 to 8,946,432 bytes without a monotonic-growth signal.
+The idle CPU and resource gates passed. No qualified runner manifest was supplied,
+so this remains diagnostic evidence and does not establish native stream release
+within 100ms after session close.
+
+## Mac minimization isolation (2026-11-02)
+
+A fresh full run still passed core actions, replacement and session expiry before
+stopping at fixture minimization. An independent minimal AppKit application also
+reported `isMiniaturized=false` after `miniaturize(nil)`, both with and without
+`canJoinAllSpaces`, and with direct versus LaunchServices startup. This rules out
+a failure exclusive to the runtime path; it does not identify the machine or
+AppKit cause. The minimized-window acceptance check remains required and failing.
+
+## Windows UIA and post-mutation capture fixes (2026-11-02)
+
+Native validation exposed missing cached UIA pattern properties: adding a pattern
+alone does not materialize its values. The request now includes the range,
+toggle, selection and expansion properties consumed by the cache-only readers.
+The subsequent native run passed these semantic scenarios.
+
+The run then repeatedly timed out after pointer movement: WGC need not emit a
+frame when cursor capture is disabled and pixels do not change. A changed mutation
+generation now replaces the target capture session before its first observation,
+avoiding both stale queued frames and dependence on a new dirty region. Frame
+draining is capped at the two-buffer pool. This adds session-start cost after
+mutations; its steady-state action latency has not yet been benchmarked.
+
+With both fixes on the current source, display capture, semantic controls, pointer
+movement and foreground click passed. Validation then stopped because background
+click did not increment the fixture counter. Full Windows native acceptance is
+still open. Workspace Clippy and builds passed on GNU Rust 1.88; local full
+`make check` passed. The harness now retries transient observation failures at
+most three times, fails immediately on driver errors and reports phase/request
+metadata; mismatch errors no longer dump fixture accessibility state.

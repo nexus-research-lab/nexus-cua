@@ -5,6 +5,13 @@ file.
 
 ## [Unreleased]
 
+- Cache Windows UIA pattern properties with their patterns so range, toggle,
+  selection and expansion metadata are available without extra provider reads.
+- Refresh Windows capture sessions after mutations, including pointer moves that
+  do not change captured pixels; bound frame draining to the two-buffer pool.
+- Fail native capture validation promptly on driver errors and limit transient
+  observation retries to three, retaining phase and request diagnostics.
+
 - Fix C6 macOS pointer ownership for Dock/Stage Manager pass-through surfaces
   using bounded main-thread AppKit hit testing instead of rectangle ordering.
 

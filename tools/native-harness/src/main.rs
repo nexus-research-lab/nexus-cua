@@ -1761,7 +1761,7 @@ async fn observe(
     include_screenshot: bool,
     accessibility: AccessibilityMode,
 ) -> Result<WindowObservation, Box<dyn Error>> {
-    const MAX_ATTEMPTS: usize = 40;
+    const MAX_ATTEMPTS: usize = 3;
 
     for attempt in 0..MAX_ATTEMPTS {
         let outcome = client
@@ -1783,7 +1783,6 @@ async fn observe(
                     && matches!(
                         error.code,
                         ErrorCode::Busy
-                            | ErrorCode::DriverFailure
                             | ErrorCode::TargetUnavailable
                             | ErrorCode::TargetUnresponsive
                     ) =>
@@ -1792,8 +1791,13 @@ async fn observe(
             }
             Err(error) => {
                 return Err(format!(
-                    "runtime error {:?}/{:?}: {} ({:?})",
-                    error.code, error.mutation_status, error.message, error.recovery_action
+                    "phase={} request={} runtime error {:?}/{:?}: {} ({:?})",
+                    client.phase,
+                    client.sequence,
+                    error.code,
+                    error.mutation_status,
+                    error.message,
+                    error.recovery_action
                 )
                 .into());
             }
@@ -1844,7 +1848,7 @@ fn require_state(
         .ok_or("observation is missing Fixture State")?;
     for fragment in fragments {
         if !state.name.contains(fragment) {
-            return Err(format!("fixture state is missing {fragment:?}: {}", state.name).into());
+            return Err(format!("fixture state is missing expected marker {fragment:?}").into());
         }
     }
     Ok(())

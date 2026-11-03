@@ -241,6 +241,18 @@ impl CaptureState {
         } else {
             target
         };
+        let current_generation = self.mutation_generation.load(Ordering::Acquire);
+        // WGC can stop delivering frames when pixels remain unchanged (for
+        // example a pointer move with cursor capture disabled). After a mutation,
+        // an old queued frame cannot prove freshness either. Start a fresh
+        // session once for this generation instead of waiting for dirty pixels.
+        if self
+            .pipelines
+            .get(target_key)
+            .is_some_and(|pipeline| pipeline.latest_generation != current_generation)
+        {
+            self.pipelines.remove(target_key);
+        }
         self.ensure_pipeline(target_key, target)?;
         let pipeline = self
             .pipelines
@@ -265,7 +277,6 @@ impl CaptureState {
             pipeline.latest_image = None;
         }
         pipeline.last_used = Instant::now();
-        let current_generation = self.mutation_generation.load(Ordering::Acquire);
         let cache_is_current =
             pipeline.latest_image.is_some() && pipeline.latest_generation == current_generation;
         let wait = if cache_is_current {
@@ -434,7 +445,11 @@ fn newest_frame(
     let deadline = Instant::now() + wait;
     loop {
         let mut newest = None;
-        while let Ok(frame) = pool.TryGetNextFrame() {
+        // The pool owns two buffers; do not chase an actively producing stream.
+        for _ in 0..2 {
+            let Ok(frame) = pool.TryGetNextFrame() else {
+                break;
+            };
             if let Some(previous) = newest.replace(frame) {
                 let _ = previous.Close();
             }
