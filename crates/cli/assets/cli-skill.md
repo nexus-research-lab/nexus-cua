@@ -3,7 +3,7 @@ name: nexuscua-computer-use
 description: Control exact authorized macOS or Windows application windows through the host-configured nexuscua CLI binding when visible native desktop interaction is required; do not use it for browser DOM or ordinary filesystem tasks.
 ---
 
-<!-- generated: product=0.1.0 catalogue_sha256=1255e0cc46e2752ad55d7776dd7d9c7204d837763adc138cbf9c7ec680ccee89 -->
+<!-- generated: product=0.1.0 catalogue_sha256=0dd54f272e4123b47277a9838ade0719a5e6eff1fb3e20c10d22e1f237599490 -->
 
 ## Operating contract
 
@@ -74,6 +74,17 @@ stream. PNG output is RGB, flattening transparency over white, and reports its
 actual dimensions in ScreenshotMapping. Drivers without native resizing use a
 bounded encoder-stage resize; Windows WGC still acquires native-size frames.
 Public SDK request shapes are unchanged; map points using returned dimensions.
+
+## Runtime action limits (C9)
+
+`get_capabilities.action_limits` is a closed object containing the effective
+`max_session_ttl_seconds`, `max_text_bytes`, `max_keys`, `max_scroll_delta`,
+`max_pointer_duration_ms`, `max_window_coordinate`, `max_window_dimension`,
+`max_range_value` and `max_click_count`. The session limit reflects the runtime
+configuration; action values share the runtime validator's constants. Text
+limits count UTF-8 bytes. Hosts should derive UI/schema bounds from this object
+and cap session authority by their own remaining round duration. Capabilities
+do not grant authority; the runtime still validates every request.
 
 ## CLI binding
 

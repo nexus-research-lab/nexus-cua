@@ -197,6 +197,7 @@ impl DesktopDriver for MockDriver {
     }
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: "nexus.cua.v1".to_owned(),
             runtime_version: "test".to_owned(),
             platform: Platform::Macos,

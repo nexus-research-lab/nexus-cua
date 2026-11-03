@@ -449,7 +449,7 @@ async fn capabilities(
     client: &mut Client,
 ) -> Result<nexus_cua_protocol::DriverCapabilities, Box<dyn Error>> {
     match client.send(Command::GetCapabilities).await? {
-        CommandResult::Capabilities(value) => Ok(value),
+        CommandResult::Capabilities(value) => Ok(*value),
         other => Err(unexpected("capabilities", &other)),
     }
 }

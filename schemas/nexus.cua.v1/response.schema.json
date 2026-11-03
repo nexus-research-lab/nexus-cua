@@ -300,6 +300,78 @@
         }
       ]
     },
+    "ActionLimits": {
+      "description": "Runtime-enforced bounds for host-generated action inputs.",
+      "type": "object",
+      "properties": {
+        "max_click_count": {
+          "description": "Maximum clicks in one action.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_keys": {
+          "description": "Maximum keys in one chord.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_pointer_duration_ms": {
+          "description": "Maximum movement, hold, or drag duration.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_range_value": {
+          "description": "Maximum absolute numeric control value.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_scroll_delta": {
+          "description": "Maximum absolute scroll delta.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_session_ttl_seconds": {
+          "description": "Maximum session lifetime in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_text_bytes": {
+          "description": "Maximum UTF-8 bytes in one text action.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_window_coordinate": {
+          "description": "Maximum absolute logical window origin.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_window_dimension": {
+          "description": "Maximum logical window dimension.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "max_session_ttl_seconds",
+        "max_text_bytes",
+        "max_keys",
+        "max_scroll_delta",
+        "max_pointer_duration_ms",
+        "max_window_coordinate",
+        "max_window_dimension",
+        "max_range_value",
+        "max_click_count"
+      ]
+    },
     "ActionOutput": {
       "description": "Successful mutation result.",
       "type": "object",
@@ -1143,6 +1215,10 @@
           "description": "Whether accessibility elements can be observed.",
           "type": "boolean"
         },
+        "action_limits": {
+          "description": "Effective runtime limits; hosts must not invent larger input bounds.",
+          "$ref": "#/$defs/ActionLimits"
+        },
         "actions": {
           "description": "Exact action kinds implemented by the driver.",
           "type": "array",
@@ -1198,6 +1274,7 @@
       },
       "additionalProperties": false,
       "required": [
+        "action_limits",
         "protocol_version",
         "runtime_version",
         "platform",

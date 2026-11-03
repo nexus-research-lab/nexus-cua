@@ -444,7 +444,8 @@ mod tests {
                 protocol_version: nexus_cua_protocol::PROTOCOL_VERSION.to_owned(),
                 request_id,
                 outcome: ResponseOutcome::Success {
-                    result: CommandResult::Capabilities(DriverCapabilities {
+                    result: CommandResult::Capabilities(Box::new(DriverCapabilities {
+                        action_limits: nexus_cua_protocol::ActionLimits::default(),
                         protocol_version: nexus_cua_protocol::PROTOCOL_VERSION.to_owned(),
                         runtime_version: "fixture".to_owned(),
                         platform: Platform::Macos,
@@ -455,7 +456,7 @@ mod tests {
                         application_lifecycle: Vec::new(),
                         clipboard: Vec::new(),
                         actions: Vec::new(),
-                    }),
+                    })),
                 },
             }
         }

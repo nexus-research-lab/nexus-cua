@@ -226,7 +226,46 @@ class CUAError(Exception):
 
 
 @dataclass(frozen=True)
+class ActionLimits:
+    max_session_ttl_seconds: int
+    max_text_bytes: int
+    max_keys: int
+    max_scroll_delta: int
+    max_pointer_duration_ms: int
+    max_window_coordinate: int
+    max_window_dimension: int
+    max_range_value: int
+    max_click_count: int
+
+    @classmethod
+    def from_wire(cls, value: Any) -> ActionLimits:
+        data = closed_object(value, {
+            "max_session_ttl_seconds",
+            "max_text_bytes",
+            "max_keys",
+            "max_scroll_delta",
+            "max_pointer_duration_ms",
+            "max_window_coordinate",
+            "max_window_dimension",
+            "max_range_value",
+            "max_click_count",
+        })
+        return cls(
+            integer_value(data["max_session_ttl_seconds"]),
+            integer_value(data["max_text_bytes"]),
+            integer_value(data["max_keys"]),
+            integer_value(data["max_scroll_delta"]),
+            integer_value(data["max_pointer_duration_ms"]),
+            integer_value(data["max_window_coordinate"]),
+            integer_value(data["max_window_dimension"]),
+            integer_value(data["max_range_value"]),
+            integer_value(data["max_click_count"]),
+        )
+
+
+@dataclass(frozen=True)
 class DriverCapabilities:
+    action_limits: ActionLimits
     protocol_version: str
     runtime_version: str
     platform: Platform
@@ -243,6 +282,7 @@ class DriverCapabilities:
         data = closed_object(
             value,
             {
+                "action_limits",
                 "protocol_version",
                 "runtime_version",
                 "platform",
@@ -256,6 +296,7 @@ class DriverCapabilities:
             },
         )
         return cls(
+            ActionLimits.from_wire(data["action_limits"]),
             string_value(data["protocol_version"]),
             string_value(data["runtime_version"]),
             enum_value(Platform, data["platform"]),

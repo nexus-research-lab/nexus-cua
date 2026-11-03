@@ -314,12 +314,13 @@ impl Runtime {
         self.config.policy.authorize(&command)?;
         self.ensure_scheduler()?;
         match command {
-            Command::GetCapabilities => self
-                .driver
-                .capabilities()
-                .await
-                .map(CommandResult::Capabilities)
-                .map_err(Into::into),
+            Command::GetCapabilities => {
+                let mut capabilities = self.driver.capabilities().await?;
+                capabilities.action_limits = nexus_cua_protocol::ActionLimits::default();
+                capabilities.action_limits.max_session_ttl_seconds =
+                    u32::try_from(self.config.max_session_ttl.as_secs()).unwrap_or(u32::MAX);
+                Ok(CommandResult::Capabilities(Box::new(capabilities)))
+            }
             Command::GetPermissionStatus => self
                 .driver
                 .permission_status()

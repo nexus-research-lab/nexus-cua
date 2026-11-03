@@ -45,7 +45,20 @@ export class SensitiveText {
   toString(): "[REDACTED]";
 }
 
+export interface ActionLimits {
+  max_session_ttl_seconds: number;
+  max_text_bytes: number;
+  max_keys: number;
+  max_scroll_delta: number;
+  max_pointer_duration_ms: number;
+  max_window_coordinate: number;
+  max_window_dimension: number;
+  max_range_value: number;
+  max_click_count: number;
+}
+
 export interface DriverCapabilities {
+  action_limits: ActionLimits;
   primary_modifier: string;
   protocol_version: string;
   runtime_version: string;

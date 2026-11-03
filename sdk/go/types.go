@@ -243,7 +243,20 @@ func (e *CUAError) Error() string {
 	return fmt.Sprintf("nexus-cua: %s: %s", e.Code, e.Message)
 }
 
+type ActionLimits struct {
+	MaxSessionTTLSeconds uint32 `json:"max_session_ttl_seconds"`
+	MaxTextBytes         uint32 `json:"max_text_bytes"`
+	MaxKeys              uint32 `json:"max_keys"`
+	MaxScrollDelta       uint32 `json:"max_scroll_delta"`
+	MaxPointerDurationMS uint32 `json:"max_pointer_duration_ms"`
+	MaxWindowCoordinate  uint32 `json:"max_window_coordinate"`
+	MaxWindowDimension   uint32 `json:"max_window_dimension"`
+	MaxRangeValue        uint64 `json:"max_range_value"`
+	MaxClickCount        uint32 `json:"max_click_count"`
+}
+
 type DriverCapabilities struct {
+	ActionLimits         ActionLimits                    `json:"action_limits"`
 	PrimaryModifier      string                          `json:"primary_modifier"`
 	ProtocolVersion      string                          `json:"protocol_version"`
 	RuntimeVersion       string                          `json:"runtime_version"`

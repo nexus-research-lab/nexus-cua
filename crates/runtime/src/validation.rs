@@ -13,13 +13,17 @@ const MAX_ALLOWED_APPLICATIONS: usize = 128;
 const MAX_DISCOVERY_REF_BYTES: usize = 256;
 const MAX_APPLICATION_ALLOWLIST_BYTES: usize = 32 * 1024;
 const MAX_ACTIONS: usize = 32;
-const MAX_TEXT_BYTES: usize = 64 * 1024;
-const MAX_KEYS: usize = 8;
-const MAX_SCROLL_DELTA: f64 = 100_000.0;
-const MAX_DRAG_DURATION_MS: u32 = 10_000;
-const MAX_WINDOW_COORDINATE: f64 = 1_000_000.0;
-const MAX_WINDOW_DIMENSION: f64 = 100_000.0;
-const MAX_RANGE_VALUE: f64 = 1_000_000_000_000.0;
+const MAX_TEXT_BYTES: usize = nexus_cua_protocol::ActionLimits::DEFAULT.max_text_bytes as usize;
+const MAX_KEYS: usize = nexus_cua_protocol::ActionLimits::DEFAULT.max_keys as usize;
+const MAX_CLICK_COUNT: u32 = nexus_cua_protocol::ActionLimits::DEFAULT.max_click_count;
+const MAX_SCROLL_DELTA: f64 = nexus_cua_protocol::ActionLimits::DEFAULT.max_scroll_delta as f64;
+const MAX_DRAG_DURATION_MS: u32 = nexus_cua_protocol::ActionLimits::DEFAULT.max_pointer_duration_ms;
+const MAX_WINDOW_COORDINATE: f64 =
+    nexus_cua_protocol::ActionLimits::DEFAULT.max_window_coordinate as f64;
+const MAX_WINDOW_DIMENSION: f64 =
+    nexus_cua_protocol::ActionLimits::DEFAULT.max_window_dimension as f64;
+#[allow(clippy::cast_precision_loss)] // The fixed 10^12 bound is exactly representable.
+const MAX_RANGE_VALUE: f64 = nexus_cua_protocol::ActionLimits::DEFAULT.max_range_value as f64;
 
 pub(crate) fn validate_manifest(
     manifest: &CapabilityManifest,
@@ -136,7 +140,7 @@ pub(crate) fn validate_action(
             Ok(())
         }
         Action::ClickPoint { point, count, .. } => {
-            if !(1..=3).contains(count) {
+            if !(1..=MAX_CLICK_COUNT).contains(&u32::from(*count)) {
                 return Err(invalid("click count must be between one and three"));
             }
             validate_screenshot_point(*point, screenshot_mapping)

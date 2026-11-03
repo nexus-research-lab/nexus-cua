@@ -2210,6 +2210,8 @@ Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久�
 
 #### C9 Nexus 授权与动作暴露（中，Nexus 仓）
 
+实施状态：Runtime 已增加与校验共享的 action_limits，三 SDK/schema 同步；Nexus 目标授权、回合时限、敏感动作审批、恢复/窗口/数值/长按/启动入口已实现；Runtime 全量 make check 已通过，Nexus 检查收尾中。真实 Nexus 权限 UI 和恢复窗口验收仍待执行；固定 SDK 提交属于 C3。
+
 - **问题**：TTL 改为固定 30 分钟但仍不续期、不与回合绑定；前台输入仍无条件授予；
   逐动作审批仍位于观察之后（N3）；恢复最小化等动作仍未暴露（N5）。
 - **修复**：

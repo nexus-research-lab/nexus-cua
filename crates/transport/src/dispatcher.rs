@@ -704,6 +704,7 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
             Ok(DriverCapabilities {
+                action_limits: nexus_cua_protocol::ActionLimits::default(),
                 protocol_version: PROTOCOL_VERSION.to_owned(),
                 runtime_version: "test".to_owned(),
                 platform: Platform::Unsupported,

@@ -5,6 +5,9 @@ file.
 
 ## [Unreleased]
 
+- C9: advertise effective session and action bounds through a closed capability
+  object shared with runtime validation and all three SDKs.
+
 - C12: validate current Windows monitor topology, PMv2 awareness and WGC support;
   add a content-free native interop diagnostic without legacy capture fallback.
 

@@ -448,3 +448,14 @@ stream. PNG output is RGB, flattening transparency over white, and reports its
 actual dimensions in ScreenshotMapping. Drivers without native resizing use a
 bounded encoder-stage resize; Windows WGC still acquires native-size frames.
 Public SDK request shapes are unchanged; map points using returned dimensions.
+
+## Runtime action limits (C9)
+
+`get_capabilities.action_limits` is a closed object containing the effective
+`max_session_ttl_seconds`, `max_text_bytes`, `max_keys`, `max_scroll_delta`,
+`max_pointer_duration_ms`, `max_window_coordinate`, `max_window_dimension`,
+`max_range_value` and `max_click_count`. The session limit reflects the runtime
+configuration; action values share the runtime validator's constants. Text
+limits count UTF-8 bytes. Hosts should derive UI/schema bounds from this object
+and cap session authority by their own remaining round duration. Capabilities
+do not grant authority; the runtime still validates every request.

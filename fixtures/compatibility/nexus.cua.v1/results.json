@@ -5,6 +5,7 @@
       "protocol_version": "nexus.cua.v1",
       "runtime_version": "0.1.0",
       "primary_modifier": "command",
+      "action_limits": {"max_session_ttl_seconds": 3600, "max_text_bytes": 65536, "max_keys": 8, "max_scroll_delta": 100000, "max_pointer_duration_ms": 10000, "max_window_coordinate": 1000000, "max_window_dimension": 100000, "max_range_value": 1000000000000, "max_click_count": 3},
       "platform": "macos",
       "capture_modes": ["window", "display"],
       "accessibility_tree": true,

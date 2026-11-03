@@ -202,7 +202,7 @@ pub struct MutationReconciliation {
 )]
 pub enum CommandResult {
     /// Driver capability response.
-    Capabilities(DriverCapabilities),
+    Capabilities(Box<DriverCapabilities>),
     /// Operating-system permission response.
     PermissionStatus(PermissionStatus),
     /// Short-lived running-application discovery response.
