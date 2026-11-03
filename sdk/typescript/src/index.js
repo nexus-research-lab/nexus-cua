@@ -11,7 +11,7 @@ const ERROR_CODES = new Set([
   "deadline_exceeded", "session_unavailable", "stale_discovery",
   "capability_denied", "reference_not_found", "stale_observation",
   "stale_clipboard",
-  "permission_required", "unsupported", "foreground_required",
+  "permission_required", "unsupported", "foreground_required", "user_active",
   "target_unavailable", "target_unresponsive", "driver_failure", "internal",
 ]);
 const MUTATION_STATUSES = new Set([
@@ -223,6 +223,18 @@ export class Client {
     );
   }
 
+  async observeApplicationScene(input, timeoutMs = 30_000) {
+    validateSessionTarget(input, "window_ref");
+    if (!ACCESSIBILITY_MODES.has(input.accessibility)) {
+      throw new TypeError(`invalid accessibility mode ${String(input.accessibility)}`);
+    }
+    return this._requestResult(
+      { operation: "observe_application_scene", input: { ...input } },
+      timeoutMs,
+      "window_observed",
+    );
+  }
+
   async readClipboard(sessionId, timeoutMs = 30_000) {
     const output = await this._requestResult(
       { operation: "read_clipboard", input: { session_id: requiredString(sessionId, "sessionId") } },
@@ -270,6 +282,7 @@ export class Client {
           window_ref: input.window_ref,
           observation_id: input.observation_id,
           action,
+          ...(input.observe_after === undefined ? {} : { observe_after: structuredClone(input.observe_after) }),
         },
       },
       this._now(),
@@ -507,12 +520,17 @@ function decodeCuaError(value) {
 function validateResultData(resultType, value) {
   if (["apps", "windows", "displays"].includes(resultType)) {
     if (!Array.isArray(value)) throw new TypeError(`${resultType} result data must be an array`);
+    if (resultType === "windows") {
+      for (const window of value) {
+        if (!new Set(["normal", "minimized", "offscreen", "unknown"]).has(window.state)) throw new Error("unknown window state");
+      }
+    }
     return;
   }
   const data = objectValue(value, `${resultType} data`);
   if (resultType === "capabilities") {
     if (!new Set(["macos", "windows", "unsupported"]).has(data.platform)) throw new Error("unknown platform");
-    assertClosedArray(data.capture_modes, new Set(["window", "display"]), "capture mode");
+    assertClosedArray(data.capture_modes, new Set(["window", "display", "application_scene"]), "capture mode");
     assertClosedArray(data.input_routes, new Set(["semantic", "system", "background", "foreground"]), "input route");
     assertClosedArray(data.application_lifecycle, new Set(["launch"]), "application lifecycle operation");
     assertClosedArray(data.clipboard, new Set(["read_text", "write_text"]), "clipboard operation");
@@ -526,6 +544,10 @@ function validateResultData(resultType, value) {
     const coherent = (data.effect_status === "confirmed" && data.evidence_kind === "native_readback")
       || (data.effect_status === "unverified" && data.evidence_kind === "dispatch_acceptance");
     if (!coherent) throw new Error(`incoherent ${resultType} effect evidence`);
+    if (resultType === "action_performed") {
+      if (data.observation != null) validateResultData("window_observed", data.observation);
+      if (data.observation_error != null) decodeCuaError(data.observation_error);
+    }
   } else if (resultType === "mutation_reconciled") {
     const result = closedObject(data, [
       "request_id", "runtime_epoch", "worker_epoch", "admission", "disposition",
@@ -571,7 +593,16 @@ function validateResultData(resultType, value) {
 function actionWire(action) {
   const value = objectValue(action, "action");
   if (!ACTION_KINDS.has(value.kind)) throw new TypeError(`unsupported action kind ${String(value.kind)}`);
+  if (value.kind === "scroll" && "element_ref" in value) throw new TypeError("scroll does not accept element_ref");
   if (value.kind === "set_window_bounds") validateRect(value.bounds);
+  const points = value.kind === "drag" ? [value.from, value.to]
+    : ["click_point", "press_point", "move_pointer", "scroll"].includes(value.kind) ? [value.point] : [];
+  for (const point of points) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)
+        || point.x < 0 || point.x > 1000 || point.y < 0 || point.y > 1000) {
+      throw new RangeError("action point must use finite coordinates in 0..1000");
+    }
+  }
   if (value.kind === "click_point") {
     if (!new Set(["left", "middle", "right"]).has(value.button)
         || !Number.isInteger(value.count) || value.count < 1 || value.count > 255) {

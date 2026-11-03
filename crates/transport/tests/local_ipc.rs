@@ -25,9 +25,12 @@ struct CapabilityDriver;
 impl DesktopDriver for CapabilityDriver {
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            observe_after: false,
+            action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: "test".to_owned(),
             platform: Platform::Unsupported,
+            primary_modifier: "unsupported".to_owned(),
             capture_modes: vec![CaptureMode::Window],
             accessibility_tree: false,
             input_routes: vec![InputRoute::Foreground],
@@ -51,7 +54,7 @@ impl DesktopDriver for CapabilityDriver {
 
     async fn list_windows(
         &self,
-        _application_key: Option<&str>,
+        _application_keys: &[String],
     ) -> Result<Vec<DriverWindow>, DriverError> {
         Ok(Vec::new())
     }

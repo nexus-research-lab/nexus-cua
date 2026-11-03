@@ -41,7 +41,8 @@ pub const DEFAULT_MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 /// Hard ceiling for a single MCP image block.
 pub const HARD_MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 /// Default lifetime of a guarded observation while a model is thinking.
-pub const DEFAULT_MAX_OBSERVATION_AGE_SECONDS: u64 = 120;
+pub const DEFAULT_MAX_OBSERVATION_AGE_SECONDS: u64 =
+    nexus_cua_runtime::DEFAULT_MAX_OBSERVATION_AGE_SECONDS;
 /// Hard ceiling for a guarded observation lifetime.
 pub const HARD_MAX_OBSERVATION_AGE_SECONDS: u64 = 300;
 const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -108,6 +109,8 @@ pub struct McpServeConfig {
     pub artifact_root: PathBuf,
     /// Largest PNG returned as one MCP image block.
     pub max_image_bytes: u64,
+    /// Maximum model screenshot long edge (1..=4096).
+    pub max_image_edge: u32,
     /// Maximum age of an observation used to guard a mutation.
     pub max_observation_age_seconds: u64,
     /// Optional administrator-owned immutable runtime policy.
@@ -125,6 +128,7 @@ impl McpServeConfig {
             authority: AuthoritySource::UnsignedDevelopmentFile(authority_file),
             artifact_root,
             max_image_bytes: DEFAULT_MAX_IMAGE_BYTES,
+            max_image_edge: 1568,
             max_observation_age_seconds: DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
             managed_policy_file: None,
             policy_file: None,
@@ -145,6 +149,7 @@ impl McpServeConfig {
             },
             artifact_root,
             max_image_bytes: DEFAULT_MAX_IMAGE_BYTES,
+            max_image_edge: 1568,
             max_observation_age_seconds: DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
             managed_policy_file: None,
             policy_file: None,
@@ -158,7 +163,8 @@ impl McpServeConfig {
                 "max-image-bytes must be between 1 and 33554432".to_owned(),
             ));
         }
-        if self.max_observation_age_seconds == 0
+        if !(1..=4096).contains(&self.max_image_edge)
+            || self.max_observation_age_seconds == 0
             || self.max_observation_age_seconds > HARD_MAX_OBSERVATION_AGE_SECONDS
         {
             return Err(McpServeError::InvalidConfiguration(
@@ -685,6 +691,7 @@ async fn bootstrap_adapter(
     config.validate()?;
     let driver = nexus_cua_platform::system_driver()?;
     let mut runtime_config = RuntimeConfig::new(config.artifact_root);
+    runtime_config.max_image_edge = config.max_image_edge;
     runtime_config.max_observation_age = Duration::from_secs(config.max_observation_age_seconds);
     runtime_config.policy = RuntimePolicyStack::from_files(
         config.managed_policy_file.as_deref(),
@@ -904,7 +911,7 @@ mod tests {
                     width: 640.0,
                     height: 480.0,
                 },
-                minimized: false,
+                state: nexus_cua_protocol::WindowState::Normal,
                 visible: true,
                 foreground: true,
             }
@@ -915,9 +922,12 @@ mod tests {
     impl DesktopDriver for TransportDriver {
         async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
             Ok(DriverCapabilities {
+                observe_after: false,
+                action_limits: nexus_cua_protocol::ActionLimits::default(),
                 protocol_version: "nexus.cua.v1".to_owned(),
                 runtime_version: "transport-test".to_owned(),
                 platform: Platform::Macos,
+                primary_modifier: "command".to_owned(),
                 capture_modes: vec![CaptureMode::Display],
                 accessibility_tree: false,
                 input_routes: Vec::<InputRoute>::new(),
@@ -943,7 +953,7 @@ mod tests {
 
         async fn list_windows(
             &self,
-            _application_key: Option<&str>,
+            _application_keys: &[String],
         ) -> Result<Vec<DriverWindow>, DriverError> {
             Ok(Vec::new())
         }
@@ -988,9 +998,12 @@ mod tests {
     impl DesktopDriver for MutationDriver {
         async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
             Ok(DriverCapabilities {
+                observe_after: false,
+                action_limits: nexus_cua_protocol::ActionLimits::default(),
                 protocol_version: "nexus.cua.v1".to_owned(),
                 runtime_version: "transport-mutation-test".to_owned(),
                 platform: Platform::Macos,
+                primary_modifier: "command".to_owned(),
                 capture_modes: vec![CaptureMode::Window],
                 accessibility_tree: false,
                 input_routes: vec![InputRoute::Foreground],
@@ -1014,7 +1027,7 @@ mod tests {
 
         async fn list_windows(
             &self,
-            _application_key: Option<&str>,
+            _application_keys: &[String],
         ) -> Result<Vec<DriverWindow>, DriverError> {
             Ok(vec![Self::window()])
         }

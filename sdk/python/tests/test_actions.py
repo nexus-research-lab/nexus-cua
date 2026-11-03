@@ -5,10 +5,16 @@ from nexus_cua.types import action_wire, predicate_wire
 
 
 class ActionTests(unittest.TestCase):
+    def test_normalized_fraction_and_invalid_values(self) -> None:
+        self.assertEqual(nexus_cua.NormalizedPoint(0.25, 999.75).to_wire(), {"x": 0.25, "y": 999.75})
+        for value in [float("nan"), float("inf"), -0.1, 1000.1, True]:
+            with self.assertRaises(ValueError):
+                nexus_cua.NormalizedPoint(value, 0).to_wire()
+
     def test_press_point_wire_variant(self) -> None:
         payload = action_wire(
             nexus_cua.PressPoint(
-                point=nexus_cua.ScreenshotPoint(x=12, y=34),
+                point=nexus_cua.NormalizedPoint(x=12, y=34),
                 duration_ms=750,
                 button=nexus_cua.PointerButton.RIGHT,
             )
@@ -27,7 +33,7 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(
             action_wire(
                 nexus_cua.ClickPoint(
-                    point=nexus_cua.ScreenshotPoint(x=12, y=34),
+                    point=nexus_cua.NormalizedPoint(x=12, y=34),
                     delivery=nexus_cua.DeliveryPreference.BACKGROUND,
                 )
             ),

@@ -10,8 +10,8 @@ use nexus_cua_protocol::{
     ApplicationProvenance, CapabilityManifest, CaptureMode, ClipboardOperation, Command,
     CommandResult, DeliveryMode, DeliveryPreference, DiscoveryRef, DriverCapabilities, ErrorCode,
     ForegroundRestorationStatus, InputRoute, LaunchApplicationInput, ListWindowsInput,
-    MutationStatus, ObserveDisplayInput, ObserveWindowInput, OpenSessionInput, PermissionMode,
-    PermissionState, PermissionStatus, Platform, ReadClipboardInput, ScreenRect, ScreenshotPoint,
+    MutationStatus, NormalizedPoint, ObserveDisplayInput, ObserveWindowInput, OpenSessionInput,
+    PermissionMode, PermissionState, PermissionStatus, Platform, ReadClipboardInput, ScreenRect,
     SensitiveText, SessionInput, WriteClipboardInput,
 };
 use nexus_cua_runtime::{
@@ -26,6 +26,12 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 struct MockDriver {
+    fail_observe_after_mutation: bool,
+    session_guard: std::sync::Mutex<Option<nexus_cua_runtime::DriverActionGuard>>,
+    window_enumerations: AtomicUsize,
+    last_window_scope: Mutex<Vec<String>>,
+    session_starts: AtomicUsize,
+    session_closes: AtomicUsize,
     revision: Mutex<u64>,
     stale_observations_remaining: Mutex<u8>,
     observation_calls: AtomicUsize,
@@ -34,6 +40,7 @@ struct MockDriver {
     action_failure: Option<MutationStatus>,
     restore_foreground_requested: AtomicBool,
     action_gate: Option<Arc<ActionGate>>,
+    verification_gate: Option<Arc<ActionGate>>,
     forced_restoration: Option<ForegroundRestorationStatus>,
     clipboard: Mutex<(u64, String)>,
 }
@@ -47,6 +54,12 @@ struct ActionGate {
 impl MockDriver {
     fn new() -> Self {
         Self {
+            fail_observe_after_mutation: false,
+            session_guard: std::sync::Mutex::new(None),
+            window_enumerations: AtomicUsize::new(0),
+            last_window_scope: Mutex::new(Vec::new()),
+            session_starts: AtomicUsize::new(0),
+            session_closes: AtomicUsize::new(0),
             revision: Mutex::new(1),
             stale_observations_remaining: Mutex::new(0),
             observation_calls: AtomicUsize::new(0),
@@ -55,6 +68,7 @@ impl MockDriver {
             action_failure: None,
             restore_foreground_requested: AtomicBool::new(false),
             action_gate: None,
+            verification_gate: None,
             forced_restoration: None,
             clipboard: Mutex::new((1, "fixture clipboard".to_owned())),
         }
@@ -62,6 +76,12 @@ impl MockDriver {
 
     fn stale_once() -> Self {
         Self {
+            fail_observe_after_mutation: false,
+            session_guard: std::sync::Mutex::new(None),
+            window_enumerations: AtomicUsize::new(0),
+            last_window_scope: Mutex::new(Vec::new()),
+            session_starts: AtomicUsize::new(0),
+            session_closes: AtomicUsize::new(0),
             revision: Mutex::new(1),
             stale_observations_remaining: Mutex::new(1),
             observation_calls: AtomicUsize::new(0),
@@ -70,6 +90,7 @@ impl MockDriver {
             action_failure: None,
             restore_foreground_requested: AtomicBool::new(false),
             action_gate: None,
+            verification_gate: None,
             forced_restoration: None,
             clipboard: Mutex::new((1, "fixture clipboard".to_owned())),
         }
@@ -132,7 +153,7 @@ impl MockDriver {
                 width: 2.0,
                 height: 2.0,
             },
-            minimized: false,
+            state: nexus_cua_protocol::WindowState::Normal,
             visible: true,
             foreground: true,
         }
@@ -175,12 +196,38 @@ impl MockDriver {
 
 #[async_trait]
 impl DesktopDriver for MockDriver {
+    fn session_started_guarded(
+        &self,
+        id: &nexus_cua_protocol::SessionId,
+        guard: nexus_cua_runtime::DriverActionGuard,
+        _allow_foreground: bool,
+    ) -> Result<(), DriverError> {
+        self.session_started(id)?;
+        *self.session_guard.lock().unwrap() = Some(guard);
+        Ok(())
+    }
+
+    fn session_started(&self, _id: &nexus_cua_protocol::SessionId) -> Result<(), DriverError> {
+        self.session_starts.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn session_closed(&self, _id: &nexus_cua_protocol::SessionId) {
+        self.session_closes.fetch_add(1, Ordering::SeqCst);
+    }
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            observe_after: false,
+            action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: "nexus.cua.v1".to_owned(),
             runtime_version: "test".to_owned(),
             platform: Platform::Macos,
-            capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
+            primary_modifier: "command".to_owned(),
+            capture_modes: vec![
+                CaptureMode::Window,
+                CaptureMode::Display,
+                CaptureMode::ApplicationScene,
+            ],
             accessibility_tree: true,
             input_routes: vec![
                 InputRoute::Semantic,
@@ -248,8 +295,10 @@ impl DesktopDriver for MockDriver {
 
     async fn list_windows(
         &self,
-        _application_key: Option<&str>,
+        application_keys: &[String],
     ) -> Result<Vec<DriverWindow>, DriverError> {
+        self.window_enumerations.fetch_add(1, Ordering::SeqCst);
+        *self.last_window_scope.lock().await = application_keys.to_vec();
         let generation = self.application_generation.load(Ordering::SeqCst);
         Ok(vec![Self::window_for_generation(generation)])
     }
@@ -274,6 +323,25 @@ impl DesktopDriver for MockDriver {
         Ok((RgbaImage::new(2, 2, vec![255; 16]), display.screen_bounds))
     }
 
+    async fn observe_application_scene_scoped(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        let mut observation = self
+            .observe_window(window, include_screenshot, accessibility)
+            .await?;
+        observation.screenshot_screen_bounds = include_screenshot.then_some(ScreenRect {
+            x: -100.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        });
+        Ok(observation)
+    }
+
     async fn observe_window(
         &self,
         window: &DriverWindow,
@@ -281,6 +349,12 @@ impl DesktopDriver for MockDriver {
         accessibility: AccessibilityMode,
     ) -> Result<DriverObservation, DriverError> {
         self.observation_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_observe_after_mutation && *self.revision.lock().await > 1 {
+            return Err(DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                "post-action capture failed",
+            ));
+        }
         let mut stale_remaining = self.stale_observations_remaining.lock().await;
         if *stale_remaining > 0 {
             *stale_remaining -= 1;
@@ -420,6 +494,10 @@ impl DesktopDriver for MockDriver {
         _window: &DriverWindow,
         fingerprint: &str,
     ) -> Result<bool, DriverError> {
+        if let Some(gate) = &self.verification_gate {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        }
         let revision = *self.revision.lock().await;
         Ok(fingerprint == format!("revision-{revision}"))
     }
@@ -553,6 +631,40 @@ fn runtime() -> (Runtime, PathBuf) {
     let runtime = Runtime::new(Arc::new(MockDriver::new()), RuntimeConfig::new(&root))
         .expect("create runtime");
     (runtime, root)
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_ownership_is_revoked_once_on_close_expiry_and_shutdown() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).unwrap();
+    let closed = open_session(&runtime, PermissionMode::ReadOnly).await;
+    let _expired = open_session_with_ttl(&runtime, PermissionMode::ReadOnly, 1).await;
+    let _remaining = open_session(&runtime, PermissionMode::ReadOnly).await;
+    assert_eq!(driver.session_starts.load(Ordering::SeqCst), 3);
+    runtime
+        .execute(Command::CloseSession(SessionInput {
+            session_id: closed.clone(),
+        }))
+        .await
+        .unwrap();
+    assert!(
+        runtime
+            .execute(Command::CloseSession(SessionInput { session_id: closed }))
+            .await
+            .is_err()
+    );
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 1);
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 2);
+    runtime.shutdown().await;
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 3);
+    drop(runtime);
+    assert_eq!(driver.session_closes.load(Ordering::SeqCst), 3);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -850,11 +962,12 @@ async fn foreground_click_input(
         panic!("unexpected observation result");
     };
     nexus_cua_protocol::PerformActionInput {
+        observe_after: None,
         session_id,
         window_ref,
         observation_id: observation.observation_id,
         action: Action::ClickPoint {
-            point: ScreenshotPoint { x: 1, y: 1 },
+            point: NormalizedPoint { x: 1.0, y: 1.0 },
             button: nexus_cua_protocol::PointerButton::Left,
             count: 1,
             delivery: DeliveryPreference::Foreground,
@@ -961,11 +1074,12 @@ async fn runtime_policy_denies_before_observation_consumption() {
     };
     let action = |count| {
         Command::PerformAction(nexus_cua_protocol::PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window_ref.clone(),
             observation_id: observation.observation_id.clone(),
             action: Action::ClickPoint {
-                point: ScreenshotPoint { x: 1, y: 1 },
+                point: NormalizedPoint { x: 1.0, y: 1.0 },
                 button: nexus_cua_protocol::PointerButton::Left,
                 count,
                 delivery: DeliveryPreference::Background,
@@ -1303,6 +1417,7 @@ async fn successful_mutation_invalidates_its_observation() {
         _ => panic!("unexpected observation result"),
     };
     let input = nexus_cua_protocol::PerformActionInput {
+        observe_after: None,
         session_id,
         window_ref,
         observation_id,
@@ -1358,6 +1473,7 @@ async fn numeric_range_action_is_bounded_by_the_guarded_native_metadata() {
     let outside = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: session_id.clone(),
                 window_ref: window_ref.clone(),
                 observation_id: observation.observation_id.clone(),
@@ -1375,6 +1491,7 @@ async fn numeric_range_action_is_bounded_by_the_guarded_native_metadata() {
     let output = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: session_id.clone(),
                 window_ref: window_ref.clone(),
                 observation_id: observation.observation_id,
@@ -1396,6 +1513,7 @@ async fn numeric_range_action_is_bounded_by_the_guarded_native_metadata() {
     let error = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id,
                 window_ref,
                 observation_id: observation.observation_id,
@@ -1531,6 +1649,7 @@ async fn fixture_invoke_input(runtime: &Runtime) -> nexus_cua_protocol::PerformA
         panic!("unexpected observation result");
     };
     nexus_cua_protocol::PerformActionInput {
+        observe_after: None,
         session_id,
         window_ref,
         observation_id: observation.observation_id,
@@ -1571,11 +1690,15 @@ async fn coordinates_outside_observed_window_fail_before_dispatch() {
     let error = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id,
                 window_ref,
                 observation_id,
                 action: Action::ClickPoint {
-                    point: ScreenshotPoint { x: 99, y: 99 },
+                    point: NormalizedPoint {
+                        x: 1001.0,
+                        y: 500.0,
+                    },
                     button: nexus_cua_protocol::PointerButton::Left,
                     count: 1,
                     delivery: nexus_cua_protocol::DeliveryPreference::Foreground,
@@ -1651,6 +1774,7 @@ async fn cooperative_termination_is_system_routed_and_invalidates_peer_sessions(
     let terminated = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: first_session,
                 window_ref: first_window,
                 observation_id: first_observation.observation_id,
@@ -1675,6 +1799,7 @@ async fn cooperative_termination_is_system_routed_and_invalidates_peer_sessions(
     let error = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id: second_session,
                 window_ref: second_window,
                 observation_id: second_observation_id,
@@ -1844,11 +1969,12 @@ async fn background_click_does_not_require_foreground_authority() {
     let output = runtime
         .execute(Command::PerformAction(
             nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
                 session_id,
                 window_ref,
                 observation_id,
                 action: Action::ClickPoint {
-                    point: ScreenshotPoint { x: 1, y: 1 },
+                    point: NormalizedPoint { x: 1.0, y: 1.0 },
                     button: nexus_cua_protocol::PointerButton::Left,
                     count: 1,
                     delivery: DeliveryPreference::Background,
@@ -2016,5 +2142,351 @@ fn dropping_runtime_removes_only_its_artifact_generation() {
             .count(),
         0
     );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn multi_application_window_listing_enumerates_once_with_full_authority_scope() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    driver.launches.store(1, Ordering::SeqCst);
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).unwrap();
+    let CommandResult::ApplicationsDiscovered(discovery) = runtime
+        .execute(Command::DiscoverApplications)
+        .await
+        .unwrap()
+    else {
+        panic!("expected discovery")
+    };
+    assert_eq!(discovery.applications.len(), 2);
+    let refs: Vec<_> = discovery
+        .applications
+        .into_iter()
+        .map(|app| app.discovery_ref)
+        .collect();
+    let mut grant = manifest(PermissionMode::ReadOnly, refs[0].clone());
+    grant.application_refs = refs;
+    let session_id = open_session_with_manifest(&runtime, grant).await;
+    runtime
+        .execute(Command::ListWindows(ListWindowsInput {
+            session_id,
+            app_ref: None,
+        }))
+        .await
+        .unwrap();
+    assert_eq!(driver.window_enumerations.load(Ordering::SeqCst), 1);
+    assert_eq!(driver.last_window_scope.lock().await.len(), 2);
+    runtime.shutdown().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn scene_observation_keeps_session_authority_and_rejects_background_delivery() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime");
+    let session_id = open_session(&runtime, PermissionMode::Bounded).await;
+    let (window_ref, _) = observed_fixture_window(&runtime, &session_id).await;
+    let input = ObserveWindowInput {
+        session_id: session_id.clone(),
+        window_ref: window_ref.clone(),
+        include_screenshot: true,
+        accessibility: AccessibilityMode::Disabled,
+    };
+    let CommandResult::WindowObserved(scene) = runtime
+        .execute(Command::ObserveApplicationScene(input.clone()))
+        .await
+        .expect("scene without desktop grant")
+    else {
+        panic!("scene result")
+    };
+    let screenshot = scene.screenshot.as_ref().expect("scene screenshot");
+    assert!(screenshot.mapping.screen_bounds.x < 0.0);
+    assert_ne!(screenshot.mapping.screen_bounds, scene.window_screen_bounds);
+    let error = runtime
+        .execute(Command::PerformAction(
+            nexus_cua_protocol::PerformActionInput {
+                observe_after: None,
+                session_id: session_id.clone(),
+                window_ref,
+                observation_id: scene.observation_id,
+                action: Action::ClickPoint {
+                    point: NormalizedPoint { x: 500.0, y: 500.0 },
+                    button: nexus_cua_protocol::PointerButton::Left,
+                    count: 1,
+                    delivery: DeliveryPreference::Background,
+                },
+            },
+        ))
+        .await
+        .expect_err("scene must not route menu coordinates to the anchor's background window");
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    let second = open_session(&runtime, PermissionMode::ReadOnly).await;
+    let calls = driver.observation_calls.load(Ordering::SeqCst);
+    let error = runtime
+        .execute(Command::ObserveApplicationScene(ObserveWindowInput {
+            session_id: second.clone(),
+            ..input.clone()
+        }))
+        .await
+        .expect_err("cross-session anchor");
+    assert_eq!(error.code, ErrorCode::ReferenceNotFound);
+    assert_eq!(driver.observation_calls.load(Ordering::SeqCst), calls);
+    runtime
+        .execute(Command::CloseSession(SessionInput { session_id }))
+        .await
+        .expect("close");
+    assert!(!PathBuf::from(&screenshot.path).exists());
+    let error = runtime
+        .execute(Command::ObserveApplicationScene(input))
+        .await
+        .expect_err("closed scene");
+    assert_eq!(error.code, ErrorCode::SessionUnavailable);
+    runtime
+        .execute(Command::CloseSession(SessionInput { session_id: second }))
+        .await
+        .expect("close second");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn close_during_native_preflight_prevents_the_later_dispatch() {
+    let root = artifact_root();
+    let gate = Arc::new(ActionGate::default());
+    let driver = Arc::new(MockDriver {
+        verification_gate: Some(Arc::clone(&gate)),
+        ..MockDriver::new()
+    });
+    let runtime =
+        Arc::new(Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime"));
+    let input = fixture_invoke_input(&runtime).await;
+    let session_id = input.session_id.clone();
+    let task_runtime = Arc::clone(&runtime);
+    let task =
+        tokio::spawn(async move { task_runtime.execute(Command::PerformAction(input)).await });
+    gate.entered.notified().await;
+    runtime
+        .execute(Command::CloseSession(SessionInput { session_id }))
+        .await
+        .expect("close while preflight is pending");
+    gate.release.notify_one();
+    let error = task
+        .await
+        .expect("join")
+        .expect_err("closed authority must not dispatch");
+    assert_eq!(error.code, ErrorCode::SessionUnavailable);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    assert_eq!(*driver.revision.lock().await, 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn user_takeover_during_preflight_rejects_dispatch_and_later_actions() {
+    let root = artifact_root();
+    let gate = Arc::new(ActionGate::default());
+    let driver = Arc::new(MockDriver {
+        verification_gate: Some(Arc::clone(&gate)),
+        ..MockDriver::new()
+    });
+    let runtime =
+        Arc::new(Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime"));
+    let input = fixture_invoke_input(&runtime).await;
+    let later = input.clone();
+    let task_runtime = Arc::clone(&runtime);
+    let task =
+        tokio::spawn(async move { task_runtime.execute(Command::PerformAction(input)).await });
+    gate.entered.notified().await;
+    driver
+        .session_guard
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .user_took_over();
+    gate.release.notify_one();
+    let error = task
+        .await
+        .expect("join")
+        .expect_err("takeover must reject native dispatch");
+    assert_eq!(error.code, ErrorCode::UserActive);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    let later_error = runtime
+        .execute(Command::PerformAction(later))
+        .await
+        .expect_err("takeover must remain latched");
+    assert_eq!(later_error.code, ErrorCode::UserActive);
+    assert!(!later_error.retryable);
+    assert_eq!(*driver.revision.lock().await, 1);
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn action_can_return_a_fresh_usable_observation_without_reusing_its_guard() {
+    let (runtime, root) = runtime();
+    let mut input = fixture_invoke_input(&runtime).await;
+    let old = input.clone();
+    input.observe_after = Some(nexus_cua_protocol::ObserveAfterOptions {
+        include_screenshot: true,
+        accessibility: AccessibilityMode::Full,
+        application_scene: false,
+    });
+    let CommandResult::ActionPerformed(output) = runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("action and observation")
+    else {
+        panic!("wrong result")
+    };
+    let after = output.observation.expect("fresh observation");
+    assert!(output.observation_error.is_none());
+    assert_ne!(after.observation_id, old.observation_id);
+    let stale = runtime
+        .execute(Command::PerformAction(old.clone()))
+        .await
+        .expect_err("old guard consumed");
+    assert_eq!(stale.code, ErrorCode::StaleObservation);
+    let mut next = old;
+    next.observation_id = after.observation_id;
+    next.action = Action::InvokeElement {
+        element_ref: after.elements[0].element_ref.clone(),
+    };
+    runtime
+        .execute(Command::PerformAction(next))
+        .await
+        .expect("next action uses returned guard");
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn idle_user_input_preserves_session_but_requires_a_new_observation() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).unwrap();
+    let mut input = fixture_invoke_input(&runtime).await;
+    driver
+        .session_guard
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .record_user_input();
+    let started = std::time::Instant::now();
+    let error = runtime
+        .execute(Command::PerformAction(input.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleObservation);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+    assert_eq!(*driver.revision.lock().await, 1);
+    let CommandResult::WindowObserved(observation) = runtime
+        .execute(Command::ObserveWindow(ObserveWindowInput {
+            session_id: input.session_id.clone(),
+            window_ref: input.window_ref.clone(),
+            include_screenshot: false,
+            accessibility: AccessibilityMode::Interactive,
+        }))
+        .await
+        .unwrap()
+    else {
+        panic!("observation expected")
+    };
+    input.observation_id = observation.observation_id;
+    input.action = Action::InvokeElement {
+        element_ref: observation.elements[0].element_ref.clone(),
+    };
+    runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("same session resumes after fresh observation");
+    assert_eq!(driver.session_starts.load(Ordering::SeqCst), 1);
+    assert_eq!(*driver.revision.lock().await, 2);
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn post_action_read_failure_does_not_hide_successful_mutation() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver {
+        fail_observe_after_mutation: true,
+        ..MockDriver::new()
+    });
+    let runtime = Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime");
+    let mut input = fixture_invoke_input(&runtime).await;
+    input.observe_after = Some(nexus_cua_protocol::ObserveAfterOptions {
+        include_screenshot: false,
+        accessibility: AccessibilityMode::Full,
+        application_scene: false,
+    });
+    let CommandResult::ActionPerformed(output) = runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("mutation is still successful")
+    else {
+        panic!("wrong result")
+    };
+    assert!(output.dispatched);
+    assert!(output.observation.is_none());
+    let error = output.observation_error.expect("separate read failure");
+    assert_eq!(error.code, ErrorCode::TargetUnavailable);
+    assert_eq!(error.mutation_status, MutationStatus::NotApplicable);
+    assert_eq!(*driver.revision.lock().await, 2);
+    runtime.shutdown().await;
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn observe_after_cannot_bypass_read_policy_or_consume_the_action_guard() {
+    let root = artifact_root();
+    let driver = Arc::new(MockDriver::new());
+    let mut config = RuntimeConfig::new(&root);
+    config.policy = RuntimePolicyStack::from_layers(
+        Some(RuntimePolicyLayer {
+            schema_version: 1,
+            allow: PolicyAllow {
+                operations: vec![
+                    PolicyOperation::DiscoverApplications,
+                    PolicyOperation::OpenSession,
+                    PolicyOperation::ListWindows,
+                    PolicyOperation::ObserveWindow,
+                    PolicyOperation::PerformAction,
+                ],
+                actions: vec![
+                    ActionKind::TerminateApplication,
+                    ActionKind::InvokeElement,
+                    ActionKind::SetRangeValue,
+                    ActionKind::ClickPoint,
+                ],
+                action_rules: Vec::new(),
+            },
+            deny: PolicyDeny::default(),
+        }),
+        None,
+    )
+    .expect("policy");
+    let runtime = Runtime::new(driver.clone(), config).expect("runtime");
+    let mut input = fixture_invoke_input(&runtime).await;
+    input.observe_after = Some(nexus_cua_protocol::ObserveAfterOptions {
+        include_screenshot: true,
+        accessibility: AccessibilityMode::Full,
+        application_scene: true,
+    });
+    let error = runtime
+        .execute(Command::PerformAction(input.clone()))
+        .await
+        .expect_err("scene denied");
+    assert_eq!(error.code, ErrorCode::CapabilityDenied);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    assert_eq!(*driver.revision.lock().await, 1);
+    input.observe_after = None;
+    runtime
+        .execute(Command::PerformAction(input))
+        .await
+        .expect("same guard remains usable");
+    assert_eq!(*driver.revision.lock().await, 2);
+    runtime.shutdown().await;
     let _ = std::fs::remove_dir_all(root);
 }

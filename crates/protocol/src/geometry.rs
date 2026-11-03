@@ -47,6 +47,56 @@ pub struct ScreenshotPoint {
     pub y: u32,
 }
 
+/// A top-left-origin point normalized to the inclusive range 0..1000.
+/// This coordinate space is independent of captured or model-resized image dimensions.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NormalizedPoint {
+    /// Finite horizontal coordinate in the inclusive range 0..1000.
+    #[schemars(range(min = 0, max = 1000))]
+    pub x: f64,
+    /// Finite vertical coordinate in the inclusive range 0..1000.
+    #[schemars(range(min = 0, max = 1000))]
+    pub y: f64,
+}
+
+impl NormalizedPoint {
+    /// Maps finite normalized coordinates to pixels, rounding only here.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn to_pixel(self, size: PixelSize) -> Option<ScreenshotPoint> {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !(0.0..=1000.0).contains(&self.x)
+            || !(0.0..=1000.0).contains(&self.y)
+            || size.width == 0
+            || size.height == 0
+        {
+            return None;
+        }
+        // Validated coordinates map into [0, length-1], which fits u32.
+        let axis =
+            |value: f64, length: u32| (value * f64::from(length - 1) / 1000.0).round() as u32;
+        Some(ScreenshotPoint {
+            x: axis(self.x, size.width),
+            y: axis(self.y, size.height),
+        })
+    }
+
+    /// Preserves sub-unit precision when projecting a crop pixel into the source.
+    pub fn from_pixel(point: ScreenshotPoint, size: PixelSize) -> Option<Self> {
+        if !size.contains(point) {
+            return None;
+        }
+        let axis = |value: u32, length: u32| {
+            f64::from(value) * 1000.0 / f64::from(length.saturating_sub(1).max(1))
+        };
+        Some(Self {
+            x: axis(point.x, size.width),
+            y: axis(point.y, size.height),
+        })
+    }
+}
+
 /// Exact physical dimensions of a screenshot artifact.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +108,24 @@ pub struct PixelSize {
 }
 
 impl PixelSize {
+    /// Fits within a nonzero long-edge budget without upscaling.
+    pub fn fit_long_edge(self, edge: u32) -> Option<Self> {
+        if self.width == 0 || self.height == 0 || edge == 0 {
+            return None;
+        }
+        let longest = self.width.max(self.height);
+        if longest <= edge {
+            return Some(self);
+        }
+        let scale = |value: u32| {
+            u32::try_from((u64::from(value) * u64::from(edge)).div_ceil(u64::from(longest))).ok()
+        };
+        Some(Self {
+            width: scale(self.width)?.max(1),
+            height: scale(self.height)?.max(1),
+        })
+    }
+
     /// Returns whether a pixel coordinate addresses this image.
     pub fn contains(self, point: ScreenshotPoint) -> bool {
         point.x < self.width && point.y < self.height
@@ -90,5 +158,159 @@ impl ScreenshotMapping {
                 + f64::from(point.y) * self.screen_bounds.height
                     / f64::from(self.pixel_size.height),
         })
+    }
+}
+
+#[cfg(test)]
+mod normalized_tests {
+    use super::*;
+
+    #[test]
+    fn normalized_mapping_covers_retina_edges_and_rejects_outside_points() {
+        let size = PixelSize {
+            width: 3840,
+            height: 2160,
+        };
+        assert_eq!(
+            NormalizedPoint { x: 0.0, y: 0.0 }.to_pixel(size),
+            Some(ScreenshotPoint { x: 0, y: 0 })
+        );
+        assert_eq!(
+            NormalizedPoint {
+                x: 1000.0,
+                y: 1000.0
+            }
+            .to_pixel(size),
+            Some(ScreenshotPoint { x: 3839, y: 2159 })
+        );
+        assert!(
+            NormalizedPoint { x: 1001.0, y: 0.0 }
+                .to_pixel(size)
+                .is_none()
+        );
+        let mapping = ScreenshotMapping {
+            pixel_size: size,
+            screen_bounds: ScreenRect {
+                x: -1920.0,
+                y: -1080.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+        };
+        let point = NormalizedPoint { x: 500.0, y: 500.0 }
+            .to_pixel(size)
+            .unwrap();
+        assert_eq!(
+            mapping.to_screen(point),
+            Some(ScreenPoint {
+                x: -960.0,
+                y: -540.0
+            })
+        );
+        assert_eq!(
+            NormalizedPoint::from_pixel(point, size)
+                .unwrap()
+                .to_pixel(size),
+            Some(point)
+        );
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    #[test]
+    fn image_budget_fits_4k_and_portrait_without_upscaling() {
+        assert_eq!(
+            PixelSize {
+                width: 3840,
+                height: 2160
+            }
+            .fit_long_edge(1568),
+            Some(PixelSize {
+                width: 1568,
+                height: 882
+            })
+        );
+        assert_eq!(
+            PixelSize {
+                width: 2160,
+                height: 3840
+            }
+            .fit_long_edge(1568),
+            Some(PixelSize {
+                width: 882,
+                height: 1568
+            })
+        );
+        assert_eq!(
+            PixelSize {
+                width: 2,
+                height: 1
+            }
+            .fit_long_edge(1568),
+            Some(PixelSize {
+                width: 2,
+                height: 1
+            })
+        );
+        assert!(
+            PixelSize {
+                width: 1,
+                height: 1
+            }
+            .fit_long_edge(0)
+            .is_none()
+        );
+    }
+
+    use super::*;
+    #[test]
+    fn every_axis_pixel_round_trips_at_4k_and_laptop_resolution() {
+        for size in [
+            PixelSize {
+                width: 3840,
+                height: 2160,
+            },
+            PixelSize {
+                width: 1366,
+                height: 768,
+            },
+            PixelSize {
+                width: 1,
+                height: 1,
+            },
+        ] {
+            for x in 0..size.width {
+                let point = ScreenshotPoint { x, y: 0 };
+                assert_eq!(
+                    NormalizedPoint::from_pixel(point, size)
+                        .unwrap()
+                        .to_pixel(size),
+                    Some(point)
+                );
+            }
+            for y in 0..size.height {
+                let point = ScreenshotPoint { x: 0, y };
+                assert_eq!(
+                    NormalizedPoint::from_pixel(point, size)
+                        .unwrap()
+                        .to_pixel(size),
+                    Some(point)
+                );
+            }
+        }
+    }
+    #[test]
+    fn nonfinite_and_out_of_bounds_coordinates_never_map() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1, 1000.1] {
+            assert!(
+                NormalizedPoint { x: value, y: 0.0 }
+                    .to_pixel(PixelSize {
+                        width: 3840,
+                        height: 2160
+                    })
+                    .is_none()
+            );
+        }
     }
 }

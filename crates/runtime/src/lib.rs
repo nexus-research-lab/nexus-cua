@@ -4,6 +4,7 @@
 //! platform handles. Platform drivers cannot grant authority or silently widen
 //! an input route.
 
+mod activity;
 mod artifact_store;
 mod driver;
 mod error;
@@ -15,4 +16,4 @@ mod validation;
 pub use driver::*;
 pub use error::*;
 pub use policy::*;
-pub use service::{Runtime, RuntimeConfig};
+pub use service::{DEFAULT_MAX_OBSERVATION_AGE_SECONDS, Runtime, RuntimeConfig};

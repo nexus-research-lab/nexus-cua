@@ -3,7 +3,22 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ElementRef, ScreenRect, ScreenshotPoint, SensitiveText};
+use crate::{ElementRef, NormalizedPoint, ScreenRect, SensitiveText};
+
+/// Canonicalizes common key aliases without changing platform-specific meaning.
+/// `mod` is the platform's primary shortcut modifier; `meta` remains the OS meta key.
+pub fn canonical_key(key: &str) -> &str {
+    match key {
+        "cmd" => "command",
+        "ctrl" => "control",
+        "opt" => "option",
+        "esc" => "escape",
+        "return" => "enter",
+        "pageup" => "page_up",
+        "pagedown" => "page_down",
+        _ => key,
+    }
+}
 
 /// Stable action category used by bounded capability manifests.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Hash, Serialize)]
@@ -21,7 +36,7 @@ pub enum ActionKind {
     FocusElement,
     /// Invoke an accessibility element's primary action.
     InvokeElement,
-    /// Click at a physical pixel coordinate.
+    /// Click at a normalized coordinate.
     ClickPoint,
     /// Press and release a pointer button after a bounded hold.
     PressPoint,
@@ -43,7 +58,7 @@ pub enum ActionKind {
     PressKeys,
     /// Scroll a semantic element or pixel surface.
     Scroll,
-    /// Drag between two physical pixel coordinates.
+    /// Drag between two normalized coordinates.
     Drag,
 }
 
@@ -102,8 +117,8 @@ pub enum Action {
     },
     /// Clicks a point inside the observed window.
     ClickPoint {
-        /// Integer coordinate in the guarded screenshot artifact.
-        point: ScreenshotPoint,
+        /// Normalized 0..1000 coordinate in the guarded screenshot.
+        point: NormalizedPoint,
         /// Pointer button.
         button: PointerButton,
         /// Number of clicks, limited by the runtime.
@@ -115,8 +130,8 @@ pub enum Action {
     },
     /// Holds one pointer button at a point, then always releases it in the same dispatch.
     PressPoint {
-        /// Integer coordinate in the guarded screenshot artifact.
-        point: ScreenshotPoint,
+        /// Normalized 0..1000 coordinate in the guarded screenshot.
+        point: NormalizedPoint,
         /// Pointer button.
         button: PointerButton,
         /// Bounded hold duration in milliseconds.
@@ -156,8 +171,8 @@ pub enum Action {
     },
     /// Moves the system pointer to a screenshot pixel without clicking.
     MovePointer {
-        /// Integer coordinate in the guarded screenshot artifact.
-        point: ScreenshotPoint,
+        /// Normalized 0..1000 coordinate in the guarded screenshot.
+        point: NormalizedPoint,
         /// Bounded movement duration in milliseconds.
         duration_ms: u32,
     },
@@ -171,10 +186,10 @@ pub enum Action {
         /// Normalized non-empty key chord.
         keys: Vec<String>,
     },
-    /// Scrolls by physical pixel deltas.
+    /// Scrolls by logical pixel deltas.
     Scroll {
-        /// Optional semantic target.
-        element_ref: Option<ElementRef>,
+        /// Required normalized target point; dispatch verifies native hit-test ownership.
+        point: NormalizedPoint,
         /// Horizontal delta.
         delta_x: f64,
         /// Vertical delta.
@@ -183,9 +198,9 @@ pub enum Action {
     /// Drags between two points inside the observed window.
     Drag {
         /// Starting point.
-        from: ScreenshotPoint,
+        from: NormalizedPoint,
         /// Ending point.
-        to: ScreenshotPoint,
+        to: NormalizedPoint,
         /// Bounded duration in milliseconds.
         duration_ms: u32,
     },
@@ -349,4 +364,27 @@ pub enum ForegroundRestorationStatus {
     TargetUnavailable,
     /// The operating system rejected restoration or read-back did not confirm it.
     Failed,
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::canonical_key;
+
+    #[test]
+    fn aliases_preserve_explicit_modifier_meaning() {
+        for (alias, expected) in [
+            ("cmd", "command"),
+            ("ctrl", "control"),
+            ("opt", "option"),
+            ("esc", "escape"),
+            ("return", "enter"),
+            ("pageup", "page_up"),
+            ("pagedown", "page_down"),
+            ("mod", "mod"),
+            ("meta", "meta"),
+            ("win", "win"),
+        ] {
+            assert_eq!(canonical_key(alias), expected);
+        }
+    }
 }

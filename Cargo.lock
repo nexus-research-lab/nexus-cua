@@ -483,6 +483,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags",
+ "block2",
+ "libc",
  "objc2",
 ]
 
@@ -949,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "clap",
@@ -973,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-host"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "base64",
@@ -994,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-mcp"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -1022,13 +1024,14 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-platform"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "accessibility-sys",
  "async-trait",
  "block2",
  "core-foundation",
  "core-graphics",
+ "dispatch2",
  "foreign-types",
  "hex",
  "libc",
@@ -1037,7 +1040,10 @@ dependencies = [
  "nexus-cua-runtime",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-foundation",
  "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
  "objc2-foundation",
  "objc2-screen-capture-kit",
  "serde",
@@ -1050,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-protocol"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "schemars",
  "serde",
@@ -1061,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-provider"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "core-foundation",
@@ -1086,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-remote-harness"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "base64",
@@ -1108,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-runtime"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "fs2",
@@ -1128,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-transport"
-version = "0.1.0"
+version = "0.2.0-rc.4"
 dependencies = [
  "async-trait",
  "nexus-cua-protocol",
@@ -1220,6 +1226,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-audio"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2"
+dependencies = [
+ "dispatch2",
+ "objc2",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-core-audio-types"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a89f2ec274a0cf4a32642b2991e8b351a404d290da87bb6a9a9d8632490bd1c"
+dependencies = [
+ "bitflags",
+ "objc2",
+]
+
+[[package]]
 name = "objc2-core-foundation"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1240,6 +1268,34 @@ dependencies = [
  "dispatch2",
  "objc2",
  "objc2-core-foundation",
+ "objc2-io-surface",
+]
+
+[[package]]
+name = "objc2-core-media"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
+dependencies = [
+ "bitflags",
+ "dispatch2",
+ "objc2",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-core-video",
+]
+
+[[package]]
+name = "objc2-core-video"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
+dependencies = [
+ "bitflags",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-io-surface",
 ]
 
@@ -1278,10 +1334,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
 dependencies = [
  "block2",
+ "dispatch2",
  "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-core-graphics",
+ "objc2-core-media",
  "objc2-foundation",
 ]
 

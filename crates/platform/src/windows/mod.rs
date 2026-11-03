@@ -26,7 +26,8 @@ use nexus_cua_runtime::{
     DriverLaunchableApplication, DriverObservation, DriverVerification, DriverWindow,
 };
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetDpiAwarenessContextForProcess, SetProcessDpiAwarenessContext,
 };
 
 use capture::CaptureActor;
@@ -57,11 +58,22 @@ const LAUNCH_CONFIRM_INTERVAL: Duration = Duration::from_millis(50);
 impl WindowsDriver {
     /// Creates the native actors without prompting or widening OS authority.
     pub fn new() -> Result<Self, DriverError> {
-        // SAFETY: This must run before creating platform windows. Failure means
-        // the host already selected a process DPI mode; screenshot mappings
-        // continue to make coordinate conversion explicit.
-        let _ =
-            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        // SAFETY: Configure before actors are created. A manifest may already
+        // have configured PMv2; verify the actual process context in either case.
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let context = GetDpiAwarenessContextForProcess(
+                windows::Win32::System::Threading::GetCurrentProcess(),
+            );
+            if !AreDpiAwarenessContextsEqual(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                .as_bool()
+            {
+                return Err(DriverError::new(
+                    DriverErrorKind::Unsupported,
+                    "Windows driver requires process Per-Monitor-V2 DPI awareness",
+                ));
+            }
+        }
         Ok(Self {
             discovery: DiscoveryActor::spawn(),
             capture: CaptureActor::spawn()?,
@@ -86,9 +98,12 @@ impl WindowsDriver {
 impl DesktopDriver for WindowsDriver {
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
+            observe_after: false,
+            action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
             platform: Platform::Windows,
+            primary_modifier: "control".to_owned(),
             capture_modes: vec![CaptureMode::Window, CaptureMode::Display],
             accessibility_tree: true,
             input_routes: vec![
@@ -218,13 +233,13 @@ impl DesktopDriver for WindowsDriver {
 
     async fn list_windows(
         &self,
-        application_key: Option<&str>,
+        application_keys: &[String],
     ) -> Result<Vec<DriverWindow>, DriverError> {
         Ok(self
             .windows()
             .await?
             .into_iter()
-            .filter(|window| application_key.is_none_or(|key| key == window.application_key))
+            .filter(|window| application_keys.contains(&window.application_key))
             .map(driver_window)
             .collect())
     }
@@ -570,7 +585,7 @@ impl WindowsDriver {
                 } else {
                     None
                 };
-                let action = self.resolve_input_action(input_action).await?;
+                let action = Self::resolve_input_action(input_action)?;
                 let foreground_restoration = self
                     .input
                     .perform_foreground(
@@ -630,11 +645,11 @@ impl WindowsDriver {
         hwnd: isize,
         action: DriverAction,
     ) -> Result<(), DriverError> {
-        let action = self.resolve_input_action(action).await?;
+        let action = Self::resolve_input_action(action)?;
         self.input.perform(hwnd, action).await
     }
 
-    async fn resolve_input_action(&self, action: DriverAction) -> Result<InputAction, DriverError> {
+    fn resolve_input_action(action: DriverAction) -> Result<InputAction, DriverError> {
         let action = match action {
             DriverAction::ClickPoint {
                 point,
@@ -662,17 +677,15 @@ impl WindowsDriver {
             DriverAction::TypeText { text } => InputAction::TypeText(text),
             DriverAction::PressKeys { keys } => InputAction::PressKeys(keys),
             DriverAction::Scroll {
-                element_key,
+                point,
                 delta_x,
                 delta_y,
-            } => {
-                if let Some(element_key) = element_key {
-                    self.semantic
-                        .perform(element_key, SemanticAction::Focus)
-                        .await?;
-                }
-                InputAction::Scroll { delta_x, delta_y }
-            }
+                ..
+            } => InputAction::Scroll {
+                point,
+                delta_x,
+                delta_y,
+            },
             DriverAction::Drag {
                 from,
                 to,
@@ -728,7 +741,13 @@ fn driver_window(window: NativeWindow) -> DriverWindow {
         application,
         title: window.title,
         screen_bounds: window.screen_bounds,
-        minimized: window.minimized,
+        state: if window.minimized {
+            nexus_cua_protocol::WindowState::Minimized
+        } else if window.visible {
+            nexus_cua_protocol::WindowState::Normal
+        } else {
+            nexus_cua_protocol::WindowState::Offscreen
+        },
         visible: window.visible,
         foreground: window.foreground,
     }

@@ -33,6 +33,7 @@ class Platform(ClosedString):
 
 
 class CaptureMode(ClosedString):
+    APPLICATION_SCENE = "application_scene"
     WINDOW = "window"
     DISPLAY = "display"
 
@@ -180,6 +181,7 @@ class ErrorCode(ClosedString):
     PERMISSION_REQUIRED = "permission_required"
     UNSUPPORTED = "unsupported"
     FOREGROUND_REQUIRED = "foreground_required"
+    USER_ACTIVE = "user_active"
     TARGET_UNAVAILABLE = "target_unavailable"
     TARGET_UNRESPONSIVE = "target_unresponsive"
     DRIVER_FAILURE = "driver_failure"
@@ -226,10 +228,50 @@ class CUAError(Exception):
 
 
 @dataclass(frozen=True)
+class ActionLimits:
+    max_session_ttl_seconds: int
+    max_text_bytes: int
+    max_keys: int
+    max_scroll_delta: int
+    max_pointer_duration_ms: int
+    max_window_coordinate: int
+    max_window_dimension: int
+    max_range_value: int
+    max_click_count: int
+
+    @classmethod
+    def from_wire(cls, value: Any) -> ActionLimits:
+        data = closed_object(value, {
+            "max_session_ttl_seconds",
+            "max_text_bytes",
+            "max_keys",
+            "max_scroll_delta",
+            "max_pointer_duration_ms",
+            "max_window_coordinate",
+            "max_window_dimension",
+            "max_range_value",
+            "max_click_count",
+        })
+        return cls(
+            integer_value(data["max_session_ttl_seconds"]),
+            integer_value(data["max_text_bytes"]),
+            integer_value(data["max_keys"]),
+            integer_value(data["max_scroll_delta"]),
+            integer_value(data["max_pointer_duration_ms"]),
+            integer_value(data["max_window_coordinate"]),
+            integer_value(data["max_window_dimension"]),
+            integer_value(data["max_range_value"]),
+            integer_value(data["max_click_count"]),
+        )
+
+
+@dataclass(frozen=True)
 class DriverCapabilities:
+    action_limits: ActionLimits
     protocol_version: str
     runtime_version: str
     platform: Platform
+    primary_modifier: str
     capture_modes: tuple[CaptureMode, ...]
     accessibility_tree: bool
     input_routes: tuple[InputRoute, ...]
@@ -237,14 +279,18 @@ class DriverCapabilities:
     clipboard: tuple[ClipboardOperation, ...]
     actions: tuple[ActionKind, ...]
 
+    observe_after: bool = False
+
     @classmethod
     def from_wire(cls, value: Any) -> DriverCapabilities:
         data = closed_object(
             value,
             {
+                "action_limits",
                 "protocol_version",
                 "runtime_version",
                 "platform",
+                "primary_modifier",
                 "capture_modes",
                 "accessibility_tree",
                 "input_routes",
@@ -252,11 +298,14 @@ class DriverCapabilities:
                 "clipboard",
                 "actions",
             },
+            {"observe_after"},
         )
         return cls(
+            ActionLimits.from_wire(data["action_limits"]),
             string_value(data["protocol_version"]),
             string_value(data["runtime_version"]),
             enum_value(Platform, data["platform"]),
+            string_value(data["primary_modifier"]),
             enum_tuple(CaptureMode, data["capture_modes"]),
             bool_value(data["accessibility_tree"]),
             enum_tuple(InputRoute, data["input_routes"]),
@@ -265,6 +314,7 @@ class DriverCapabilities:
             ),
             enum_tuple(ClipboardOperation, data["clipboard"]),
             enum_tuple(ActionKind, data["actions"]),
+            bool_value(data.get("observe_after", False)),
         )
 
 
@@ -544,13 +594,13 @@ class ScreenRect:
 
 
 @dataclass(frozen=True)
-class ScreenshotPoint:
-    x: int
-    y: int
+class NormalizedPoint:
+    x: float
+    y: float
 
-    def to_wire(self) -> dict[str, int]:
-        if not (0 <= self.x <= 2**32 - 1 and 0 <= self.y <= 2**32 - 1):
-            raise ValueError("screenshot point must fit unsigned 32-bit coordinates")
+    def to_wire(self) -> dict[str, float]:
+        if not all(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1000 for value in (self.x, self.y)):
+            raise ValueError("normalized point must use finite coordinates in 0..1000")
         return {"x": self.x, "y": self.y}
 
 
@@ -579,13 +629,20 @@ class ScreenshotMapping:
         )
 
 
+class WindowState(ClosedString):
+    NORMAL = "normal"
+    MINIMIZED = "minimized"
+    OFFSCREEN = "offscreen"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class WindowSummary:
     window_ref: WindowRef
     app_ref: AppRef
     title: str
     screen_bounds: ScreenRect
-    minimized: bool
+    state: WindowState
     visible: bool
     foreground: bool
 
@@ -598,7 +655,7 @@ class WindowSummary:
                 "app_ref",
                 "title",
                 "screen_bounds",
-                "minimized",
+                "state",
                 "visible",
                 "foreground",
             },
@@ -608,7 +665,7 @@ class WindowSummary:
             AppRef(string_value(data["app_ref"])),
             string_value(data["title"]),
             ScreenRect.from_wire(data["screen_bounds"]),
-            bool_value(data["minimized"]),
+            WindowState(data["state"]),
             bool_value(data["visible"]),
             bool_value(data["foreground"]),
         )
@@ -914,6 +971,16 @@ class ClipboardWriteOutput:
 
 
 @dataclass(frozen=True)
+class ObserveAfterOptions:
+    include_screenshot: bool = True
+    accessibility: AccessibilityMode = AccessibilityMode.INTERACTIVE
+    application_scene: bool = False
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"include_screenshot": self.include_screenshot, "accessibility": self.accessibility.value, "application_scene": self.application_scene}
+
+
+@dataclass(frozen=True)
 class ActionOutput:
     delivery_mode: DeliveryMode
     dispatched: bool
@@ -921,6 +988,9 @@ class ActionOutput:
     evidence_kind: ActionEvidenceKind
     foreground_restoration: ForegroundRestorationStatus
     observation_invalidated: bool
+
+    observation: WindowObservation | None = None
+    observation_error: CUAError | None = None
 
     @classmethod
     def from_wire(cls, value: Any) -> ActionOutput:
@@ -934,6 +1004,7 @@ class ActionOutput:
                 "foreground_restoration",
                 "observation_invalidated",
             },
+            {"observation", "observation_error"},
         )
         effect_status = enum_value(ActionEffectStatus, data["effect_status"])
         evidence_kind = enum_value(ActionEvidenceKind, data["evidence_kind"])
@@ -957,6 +1028,8 @@ class ActionOutput:
                 ForegroundRestorationStatus, data["foreground_restoration"]
             ),
             bool_value(data["observation_invalidated"]),
+            WindowObservation.from_wire(data["observation"]) if data.get("observation") is not None else None,
+            CUAError.from_wire(data["observation_error"]) if data.get("observation_error") is not None else None,
         )
 
 
@@ -1110,7 +1183,7 @@ class InvokeElement(Action):
 
 @dataclass(frozen=True)
 class ClickPoint(Action):
-    point: ScreenshotPoint
+    point: NormalizedPoint
     button: PointerButton = PointerButton.LEFT
     count: int = 1
     delivery: DeliveryPreference = DeliveryPreference.FOREGROUND
@@ -1127,7 +1200,7 @@ class ClickPoint(Action):
 
 @dataclass(frozen=True)
 class PressPoint(Action):
-    point: ScreenshotPoint
+    point: NormalizedPoint
     duration_ms: int
     button: PointerButton = PointerButton.LEFT
 
@@ -1197,7 +1270,7 @@ class SetExpanded(Action):
 
 @dataclass(frozen=True)
 class MovePointer(Action):
-    point: ScreenshotPoint
+    point: NormalizedPoint
     duration_ms: int
 
     def to_wire(self) -> dict[str, Any]:
@@ -1226,14 +1299,14 @@ class PressKeys(Action):
 
 @dataclass(frozen=True)
 class Scroll(Action):
+    point: NormalizedPoint
     delta_x: float
     delta_y: float
-    element_ref: ElementRef | None = None
 
     def to_wire(self) -> dict[str, Any]:
         return {
             "kind": "scroll",
-            "element_ref": self.element_ref,
+            "point": self.point.to_wire(),
             "delta_x": self.delta_x,
             "delta_y": self.delta_y,
         }
@@ -1241,8 +1314,8 @@ class Scroll(Action):
 
 @dataclass(frozen=True)
 class Drag(Action):
-    from_point: ScreenshotPoint
-    to_point: ScreenshotPoint
+    from_point: NormalizedPoint
+    to_point: NormalizedPoint
     duration_ms: int
 
     def to_wire(self) -> dict[str, Any]:
@@ -1382,13 +1455,13 @@ def predicate_wire(value: StatePredicate) -> dict[str, Any]:
 E = TypeVar("E", bound=ClosedString)
 
 
-def closed_object(value: Any, required: set[str]) -> dict[str, Any]:
+def closed_object(value: Any, required: set[str], optional: set[str] | None = None) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("expected an object")
     keys = set(value.keys())
-    if keys != required:
+    if not required <= keys or keys - required - (optional or set()):
         missing = required - keys
-        unknown = keys - required
+        unknown = keys - required - (optional or set())
         raise ValueError(
             f"object shape mismatch; missing={sorted(missing)} unknown={sorted(unknown)}"
         )

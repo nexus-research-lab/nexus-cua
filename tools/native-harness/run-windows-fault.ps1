@@ -25,7 +25,7 @@ $evidence = if ($FlatOutput) {
 $token = Join-Path $evidence "fault-token"
 $artifacts = Join-Path $evidence "fault-artifacts"
 $endpoint = "\\.\pipe\nexus-cua-native-fault-$PID"
-$sidecar = Join-Path $repository "target\$BuildProfile\nexus-cua.exe"
+$sidecar = Join-Path $repository "target\$BuildProfile\nexuscua.exe"
 $harness = Join-Path $repository "tools\native-harness\target\$BuildProfile\nexus-cua-native-harness.exe"
 $fixturePath = Join-Path $repository "target\native-fixtures\windows\nexus-cua-native-fixture.exe"
 

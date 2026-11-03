@@ -32,8 +32,9 @@ const (
 type CaptureMode string
 
 const (
-	CaptureModeWindow  CaptureMode = "window"
-	CaptureModeDisplay CaptureMode = "display"
+	CaptureModeWindow           CaptureMode = "window"
+	CaptureModeApplicationScene CaptureMode = "application_scene"
+	CaptureModeDisplay          CaptureMode = "display"
 )
 
 type InputRoute string
@@ -215,6 +216,7 @@ const (
 	ErrorPermissionRequired ErrorCode = "permission_required"
 	ErrorUnsupported        ErrorCode = "unsupported"
 	ErrorForegroundRequired ErrorCode = "foreground_required"
+	ErrorUserActive         ErrorCode = "user_active"
 	ErrorTargetUnavailable  ErrorCode = "target_unavailable"
 	ErrorTargetUnresponsive ErrorCode = "target_unresponsive"
 	ErrorDriverFailure      ErrorCode = "driver_failure"
@@ -243,7 +245,22 @@ func (e *CUAError) Error() string {
 	return fmt.Sprintf("nexus-cua: %s: %s", e.Code, e.Message)
 }
 
+type ActionLimits struct {
+	MaxSessionTTLSeconds uint32 `json:"max_session_ttl_seconds"`
+	MaxTextBytes         uint32 `json:"max_text_bytes"`
+	MaxKeys              uint32 `json:"max_keys"`
+	MaxScrollDelta       uint32 `json:"max_scroll_delta"`
+	MaxPointerDurationMS uint32 `json:"max_pointer_duration_ms"`
+	MaxWindowCoordinate  uint32 `json:"max_window_coordinate"`
+	MaxWindowDimension   uint32 `json:"max_window_dimension"`
+	MaxRangeValue        uint64 `json:"max_range_value"`
+	MaxClickCount        uint32 `json:"max_click_count"`
+}
+
 type DriverCapabilities struct {
+	ObserveAfter         bool                            `json:"observe_after"`
+	ActionLimits         ActionLimits                    `json:"action_limits"`
+	PrimaryModifier      string                          `json:"primary_modifier"`
 	ProtocolVersion      string                          `json:"protocol_version"`
 	RuntimeVersion       string                          `json:"runtime_version"`
 	Platform             Platform                        `json:"platform"`
@@ -344,9 +361,9 @@ type ScreenRect struct {
 	Height float64 `json:"height"`
 }
 
-type ScreenshotPoint struct {
-	X uint32 `json:"x"`
-	Y uint32 `json:"y"`
+type NormalizedPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 type PixelSize struct {
@@ -359,14 +376,37 @@ type ScreenshotMapping struct {
 	PixelSize    PixelSize  `json:"pixel_size"`
 }
 
+type WindowState string
+
+const (
+	WindowNormal    WindowState = "normal"
+	WindowMinimized WindowState = "minimized"
+	WindowOffscreen WindowState = "offscreen"
+	WindowUnknown   WindowState = "unknown"
+)
+
+func (s *WindowState) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	switch WindowState(value) {
+	case WindowNormal, WindowMinimized, WindowOffscreen, WindowUnknown:
+		*s = WindowState(value)
+		return nil
+	default:
+		return fmt.Errorf("unknown window state %q", value)
+	}
+}
+
 type WindowSummary struct {
-	WindowRef    WindowRef  `json:"window_ref"`
-	AppRef       AppRef     `json:"app_ref"`
-	Title        string     `json:"title"`
-	ScreenBounds ScreenRect `json:"screen_bounds"`
-	Minimized    bool       `json:"minimized"`
-	Visible      bool       `json:"visible"`
-	Foreground   bool       `json:"foreground"`
+	WindowRef    WindowRef   `json:"window_ref"`
+	AppRef       AppRef      `json:"app_ref"`
+	Title        string      `json:"title"`
+	ScreenBounds ScreenRect  `json:"screen_bounds"`
+	State        WindowState `json:"state"`
+	Visible      bool        `json:"visible"`
+	Foreground   bool        `json:"foreground"`
 }
 
 type DisplaySummary struct {
@@ -466,6 +506,8 @@ type ClipboardWriteOutput struct {
 }
 
 type ActionOutput struct {
+	Observation            *WindowObservation          `json:"observation,omitempty"`
+	ObservationError       *CUAError                   `json:"observation_error,omitempty"`
 	DeliveryMode           DeliveryMode                `json:"delivery_mode"`
 	Dispatched             bool                        `json:"dispatched"`
 	EffectStatus           ActionEffectStatus          `json:"effect_status"`
@@ -545,7 +587,7 @@ type InvokeElement struct {
 func (InvokeElement) closedAction() {}
 
 type ClickPoint struct {
-	Point    ScreenshotPoint    `json:"point"`
+	Point    NormalizedPoint    `json:"point"`
 	Button   PointerButton      `json:"button"`
 	Count    uint8              `json:"count"`
 	Delivery DeliveryPreference `json:"delivery"`
@@ -554,7 +596,7 @@ type ClickPoint struct {
 func (ClickPoint) closedAction() {}
 
 type PressPoint struct {
-	Point      ScreenshotPoint `json:"point"`
+	Point      NormalizedPoint `json:"point"`
 	Button     PointerButton   `json:"button"`
 	DurationMS uint32          `json:"duration_ms"`
 }
@@ -595,7 +637,7 @@ type SetExpanded struct {
 func (SetExpanded) closedAction() {}
 
 type MovePointer struct {
-	Point      ScreenshotPoint `json:"point"`
+	Point      NormalizedPoint `json:"point"`
 	DurationMS uint32          `json:"duration_ms"`
 }
 
@@ -614,16 +656,16 @@ type PressKeys struct {
 func (PressKeys) closedAction() {}
 
 type Scroll struct {
-	ElementRef *ElementRef `json:"element_ref"`
-	DeltaX     float64     `json:"delta_x"`
-	DeltaY     float64     `json:"delta_y"`
+	Point  NormalizedPoint `json:"point"`
+	DeltaX float64         `json:"delta_x"`
+	DeltaY float64         `json:"delta_y"`
 }
 
 func (Scroll) closedAction() {}
 
 type Drag struct {
-	From       ScreenshotPoint `json:"from"`
-	To         ScreenshotPoint `json:"to"`
+	From       NormalizedPoint `json:"from"`
+	To         NormalizedPoint `json:"to"`
 	DurationMS uint32          `json:"duration_ms"`
 }
 
@@ -660,7 +702,14 @@ type BoundsContained struct {
 
 func (BoundsContained) closedPredicate() {}
 
+type ObserveAfterOptions struct {
+	IncludeScreenshot bool              `json:"include_screenshot"`
+	Accessibility     AccessibilityMode `json:"accessibility"`
+	ApplicationScene  bool              `json:"application_scene"`
+}
+
 type PerformActionInput struct {
+	ObserveAfter  *ObserveAfterOptions
 	SessionID     SessionID
 	WindowRef     WindowRef
 	ObservationID ObservationID

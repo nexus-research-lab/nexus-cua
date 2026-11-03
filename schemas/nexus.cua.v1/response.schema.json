@@ -239,7 +239,7 @@
           "const": "invoke_element"
         },
         {
-          "description": "Click at a physical pixel coordinate.",
+          "description": "Click at a normalized coordinate.",
           "type": "string",
           "const": "click_point"
         },
@@ -294,10 +294,82 @@
           "const": "scroll"
         },
         {
-          "description": "Drag between two physical pixel coordinates.",
+          "description": "Drag between two normalized coordinates.",
           "type": "string",
           "const": "drag"
         }
+      ]
+    },
+    "ActionLimits": {
+      "description": "Runtime-enforced bounds for host-generated action inputs.",
+      "type": "object",
+      "properties": {
+        "max_click_count": {
+          "description": "Maximum clicks in one action.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_keys": {
+          "description": "Maximum keys in one chord.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_pointer_duration_ms": {
+          "description": "Maximum movement, hold, or drag duration.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_range_value": {
+          "description": "Maximum absolute numeric control value.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_scroll_delta": {
+          "description": "Maximum absolute scroll delta.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_session_ttl_seconds": {
+          "description": "Maximum session lifetime in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_text_bytes": {
+          "description": "Maximum UTF-8 bytes in one text action.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_window_coordinate": {
+          "description": "Maximum absolute logical window origin.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_window_dimension": {
+          "description": "Maximum logical window dimension.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "max_session_ttl_seconds",
+        "max_text_bytes",
+        "max_keys",
+        "max_scroll_delta",
+        "max_pointer_duration_ms",
+        "max_window_coordinate",
+        "max_window_dimension",
+        "max_range_value",
+        "max_click_count"
       ]
     },
     "ActionOutput": {
@@ -324,8 +396,30 @@
           "description": "Truthful outcome of any host-authorized foreground restoration attempt.",
           "$ref": "#/$defs/ForegroundRestorationStatus"
         },
+        "observation": {
+          "description": "Fresh observation when requested; the old guard always remains consumed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WindowObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation_error": {
+          "description": "Post-action read failure, which never changes the recorded mutation result.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CuaError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "observation_invalidated": {
-          "description": "Whether callers must observe again before another mutation.",
+          "description": "Whether pre-action observations were invalidated. A returned fresh\nobservation, when present, may guard the next mutation.",
           "type": "boolean"
         }
       },
@@ -512,6 +606,11 @@
     "CaptureMode": {
       "description": "Capture surface implemented by the selected driver.",
       "oneOf": [
+        {
+          "description": "Display-sized scene containing only the authorized application's surfaces.",
+          "type": "string",
+          "const": "application_scene"
+        },
         {
           "description": "One exact top-level application window.",
           "type": "string",
@@ -1143,6 +1242,10 @@
           "description": "Whether accessibility elements can be observed.",
           "type": "boolean"
         },
+        "action_limits": {
+          "description": "Effective runtime limits; hosts must not invent larger input bounds.",
+          "$ref": "#/$defs/ActionLimits"
+        },
         "actions": {
           "description": "Exact action kinds implemented by the driver.",
           "type": "array",
@@ -1179,9 +1282,18 @@
             "$ref": "#/$defs/InputRoute"
           }
         },
+        "observe_after": {
+          "description": "Whether action requests may include bounded post-action observation.",
+          "type": "boolean",
+          "default": false
+        },
         "platform": {
           "description": "Host operating system.",
           "$ref": "#/$defs/Platform"
+        },
+        "primary_modifier": {
+          "description": "Platform shortcut modifier used by the portable `mod` key.",
+          "type": "string"
         },
         "protocol_version": {
           "description": "Stable protocol identifier.",
@@ -1194,9 +1306,11 @@
       },
       "additionalProperties": false,
       "required": [
+        "action_limits",
         "protocol_version",
         "runtime_version",
         "platform",
+        "primary_modifier",
         "capture_modes",
         "accessibility_tree",
         "input_routes",
@@ -1211,6 +1325,11 @@
     "ErrorCode": {
       "description": "Stable machine-readable failure category.",
       "oneOf": [
+        {
+          "description": "User input took over the authorized session; automatic resumption is forbidden.",
+          "type": "string",
+          "const": "user_active"
+        },
         {
           "description": "The request used a different protocol version.",
           "type": "string",
@@ -1983,6 +2102,31 @@
       "description": "Session-scoped opaque window reference.",
       "type": "string"
     },
+    "WindowState": {
+      "description": "Best-effort native window state; unknown is never treated as normal.",
+      "oneOf": [
+        {
+          "description": "Confirmed visible and not minimized.",
+          "type": "string",
+          "const": "normal"
+        },
+        {
+          "description": "Confirmed minimized by the native provider.",
+          "type": "string",
+          "const": "minimized"
+        },
+        {
+          "description": "Not currently visible; the reason may be unavailable.",
+          "type": "string",
+          "const": "offscreen"
+        },
+        {
+          "description": "Native state could not be determined.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
     "WindowSummary": {
       "description": "One top-level application window.",
       "type": "object",
@@ -1995,13 +2139,13 @@
           "description": "Whether the window owns foreground input.",
           "type": "boolean"
         },
-        "minimized": {
-          "description": "Whether the window is minimized.",
-          "type": "boolean"
-        },
         "screen_bounds": {
           "description": "Logical top-left screen bounds.",
           "$ref": "#/$defs/ScreenRect"
+        },
+        "state": {
+          "description": "Best-effort native state, independent of discovery availability.",
+          "$ref": "#/$defs/WindowState"
         },
         "title": {
           "description": "Current window title.",
@@ -2022,7 +2166,7 @@
         "app_ref",
         "title",
         "screen_bounds",
-        "minimized",
+        "state",
         "visible",
         "foreground"
       ]

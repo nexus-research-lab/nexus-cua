@@ -23,7 +23,7 @@ func (value *Platform) UnmarshalJSON(data []byte) error {
 }
 
 func (value *CaptureMode) UnmarshalJSON(data []byte) error {
-	parsed, err := decodeClosedEnum(data, "capture mode", []string{"window", "display"})
+	parsed, err := decodeClosedEnum(data, "capture mode", []string{"window", "display", "application_scene"})
 	*value = CaptureMode(parsed)
 	return err
 }

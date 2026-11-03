@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use nexus_cua_protocol::{
-    Action, CapabilityManifest, CuaError, ErrorCode, PermissionMode, ScreenshotMapping,
-    ScreenshotPoint, SensitiveText,
+    Action, CapabilityManifest, CuaError, ErrorCode, NormalizedPoint, PermissionMode,
+    ScreenshotMapping, SensitiveText,
 };
 
 use crate::error::public_error;
@@ -13,13 +13,17 @@ const MAX_ALLOWED_APPLICATIONS: usize = 128;
 const MAX_DISCOVERY_REF_BYTES: usize = 256;
 const MAX_APPLICATION_ALLOWLIST_BYTES: usize = 32 * 1024;
 const MAX_ACTIONS: usize = 32;
-const MAX_TEXT_BYTES: usize = 64 * 1024;
-const MAX_KEYS: usize = 8;
-const MAX_SCROLL_DELTA: f64 = 100_000.0;
-const MAX_DRAG_DURATION_MS: u32 = 10_000;
-const MAX_WINDOW_COORDINATE: f64 = 1_000_000.0;
-const MAX_WINDOW_DIMENSION: f64 = 100_000.0;
-const MAX_RANGE_VALUE: f64 = 1_000_000_000_000.0;
+const MAX_TEXT_BYTES: usize = nexus_cua_protocol::ActionLimits::DEFAULT.max_text_bytes as usize;
+const MAX_KEYS: usize = nexus_cua_protocol::ActionLimits::DEFAULT.max_keys as usize;
+const MAX_CLICK_COUNT: u32 = nexus_cua_protocol::ActionLimits::DEFAULT.max_click_count;
+const MAX_SCROLL_DELTA: f64 = nexus_cua_protocol::ActionLimits::DEFAULT.max_scroll_delta as f64;
+const MAX_DRAG_DURATION_MS: u32 = nexus_cua_protocol::ActionLimits::DEFAULT.max_pointer_duration_ms;
+const MAX_WINDOW_COORDINATE: f64 =
+    nexus_cua_protocol::ActionLimits::DEFAULT.max_window_coordinate as f64;
+const MAX_WINDOW_DIMENSION: f64 =
+    nexus_cua_protocol::ActionLimits::DEFAULT.max_window_dimension as f64;
+#[allow(clippy::cast_precision_loss)] // The fixed 10^12 bound is exactly representable.
+const MAX_RANGE_VALUE: f64 = nexus_cua_protocol::ActionLimits::DEFAULT.max_range_value as f64;
 
 pub(crate) fn validate_manifest(
     manifest: &CapabilityManifest,
@@ -136,7 +140,7 @@ pub(crate) fn validate_action(
             Ok(())
         }
         Action::ClickPoint { point, count, .. } => {
-            if !(1..=3).contains(count) {
+            if !(1..=MAX_CLICK_COUNT).contains(&u32::from(*count)) {
                 return Err(invalid("click count must be between one and three"));
             }
             validate_screenshot_point(*point, screenshot_mapping)
@@ -186,7 +190,10 @@ pub(crate) fn validate_action(
             validate_screenshot_point(*point, screenshot_mapping)
         }
         Action::Scroll {
-            delta_x, delta_y, ..
+            point,
+            delta_x,
+            delta_y,
+            ..
         } => {
             if !delta_x.is_finite()
                 || !delta_y.is_finite()
@@ -195,7 +202,7 @@ pub(crate) fn validate_action(
             {
                 return Err(invalid("scroll delta is outside the supported range"));
             }
-            Ok(())
+            validate_screenshot_point(*point, screenshot_mapping)
         }
         Action::Drag {
             from,
@@ -212,9 +219,14 @@ pub(crate) fn validate_action(
 }
 
 fn is_supported_key(key: &str) -> bool {
+    if key.len() == 1 && key.as_bytes()[0].is_ascii_punctuation() {
+        return true;
+    }
     matches!(
-        key,
-        "meta"
+        nexus_cua_protocol::canonical_key(key),
+        "mod"
+            | "win"
+            | "meta"
             | "command"
             | "control"
             | "alt"
@@ -294,12 +306,12 @@ fn validate_text(text: &str) -> Result<(), CuaError> {
 }
 
 fn validate_screenshot_point(
-    point: ScreenshotPoint,
+    point: NormalizedPoint,
     screenshot_mapping: Option<ScreenshotMapping>,
 ) -> Result<(), CuaError> {
     let mapping = screenshot_mapping
         .ok_or_else(|| invalid("pixel actions require a screenshot in the guarded observation"))?;
-    if !mapping.pixel_size.contains(point) {
+    if point.to_pixel(mapping.pixel_size).is_none() {
         return Err(invalid("point lies outside the guarded screenshot"));
     }
     Ok(())
@@ -331,16 +343,43 @@ mod tests {
     }
 
     #[test]
+    fn scroll_requires_a_valid_normalized_point_and_screenshot() {
+        let scroll = |point| Action::Scroll {
+            point,
+            delta_x: 0.0,
+            delta_y: 300.0,
+        };
+        assert!(
+            validate_action(
+                &scroll(NormalizedPoint { x: 500.0, y: 500.0 }),
+                Some(mapping())
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_action(
+                &scroll(NormalizedPoint {
+                    x: 1001.0,
+                    y: 500.0
+                }),
+                Some(mapping())
+            )
+            .is_err()
+        );
+        assert!(validate_action(&scroll(NormalizedPoint { x: 500.0, y: 500.0 }), None).is_err());
+    }
+
+    #[test]
     fn pointer_hold_is_bounded_and_requires_a_guarded_point() {
         let valid = Action::PressPoint {
-            point: ScreenshotPoint { x: 50, y: 50 },
+            point: NormalizedPoint { x: 50.0, y: 50.0 },
             button: PointerButton::Left,
             duration_ms: MAX_DRAG_DURATION_MS,
         };
         assert!(validate_action(&valid, Some(mapping())).is_ok());
 
         let too_long = Action::PressPoint {
-            point: ScreenshotPoint { x: 50, y: 50 },
+            point: NormalizedPoint { x: 50.0, y: 50.0 },
             button: PointerButton::Left,
             duration_ms: MAX_DRAG_DURATION_MS + 1,
         };

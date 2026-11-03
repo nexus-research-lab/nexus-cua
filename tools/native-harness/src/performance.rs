@@ -449,7 +449,7 @@ async fn capabilities(
     client: &mut Client,
 ) -> Result<nexus_cua_protocol::DriverCapabilities, Box<dyn Error>> {
     match client.send(Command::GetCapabilities).await? {
-        CommandResult::Capabilities(value) => Ok(value),
+        CommandResult::Capabilities(value) => Ok(*value),
         other => Err(unexpected("capabilities", &other)),
     }
 }
@@ -703,6 +703,7 @@ async fn perform_command(
     let expected_kind = action.kind();
     match client
         .send(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: observation.observation_id.clone(),
@@ -811,14 +812,14 @@ fn sample_process(pid: u32) -> Result<ResourceSample, Box<dyn Error>> {
         if fields.len() != 4 {
             return Err("Windows process sample has an unexpected shape".into());
         }
-        return Ok(ResourceSample {
+        Ok(ResourceSample {
             elapsed_seconds: 0.0,
             resident_bytes: fields[0].parse()?,
             peak_resident_bytes: Some(fields[1].parse()?),
             cpu_seconds: fields[2].parse()?,
             handles: Some(fields[3].parse()?),
             files: None,
-        });
+        })
     }
     #[cfg(not(windows))]
     {

@@ -22,9 +22,32 @@ use nexus_cua_protocol::{CuaError, ErrorCode};
 pub(crate) struct ArtifactStore {
     root: PathBuf,
     max_image_pixels: u64,
+    max_image_edge: u32,
     max_artifacts_per_session: usize,
     artifacts: Mutex<HashMap<SessionId, VecDeque<PathBuf>>>,
     lease: Option<File>,
+}
+
+// Convert exactly the output pixels. macOS capture is already scaled; this is
+// also a bounded fallback for native APIs without output-size configuration.
+#[allow(clippy::cast_possible_truncation)]
+fn rgb_pixels(image: &RgbaImage, size: PixelSize) -> zeroize::Zeroizing<Vec<u8>> {
+    let mut rgb = zeroize::Zeroizing::new(Vec::with_capacity(
+        size.width as usize * size.height as usize * 3,
+    ));
+    for y in 0..size.height {
+        let source_y = u64::from(y) * u64::from(image.height) / u64::from(size.height);
+        for x in 0..size.width {
+            let source_x = u64::from(x) * u64::from(image.width) / u64::from(size.width);
+            let offset = ((source_y * u64::from(image.width) + source_x) * 4) as usize;
+            let pixel = &image.pixels[offset..offset + 4];
+            let alpha = u32::from(pixel[3]);
+            for channel in &pixel[..3] {
+                rgb.push(((u32::from(*channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8);
+            }
+        }
+    }
+    rgb
 }
 
 impl ArtifactStore {
@@ -32,6 +55,7 @@ impl ArtifactStore {
         root: impl AsRef<Path>,
         max_image_pixels: u64,
         max_artifacts_per_session: usize,
+        max_image_edge: u32,
     ) -> Result<Self, CuaError> {
         let requested = root.as_ref();
         fs::create_dir_all(requested).map_err(io_error)?;
@@ -51,6 +75,7 @@ impl ArtifactStore {
         Ok(Self {
             root,
             max_image_pixels,
+            max_image_edge,
             max_artifacts_per_session,
             artifacts: Mutex::new(HashMap::new()),
             lease: Some(lease),
@@ -89,16 +114,24 @@ impl ArtifactStore {
             .map_err(io_error)?;
         let path = session_directory.join(format!("{}.png", artifact_ref.as_str()));
 
+        let output_size = PixelSize {
+            width: image.width,
+            height: image.height,
+        }
+        .fit_long_edge(self.max_image_edge)
+        .ok_or_else(|| invalid_image("invalid image budget"))?;
+        let rgb = rgb_pixels(image, output_size);
         let mut png_bytes = Vec::new();
         {
-            let mut encoder = png::Encoder::new(&mut png_bytes, image.width, image.height);
-            encoder.set_color(png::ColorType::Rgba);
+            let mut encoder =
+                png::Encoder::new(&mut png_bytes, output_size.width, output_size.height);
+            encoder.set_color(png::ColorType::Rgb);
             encoder.set_depth(png::BitDepth::Eight);
             let mut writer = encoder
                 .write_header()
                 .map_err(|_| invalid_image("failed to initialize PNG encoder"))?;
             writer
-                .write_image_data(&image.pixels)
+                .write_image_data(&rgb)
                 .map_err(|_| invalid_image("failed to encode PNG image"))?;
         }
 
@@ -108,7 +141,8 @@ impl ArtifactStore {
         options.mode(0o600);
         let mut file = options.open(&path).map_err(io_error)?;
         file.write_all(&png_bytes).map_err(io_error)?;
-        file.sync_all().map_err(io_error)?;
+        // Transient artifacts require complete writes, not crash-durable persistence.
+        // write_all completes before the artifact is registered or returned.
 
         let sha256 = hex::encode(Sha256::digest(&png_bytes));
         self.register_artifact(session_id, path.clone())?;
@@ -118,10 +152,7 @@ impl ArtifactStore {
             mime_type: "image/png".to_owned(),
             mapping: ScreenshotMapping {
                 screen_bounds,
-                pixel_size: PixelSize {
-                    width: image.width,
-                    height: image.height,
-                },
+                pixel_size: output_size,
             },
             byte_length: png_bytes.len() as u64,
             sha256,
@@ -303,6 +334,50 @@ fn invalid_image(message: &str) -> CuaError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn png_is_rgb_scaled_and_preserves_screen_mapping() {
+        let root = test_root("rgb-scale");
+        let store = ArtifactStore::new(&root, 16, 2, 2).unwrap();
+        let session = SessionId::new("rgb-scale");
+        let bounds = ScreenRect {
+            x: -40.0,
+            y: 10.0,
+            width: 40.0,
+            height: 20.0,
+        };
+        let image = RgbaImage::new(4, 2, [10, 20, 30, 255].repeat(8));
+        let artifact = store.write_image(&session, &image, bounds).unwrap();
+        assert_eq!(
+            artifact.mapping.pixel_size,
+            PixelSize {
+                width: 2,
+                height: 1
+            }
+        );
+        assert_eq!(artifact.mapping.screen_bounds, bounds);
+        let bytes = store.read_artifact(&artifact, 1024).unwrap();
+        let reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .unwrap();
+        assert_eq!(reader.info().color_type, png::ColorType::Rgb);
+        assert_eq!((reader.info().width, reader.info().height), (2, 1));
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rgb_conversion_flattens_transparency_over_white() {
+        let image = RgbaImage::new(2, 1, vec![0, 0, 0, 0, 10, 20, 30, 255]);
+        let pixels = rgb_pixels(
+            &image,
+            PixelSize {
+                width: 2,
+                height: 1,
+            },
+        );
+        assert_eq!(&*pixels, &[255, 255, 255, 10, 20, 30]);
+    }
+
     use super::*;
 
     fn test_root(name: &str) -> PathBuf {
@@ -319,7 +394,7 @@ mod tests {
         fs::create_dir_all(&stale).unwrap();
         drop(open_lock(&stale.join(".lease")).unwrap());
 
-        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        let store = ArtifactStore::new(&root, 16, 2, 1568).unwrap();
         assert!(!stale.exists());
         let current = store.root.clone();
         drop(store);
@@ -330,7 +405,7 @@ mod tests {
     #[test]
     fn taking_an_artifact_removes_its_file_and_registration() {
         let root = test_root("take");
-        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        let store = ArtifactStore::new(&root, 16, 2, 1568).unwrap();
         let session_id = SessionId::new("session_take");
         let artifact = store
             .write_image(
@@ -363,7 +438,7 @@ mod tests {
         let lease = open_lock(&live.join(".lease")).unwrap();
         FileExt::lock_exclusive(&lease).unwrap();
 
-        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        let store = ArtifactStore::new(&root, 16, 2, 1568).unwrap();
         assert!(live.exists());
         drop(store);
         FileExt::unlock(&lease).unwrap();
@@ -377,7 +452,7 @@ mod tests {
         let legacy = root.join("runtime_legacy_without_lease");
         fs::create_dir_all(&legacy).unwrap();
 
-        let store = ArtifactStore::new(&root, 16, 2).unwrap();
+        let store = ArtifactStore::new(&root, 16, 2, 1568).unwrap();
         assert!(legacy.exists());
         drop(store);
         fs::remove_dir_all(root).unwrap();

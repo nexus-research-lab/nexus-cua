@@ -5,8 +5,116 @@ file.
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrite the public README with English and Chinese entry points, a source
+  quickstart, integration choices, current platform status, and a Nexus-family
+  CUA product icon.
+
+## [0.2.0-rc.4] - 2026-11-03
+
+macOS Apple Silicon testing prerelease; no change to the wire contract.
+
+### Fixed
+
+- Report failed AX window lookup before focus, resize, or restore as
+  `not_dispatched`, so a Stage Manager thumbnail cannot create a false pending
+  mutation. Missing AX window matches direct the caller to bounded focus
+  recovery. Failures after any native dispatch remain indeterminate.
+
+## [0.2.0-rc.3] - 2026-11-03
+
+macOS Apple Silicon testing prerelease; no change to the wire contract.
+
+### Fixed
+
+- Preserve bounded macOS authority when outside input occurs between actions.
+  Wait for two idle seconds (at most five seconds per request), then require a
+  fresh observation instead of latching takeover while the model is thinking.
+  Held inputs prevent idle. Input during native dispatch still cancels partial
+  actions and requires a new host grant; stop, expiry and monitor failure remain
+  terminal. Native actor jobs retain takeover coverage until they finish.
+
+## [0.2.0-rc.2] - 2026-11-03
+
+macOS Apple Silicon testing prerelease; no change to the wire contract.
+
+### Fixed
+
+- Match macOS accessibility windows using the native window ID when the optional
+  system bridge is available, so differing CG/AX titles (including Chrome's
+  profile picker) do not reject the same window. Geometry remains mandatory;
+  mismatched IDs and Stage Manager thumbnail geometry are still rejected. Systems
+  without the bridge retain the strict title/geometry fallback.
+- Return explicit focus recovery when background capture rejects a suspended
+  macOS window, including when capture fails before accessibility inspection.
+
+## [0.2.0-rc.1] - 2026-11-03
+
+macOS Apple Silicon testing prerelease. Local checks and bounded native tests
+are not production signing, notarization, clean-machine or full release acceptance.
+
+### Performance
+
+- Revalidate warm macOS captures by copying only the existing 32×32 visual
+  signature samples from the capture queue; full observations retain full image quality.
+- Add capability-negotiated `observe_after` to actions and all three SDKs.
+  It returns a fresh observation in one request, with bounded visual settling.
+  A post-action read failure preserves the successful mutation result and
+  appears separately as `observation_error`.
+
+
+- Stop macOS foreground-enabled session actions on outside mouse or keyboard
+  input. Passive monitoring ignores marked runtime events, latches `user_active`
+  until a new host grant, releases held synthetic inputs, and fails closed if
+  monitoring is unavailable. Explicitly permit physical input during synthetic
+  holds and drags; foreground sessions now require Input Monitoring permission.
+
+- Recheck macOS session authority on native dispatch actors and interrupt held
+  pointer actions on session close or expiry, releasing synthetic buttons and
+  reporting partial effects as indeterminate.
+
+- Recover explicitly focused macOS Stage Manager windows through authorized
+  activation and bounded geometry convergence; revalidate cached AX state before
+  describing transformed windows as normal, and wait boundedly for transient
+  suspended capture frames without reusing invalid pixels.
+
+- Discover regular macOS applications independently of windows, including newly
+  started and windowless applications; drain pending workspace notifications on
+  the bounded main-thread request path without idle polling.
+- Add capability-negotiated macOS application-scene observation through the
+  protocol, CLI/MCP and three SDKs. The anchor display includes only the
+  authorized application, including its menus and popups. Scene clicks require
+  foreground delivery and retain native process ownership checks.
+
+- Cache Windows UIA pattern properties with their patterns so range, toggle,
+  selection and expansion metadata are available without extra provider reads.
+- Refresh Windows capture sessions after mutations, including pointer moves that
+  do not change captured pixels; bound frame draining to the two-buffer pool.
+- Fail native capture validation promptly on driver errors and limit transient
+  observation retries to three, retaining phase and request diagnostics.
+
+- Fix C6 macOS pointer ownership for Dock/Stage Manager pass-through surfaces
+  using bounded main-thread AppKit hit testing instead of rectangle ordering.
+
+- C9: advertise effective session and action bounds through a closed capability
+  object shared with runtime validation and all three SDKs.
+
+- C12: validate current Windows monitor topology, PMv2 awareness and WGC support;
+  add a content-free native interop diagnostic without legacy capture fallback.
+
+- Make the remote conformance fixture honor bounded reconciliation waits so
+  worker-epoch rotation cannot race an unfinished disconnected mutation. Confirm
+  response framing before dropping the test connection to establish admission.
+
 ### Added
 
+- Add session-owned macOS ScreenCaptureKit window streams with bounded frame
+  retention, idle eviction, and ownership revocation on session close/expiry.
+  Application-scene capture and native recording-indicator acceptance remain open.
+
+- Add a bounded Windows interactive fixture validation runner with isolated
+  transport authority and transient screenshot cleanup.
 - Added the standalone `pelican-bike.html` SVG animation demo, with a coastal
   scene, an animated pelican cyclist, and pause, replay, and speed controls.
 - Added the single fail-closed `scripts/run_codex_acceptance` entry point and
@@ -17,6 +125,34 @@ file.
 
 ### Changed
 
+- C4: Convert macOS stream pixels on demand, cap model images at a configurable 1568-pixel long edge by default, and encode RGB PNGs with accurate mappings.
+
+- C6: Check foreground pointer ownership on the input actor for click, hold, scroll and drag, allow same-process popups, and move the macOS cursor before scrolling.
+
+- C11: Enumerate native windows once per request, filtering the complete authorized application set before optional state queries.
+
+- C8: Preserve fractional normalized coordinates through SDKs and zoom projection; round only when resolving the final pixel and reject nonfinite values.
+
+- C7: Remove ignored scroll element references from the protocol and all SDKs; reject old requests instead of silently ignoring the target.
+
+- C2: Reuse complete frames on running static streams, invalidate stopped streams via delegate, and fall back to one-shot capture while waiting for a first stream frame.
+
+- C1: Keep macOS discovery available without AX, bound optional state enrichment, and replace window minimized booleans with explicit state in all SDKs.
+
+- C10: Reject the ineffective observation-age option on request and mutation reconciliation; configure it on serve or MCP.
+
+- C5: Wake macOS capture on commands, session revocation, or stream expiry instead of polling while idle.
+
+- Reset the test-only v1 pointer contract to `NormalizedPoint` (0..1000) in
+  runtime, MCP/CLI and all SDKs. Scroll now requires an explicit target point
+  and checks native ownership before wheel dispatch; rebuild old test clients.
+- Unify runtime/service/MCP observation lifetime at 120 seconds and expose
+  `serve --max-observation-age-seconds`.
+- Correct macOS forward delete, add portable `mod` and common key aliases,
+  set Windows navigation extended-key/scancode flags, and pace Unicode input
+  without splitting surrogate pairs. Windows scroll conversion uses system
+  wheel settings instead of multiplying logical pixels by 120.
+- Restore Windows source CI independently of interactive release evidence.
 - The macOS release candidate now reads the same Developer ID and notarization
   secrets as Nexus (`MACOS_DEVELOPER_ID_CERTIFICATE_BASE64`,
   `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `MACOS_DEVELOPER_ID_APPLICATION`,
@@ -26,7 +162,7 @@ file.
 - Added the manual `macOS signing preflight` workflow. It imports the Developer
   ID certificate, checks the configured identity and team, signs and verifies a
   throwaway binary, and authenticates notary credentials without publishing.
-- Windows x64 CI, native evidence, and candidate signing jobs are disabled until a
+- Windows native evidence and candidate signing jobs remain disabled until a
   maintained Windows runner exists; set the repository variable
   `NEXUS_CUA_WINDOWS_ENABLED=true` to re-enable them.
 

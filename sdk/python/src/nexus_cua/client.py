@@ -16,6 +16,7 @@ from .types import (
     AccessibilityMode,
     Action,
     ActionOutput,
+    ObserveAfterOptions,
     ApplicationLaunchOutput,
     ApplicationSummary,
     CapabilityManifest,
@@ -359,6 +360,28 @@ class Client:
             command, timeout, "window_observed", WindowObservation.from_wire
         )
 
+    def observe_application_scene(
+        self,
+        session_id: str,
+        window_ref: str,
+        *,
+        include_screenshot: bool = True,
+        accessibility: AccessibilityMode = AccessibilityMode.INTERACTIVE,
+        timeout: float = 30.0,
+    ) -> WindowObservation:
+        command = {
+            "operation": "observe_application_scene",
+            "input": {
+                "session_id": session_id,
+                "window_ref": window_ref,
+                "include_screenshot": include_screenshot,
+                "accessibility": accessibility.value,
+            },
+        }
+        return self._request_result(
+            command, timeout, "window_observed", WindowObservation.from_wire
+        )
+
     def read_clipboard(
         self, session_id: str, timeout: float = 30.0
     ) -> ClipboardSnapshot:
@@ -453,6 +476,7 @@ class Client:
         observation_id: str,
         action: Action,
         timeout: float = 30.0,
+        *, observe_after: ObserveAfterOptions | None = None,
     ) -> tuple[ActionOutput, ActionRequest]:
         command = {
             "operation": "perform_action",
@@ -463,6 +487,8 @@ class Client:
                 "action": action_wire(action),
             },
         }
+        if observe_after is not None:
+            command["input"]["observe_after"] = observe_after.to_wire()
         request = ActionRequest(self._request_id(), command, self._clock())
         return self._wait_for_action(request, timeout), request
 

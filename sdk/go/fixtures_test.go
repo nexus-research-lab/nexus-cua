@@ -29,7 +29,10 @@ func (transport *fixtureTransport) RoundTrip(_ context.Context, payload []byte, 
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return nil, err
 	}
-	result, ok := transport.results[request.Command.Operation]
+	result, ok := transport.results[string(request.RequestID)]
+	if !ok {
+		result, ok = transport.results[request.Command.Operation]
+	}
 	if !ok {
 		return nil, fmt.Errorf("missing fixture result for %s", request.Command.Operation)
 	}
@@ -46,7 +49,7 @@ func (transport *fixtureTransport) RoundTrip(_ context.Context, payload []byte, 
 func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 	requests := loadRawArray(t, "requests.json")
 	results := loadRawArray(t, "results.json")
-	if len(requests) != 17 || len(results) != 17 {
+	if len(requests) != 19 || len(results) != 19 {
 		t.Fatalf("unexpected fixture inventory: requests=%d results=%d", len(requests), len(results))
 	}
 	resultByOperation := make(map[string]json.RawMessage)
@@ -55,7 +58,7 @@ func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 		if err := json.Unmarshal(requestRaw, &request); err != nil {
 			t.Fatal(err)
 		}
-		resultByOperation[request.Command.Operation] = results[index]
+		resultByOperation[string(request.RequestID)] = results[index]
 	}
 	transport := &fixtureTransport{results: resultByOperation}
 	requestIndex := 0
@@ -154,6 +157,23 @@ func TestCompatibilityFixturesCoverPublicClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := client.ObserveApplicationScene(ctx, ObserveWindowInput{
+		SessionID: "session_fixture", WindowRef: "window_fixture", IncludeScreenshot: true,
+		Accessibility: AccessibilityInteractive,
+	}, timeout); err != nil {
+		t.Fatal(err)
+	}
+
+	after, _, err := client.PerformAction(ctx, PerformActionInput{
+		SessionID: "session_fixture", WindowRef: "window_fixture", ObservationID: "observation_fixture",
+		Action: FocusWindow{}, ObserveAfter: &ObserveAfterOptions{
+			IncludeScreenshot: true, Accessibility: AccessibilityInteractive,
+		},
+	}, timeout)
+	if err != nil || after.Observation == nil || after.Observation.ObservationID != "observation_after_fixture" {
+		t.Fatalf("post-action observation missing: %v", err)
+	}
+
 	if len(transport.requests) != len(requests) {
 		t.Fatalf("sent %d requests, want %d", len(transport.requests), len(requests))
 	}
@@ -241,7 +261,7 @@ func TestSelectApplicationPrefersExactAndRejectsAmbiguity(t *testing.T) {
 
 func TestSelectWindowDoesNotDependOnPlatformOrdering(t *testing.T) {
 	windows := []WindowSummary{
-		{WindowRef: "window_helper", Title: "", Minimized: true},
+		{WindowRef: "window_helper", Title: "", State: WindowMinimized},
 		{WindowRef: "window_fixture", Title: "Fixture · Generation 1"},
 		{WindowRef: "window_help", Title: "Fixture Help"},
 	}

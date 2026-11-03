@@ -3,7 +3,7 @@ export const DEFAULT_MAX_FRAME_BYTES: number;
 export const DEFAULT_RECONCILIATION_HORIZON_MS: number;
 
 export type Platform = "macos" | "windows" | "unsupported";
-export type CaptureMode = "window" | "display";
+export type CaptureMode = "window" | "display" | "application_scene";
 export type InputRoute = "semantic" | "system" | "background" | "foreground";
 export type ClipboardOperation = "read_text" | "write_text";
 export type PermissionState = "granted" | "denied" | "not_determined" | "not_applicable" | "unknown";
@@ -18,7 +18,7 @@ export type ForegroundRestorationStatus = "not_requested" | "not_needed" | "rest
 export type MutationStatus = "not_applicable" | "not_dispatched" | "indeterminate";
 export type MutationAdmission = "unknown" | "admitted";
 export type MutationDisposition = "unknown" | "not_mutation" | "pending" | "succeeded" | "not_dispatched" | "indeterminate";
-export type ErrorCode = "protocol_mismatch" | "unauthorized" | "invalid_request" | "busy" | "deadline_exceeded" | "session_unavailable" | "stale_discovery" | "capability_denied" | "reference_not_found" | "stale_observation" | "stale_clipboard" | "permission_required" | "unsupported" | "foreground_required" | "target_unavailable" | "target_unresponsive" | "driver_failure" | "internal";
+export type ErrorCode = "protocol_mismatch" | "unauthorized" | "invalid_request" | "busy" | "deadline_exceeded" | "session_unavailable" | "stale_discovery" | "capability_denied" | "reference_not_found" | "stale_observation" | "stale_clipboard" | "permission_required" | "unsupported" | "foreground_required" | "user_active" | "target_unavailable" | "target_unresponsive" | "driver_failure" | "internal";
 export type ActionKind = "focus_window" | "set_window_bounds" | "set_window_minimized" | "terminate_application" | "focus_element" | "invoke_element" | "click_point" | "press_point" | "set_value" | "set_range_value" | "toggle_element" | "select_element" | "set_expanded" | "move_pointer" | "type_text" | "press_keys" | "scroll" | "drag";
 export type ElementState = "enabled" | "focused" | "selected" | "checked" | "expanded";
 export type SignatureStatus = "verified" | "invalid" | "unsigned" | "unknown";
@@ -45,7 +45,22 @@ export class SensitiveText {
   toString(): "[REDACTED]";
 }
 
+export interface ActionLimits {
+  max_session_ttl_seconds: number;
+  max_text_bytes: number;
+  max_keys: number;
+  max_scroll_delta: number;
+  max_pointer_duration_ms: number;
+  max_window_coordinate: number;
+  max_window_dimension: number;
+  max_range_value: number;
+  max_click_count: number;
+}
+
 export interface DriverCapabilities {
+  observe_after: boolean;
+  action_limits: ActionLimits;
+  primary_modifier: string;
   protocol_version: string;
   runtime_version: string;
   platform: Platform;
@@ -126,10 +141,12 @@ export interface CapabilityManifest {
 export interface OpenSessionOutput { session_id: string; expires_at: string }
 export interface ApplicationSummary { app_ref: string; name: string; application_id: string; foreground: boolean }
 export interface ScreenRect { x: number; y: number; width: number; height: number }
-export interface ScreenshotPoint { x: number; y: number }
+/** Finite coordinates in [0, 1000]; fractions preserve crop precision. */
+export interface NormalizedPoint { x: number; y: number }
 export interface PixelSize { width: number; height: number }
 export interface ScreenshotMapping { screen_bounds: ScreenRect; pixel_size: PixelSize }
-export interface WindowSummary { window_ref: string; app_ref: string; title: string; screen_bounds: ScreenRect; minimized: boolean; visible: boolean; foreground: boolean }
+export type WindowState = "normal" | "minimized" | "offscreen" | "unknown";
+export interface WindowSummary { window_ref: string; app_ref: string; title: string; screen_bounds: ScreenRect; state: WindowState; visible: boolean; foreground: boolean }
 export interface DisplaySummary { display_ref: string; screen_bounds: ScreenRect; primary: boolean }
 
 export interface ScreenshotArtifact {
@@ -205,7 +222,10 @@ export interface ClipboardWriteOutput {
   evidence_kind: ActionEvidenceKind;
 }
 
+export interface ObserveAfterOptions { include_screenshot: boolean; accessibility: AccessibilityMode; application_scene?: boolean }
 export interface ActionOutput {
+  observation?: WindowObservation;
+  observation_error?: { code: ErrorCode; message: string; retryable: boolean; recovery_action: string | null; mutation_status: MutationStatus };
   delivery_mode: DeliveryMode;
   dispatched: boolean;
   effect_status: ActionEffectStatus;
@@ -234,18 +254,18 @@ export type Action =
   | { kind: "terminate_application" }
   | { kind: "focus_element"; element_ref: string }
   | { kind: "invoke_element"; element_ref: string }
-  | { kind: "click_point"; point: ScreenshotPoint; button: PointerButton; count: number; delivery?: DeliveryPreference }
-  | { kind: "press_point"; point: ScreenshotPoint; button: PointerButton; duration_ms: number }
+  | { kind: "click_point"; point: NormalizedPoint; button: PointerButton; count: number; delivery?: DeliveryPreference }
+  | { kind: "press_point"; point: NormalizedPoint; button: PointerButton; duration_ms: number }
   | { kind: "set_value"; element_ref: string; value: SensitiveText }
   | { kind: "set_range_value"; element_ref: string; value: number }
   | { kind: "toggle_element"; element_ref: string }
   | { kind: "select_element"; element_ref: string }
   | { kind: "set_expanded"; element_ref: string; expanded: boolean }
-  | { kind: "move_pointer"; point: ScreenshotPoint; duration_ms: number }
+  | { kind: "move_pointer"; point: NormalizedPoint; duration_ms: number }
   | { kind: "type_text"; text: SensitiveText }
   | { kind: "press_keys"; keys: string[] }
-  | { kind: "scroll"; element_ref: string | null; delta_x: number; delta_y: number }
-  | { kind: "drag"; from: ScreenshotPoint; to: ScreenshotPoint; duration_ms: number };
+  | { kind: "scroll"; point: NormalizedPoint; delta_x: number; delta_y: number }
+  | { kind: "drag"; from: NormalizedPoint; to: NormalizedPoint; duration_ms: number };
 
 export type StatePredicate =
   | { kind: "window_title_contains"; text: string }
@@ -255,7 +275,7 @@ export type StatePredicate =
 
 export interface ObserveDisplayInput { session_id: string; display_ref: string }
 export interface ObserveWindowInput { session_id: string; window_ref: string; include_screenshot: boolean; accessibility: AccessibilityMode }
-export interface PerformActionInput { session_id: string; window_ref: string; observation_id: string; action: Action }
+export interface PerformActionInput { session_id: string; window_ref: string; observation_id: string; action: Action; observe_after?: ObserveAfterOptions }
 export interface VerifyStateInput { session_id: string; window_ref: string; predicate: StatePredicate }
 
 export class ActionRequest { readonly requestId: string; toString(): string }
@@ -281,6 +301,7 @@ export class Client {
   listDisplays(sessionId: string, timeoutMs?: number): Promise<DisplaySummary[]>;
   observeDisplay(input: ObserveDisplayInput, timeoutMs?: number): Promise<DisplayObservation>;
   observeWindow(input: ObserveWindowInput, timeoutMs?: number): Promise<WindowObservation>;
+  observeApplicationScene(input: ObserveWindowInput, timeoutMs?: number): Promise<WindowObservation>;
   readClipboard(sessionId: string, timeoutMs?: number): Promise<ClipboardSnapshot>;
   writeClipboard(input: ClipboardWriteInput, timeoutMs?: number): Promise<{ output: ClipboardWriteOutput; request: ClipboardRequest }>;
   reconcileClipboard(request: ClipboardRequest, timeoutMs: number): Promise<ClipboardWriteOutput>;

@@ -184,6 +184,9 @@ func marshalAction(action Action) (map[string]any, error) {
 	case InvokeElement:
 		kind = string(ActionInvokeElement)
 	case ClickPoint:
+		if !validNormalizedPoint(value.Point) {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		if !contains([]string{"left", "middle", "right"}, string(value.Button)) || value.Count == 0 {
 			return nil, fmt.Errorf("nexus-cua: invalid click button or count")
 		}
@@ -196,6 +199,9 @@ func marshalAction(action Action) (map[string]any, error) {
 		action = value
 		kind = string(ActionClickPoint)
 	case PressPoint:
+		if !validNormalizedPoint(value.Point) {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		if !contains([]string{"left", "middle", "right"}, string(value.Button)) {
 			return nil, fmt.Errorf("nexus-cua: invalid press button")
 		}
@@ -214,6 +220,9 @@ func marshalAction(action Action) (map[string]any, error) {
 	case SetExpanded:
 		kind = string(ActionSetExpanded)
 	case MovePointer:
+		if !validNormalizedPoint(value.Point) {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		kind = string(ActionMovePointer)
 	case TypeText:
 		kind = string(ActionTypeText)
@@ -228,8 +237,14 @@ func marshalAction(action Action) (map[string]any, error) {
 		}
 		kind = string(ActionPressKeys)
 	case Scroll:
+		if !validNormalizedPoint(value.Point) {
+			return nil, fmt.Errorf("nexus-cua: point must be in 0..1000")
+		}
 		kind = string(ActionScroll)
 	case Drag:
+		if !validNormalizedPoint(value.From) || !validNormalizedPoint(value.To) {
+			return nil, fmt.Errorf("nexus-cua: drag points must be in 0..1000")
+		}
 		kind = string(ActionDrag)
 	default:
 		return nil, fmt.Errorf("nexus-cua: unsupported action type %T", action)
@@ -280,7 +295,7 @@ func taggedValue(kind string, value any) (map[string]any, error) {
 var errorCodes = []string{
 	"protocol_mismatch", "unauthorized", "invalid_request", "busy", "deadline_exceeded",
 	"session_unavailable", "stale_discovery", "capability_denied", "reference_not_found",
-	"stale_observation", "stale_clipboard", "permission_required", "unsupported", "foreground_required",
+	"stale_observation", "stale_clipboard", "permission_required", "unsupported", "foreground_required", "user_active",
 	"target_unavailable", "target_unresponsive", "driver_failure", "internal",
 }
 
@@ -293,4 +308,9 @@ func contains(values []string, candidate string) bool {
 		}
 	}
 	return false
+}
+
+func validNormalizedPoint(point NormalizedPoint) bool {
+	return !math.IsNaN(point.X) && !math.IsInf(point.X, 0) && point.X >= 0 && point.X <= 1000 &&
+		!math.IsNaN(point.Y) && !math.IsInf(point.Y, 0) && point.Y >= 0 && point.Y <= 1000
 }

@@ -200,18 +200,34 @@ text is redacted from debug output and forbidden from logs and artifacts.
 
 ## Coordinates
 
-There are exactly two public coordinate spaces:
+Window and accessibility bounds use `screen_points`: logical top-left screen
+coordinates, possibly fractional or negative on secondary displays.
 
-- `screen_points`: logical top-left screen coordinates used by window and
-  accessibility bounds. Values may be fractional and may be negative on a
-  multi-display desktop.
-- `screenshot_pixels`: unsigned integer coordinates in the exact image
-  artifact returned by the guarded observation.
+All pointer action points use finite `normalized` coordinates in inclusive
+`0..1000`, including click, hold, move, scroll and both drag endpoints. Each
+point is mapped by the runtime through the guarded screenshot's exact pixel
+size and affine screen mapping; 1000 maps to the last pixel, never beyond the
+surface. SDKs and adapters must not first convert these points into pixels.
+Physical `screenshot_pixels` remain image/crop metadata, not action inputs.
 
-Every screenshot observation publishes its pixel size and a checked affine
-mapping from screenshot pixels to screen points. Pixel actions accept only
-`screenshot_pixels` from that exact observation. The runtime validates image
-bounds before the driver converts them to the OS input coordinate system.
+Scroll requires a point and a fresh screenshot; element refs are rejected. Native dispatch hit-tests that point and rejects an unrelated
+covering window before wheel input. Positive delta_y means down; positive
+delta_x means right. Deltas express logical-pixel intent. Windows converts
+using the configured wheel line/character count and a 16-logical-pixel unit;
+page-scroll/disabled settings fail explicitly. Application wheel quantization
+means dispatch acceptance is not proof of an exact scroll distance.
+
+`mod` means Command on macOS and Control on Windows. `meta` retains its native
+meaning (Command/Windows key); `cmd`/`ctrl`/`opt`/`esc`/`return`/`pageup`/`pagedown`
+are normalized aliases. Windows rejects Command rather than silently sending
+a Windows-key shortcut. Capabilities report `primary_modifier`. Character and
+symbol shortcuts resolve against the current layout (macOS Unicode keyboard
+layout, Windows target-thread `VkKeyScanExW`); unmodified single-character
+input uses Unicode packets. `backspace` deletes backward and `delete` forward.
+
+Guarded observations default to 120 seconds in runtime, service, and MCP.
+`serve --max-observation-age-seconds` and the corresponding MCP option override
+that bound; zero is invalid. Expiry does not bypass the native freshness check.
 
 ## Semantic snapshots
 
@@ -281,6 +297,46 @@ idempotency record and detached execution: after that point the runtime records
 the result rather than claiming cancellation. A caller that times out retries
 the same `request_id`, optionally with a longer wait, to reconcile. Bounded
 native queues return `busy` before their actor executes the command.
+
+Explicit session close and session expiry revoke macOS action authority across
+native queues. Actors recheck the runtime-issued guard before native mutations;
+held pointer actions check between bounded input steps and release synthetic
+buttons on interruption. Keyboard chords check before every key-down and release
+only keys already pressed when interrupted. Closing a session acknowledges revocation, not completion of
+all native cleanup, and cannot retract an event already posted to the OS.
+Rejection before native dispatch is `session_unavailable` / `not_dispatched`;
+revocation after any dispatch is `session_unavailable` / `indeterminate`.
+Caller timeout alone does not revoke authority. A host emergency-stop UI remains
+separate from this mechanism.
+
+macOS foreground-enabled sessions install a passive session-level event tap at
+admission. Native objects stay on its dedicated CF run-loop actor. The tap reads
+event type and origin metadata plus fixed-size key/button down-state and modifier
+flags, never characters, pointer coordinates or accessibility content. There is
+no key/event history. Runtime-generated events carry a marker and source PID.
+Outside input between dispatches records only the latest activity time and held
+state. The runtime waits for two idle seconds (at most five seconds per request),
+then rejects observations predating that input. A fresh observation within the
+same grant permits a new action. Continued activity returns retryable
+`busy/not_dispatched` with `wait_for_idle_then_observe`; it does not revoke the
+grant or extend its deadline. Observation age starts before native capture.
+Input racing with preflight is checked again at native dispatch. Once dispatch
+begins, outside input latches takeover. Native actor clones retain a dispatch
+lease until they finish, including when the caller's future is cancelled.
+Other automation is conservatively treated as outside input too. The input source
+explicitly permits physical input during both post-event suppression and drags.
+
+Takeover returns `user_active` and forbids further actions in that session:
+`not_dispatched` before dispatch, `indeterminate` after any native dispatch.
+Read-only observations remain available for reconciliation. There is no timed
+auto-resume; a host must issue fresh authority following explicit user intent.
+The monitor has a 32-command queue and 256-session ceiling, retains no event
+history, and polls inactive guards at 25 ms intervals while sessions are active. It
+blocks without polling and removes the tap when no protected sessions remain.
+Missing Input Monitoring permission rejects foreground session admission;
+disabled taps or actor failure latch a non-retryable driver failure. Secure-input
+fields may suppress keyboard events at the OS boundary and are not a supported
+takeover-validation surface. Already delivered OS events cannot be recalled.
 
 Every public failure names its mutation disposition. Runtime and driver
 preflight failures are `not_dispatched`; a failure returned after admission to
@@ -371,3 +427,123 @@ enablement is independent:
 - Computer Use off, Browser on: existing browser control remains unchanged.
 - both on: the Skill routes web semantics to Browser and native application
   semantics to Computer Use; enabling one never silently grants the other.
+
+### macOS capture wake-up (C5)
+
+The capture actor blocks without warm streams. With warm streams it waits until
+the earliest idle expiry or an incoming command. Session revocation updates the
+shared ownership registry and sends a nonblocking prune notification; a full
+queue is handled before the next queued command. Native stop completion latency
+is separately measured, not guaranteed by the notification mechanism.
+
+### Window discovery state (C1)
+
+`WindowSummary.state` is the closed enum `normal | minimized | offscreen | unknown`,
+replacing the old boolean. `set_window_minimized.minimized` remains an action
+boolean. Discovery is independent of accessibility permission. On macOS, optional
+AX enrichment covers at most the first 16 authorized windows in z-order within a
+shared 750 ms budget. Failures preserve windows as unknown (or offscreen when
+invisible). Screenshot-only observation works without AX permission; an invisible
+target with no trustworthy state is rejected with restore/activation guidance.
+
+### Static macOS streams (C2)
+
+An active stream retains its last complete frame. Observation waits at most one
+100 ms frame interval for a refresh before reusing that frame; native stop/error
+notifications invalidate it immediately. Preflight uses the latest available frame
+without a new-callback wait, alongside target identity/geometry validation. A
+first-frame timeout after one second falls back to one-shot capture for that
+request while retaining the stream. A stopped/unavailable stream is removed and
+a subsequent observation can rebuild it. This changes no public wire fields.
+
+C7: `scroll` accepts an explicit normalized point and deltas only. The removed
+`element_ref` field is rejected, even when null. Semantic scrolling is not
+implemented; do not supply an element reference as a scroll target.
+
+C8: Protocol/SDK normalized coordinates are finite numbers in `[0, 1000]`.
+Fractional coordinates preserve crop/zoom precision; runtime rounds once at the
+final pixel mapping. Dedicated model-facing normalized tools retain integer
+inputs. NaN, infinity, negative, and out-of-range coordinates are rejected.
+
+C11: one `list_windows` request performs one driver enumeration with the full
+authorized application-key set (or its selected-app subset). Optional AX state
+enrichment applies after scope filtering. Empty authority never means all apps.
+The public request and SDK interfaces are unchanged.
+
+C6: Foreground click, hold, scroll and both drag endpoints are checked on the
+serialized input actor before pointer dispatch. macOS requests AppKit mouse-down hit testing on the main thread through a
+bounded queue, then resolves ownership on the serialized input actor; Windows checks
+the process owning WindowFromPoint, permitting same-process popups. Pointer
+actions do not first raise the target and erase evidence of foreign occlusion.
+Move-only and explicit background clicks are exempt from this foreground check.
+Scroll first moves the cursor to its target. Unowned points fail not_dispatched
+with observe_window guidance. Application-scene capture is a separate capability described below.
+
+C4: `serve` and `mcp serve` accept `--max-image-edge` (default 1568, range 1..4096).
+RuntimeConfig exposes the same model-image budget. macOS window streams and
+one-shot window/display capture request that output size natively. The native
+output queue retains only the latest pixel buffer and converts it on demand;
+only owned Rust pixels leave that queue. At most one conversion is pending per
+stream. PNG output is RGB, flattening transparency over white, and reports its
+actual dimensions in ScreenshotMapping. Drivers without native resizing use a
+bounded encoder-stage resize; Windows WGC still acquires native-size frames.
+Public SDK request shapes are unchanged; map points using returned dimensions.
+
+## Runtime action limits (C9)
+
+`get_capabilities.action_limits` is a closed object containing the effective
+`max_session_ttl_seconds`, `max_text_bytes`, `max_keys`, `max_scroll_delta`,
+`max_pointer_duration_ms`, `max_window_coordinate`, `max_window_dimension`,
+`max_range_value` and `max_click_count`. The session limit reflects the runtime
+configuration; action values share the runtime validator's constants. Text
+limits count UTF-8 bytes. Hosts should derive UI/schema bounds from this object
+and cap session authority by their own remaining round duration. Capabilities
+do not grant authority; the runtime still validates every request.
+
+## macOS application scenes
+
+`observe_application_scene` accepts the same input as `observe_window` and
+returns `window_observed`. It requires a live session-scoped anchor window
+and the `application_scene` capture capability. It does not require or grant
+unfiltered display-capture authority. Platforms without isolated scene capture
+return `unsupported`.
+
+On macOS, the screenshot covers the display containing the anchor window's
+center and includes only the anchor application's ScreenCaptureKit surfaces.
+Its `screenshot.mapping.screen_bounds` is the coordinate authority;
+`window_screen_bounds` and accessibility elements still describe the anchor.
+Menus and popups owned by that application are included; cross-process helpers,
+authentication dialogs, and other applications are excluded. A scene currently
+covers one display. Move the anchor or choose another window for another display.
+
+The scene fingerprint binds display identity, display bounds, anchor generation,
+anchor geometry, and visual state. Session close invalidates its observations
+and artifacts. Foreground pixel dispatch still checks native process ownership;
+background clicks against scene observations return `unsupported` before dispatch.
+Exact-window observation remains available for background delivery. No implicit
+capture fallback can expose an unfiltered desktop.
+
+MCP `observe_window` selects this operation with `application_scene=true`;
+CLI `window observe` uses `--application-scene`. Go, Python and TypeScript expose
+`ObserveApplicationScene`, `observe_application_scene`, and
+`observeApplicationScene`, respectively.
+
+Explicit macOS `focus_window` activation is the recovery path for inactive or
+Stage Manager-transformed anchors. A geometry-only observation
+(`include_screenshot=false`, `accessibility=disabled`) can guard it. Activation
+revalidates the process generation on the native main thread; after native
+admission, failure to settle or raise remains indeterminate. Read-only queries
+never activate a window. AX state caching must not report a transformed thumbnail
+as `normal` merely because the original AX window says `AXMinimized=false`.
+
+macOS AX-to-CG association prefers an exact native window number from the optional
+system identity bridge. A known mismatched number always rejects the candidate;
+matching numbers allow independently supplied CG/AX titles to differ. Geometry
+must still agree within the existing one-point tolerance. When the bridge is
+unavailable, the strict title/geometry match remains required. Native window
+numbers are internal driver metadata, never public refs or caller authority.
+
+A blank/suspended ScreenCaptureKit frame invalidates cached pixels but may recover
+within the existing bounded frame deadline. A stopped stream is rebuilt on the
+next capture request. Persistent suspension is an error, never a stale-frame
+success or permission to capture an unfiltered desktop.

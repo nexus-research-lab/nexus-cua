@@ -46,16 +46,16 @@ function fixtureClient(transport, requestIds) {
 test("compatibility fixtures cover the complete public client", async () => {
   const requests = fixture("requests.json");
   const results = fixture("results.json");
-  assert.equal(requests.length, 17);
-  assert.equal(results.length, 17);
+  assert.equal(requests.length, 19);
+  assert.equal(results.length, 19);
   const resultByOperation = new Map(
-    requests.map((request, index) => [request.command.operation, results[index]]),
+    requests.map((request, index) => [request.request_id, results[index]]),
   );
   const sent = [];
   const client = fixtureClient(async (_endpoint, payload) => {
     const request = JSON.parse(payload.toString("utf8"));
     sent.push(request);
-    return response(request, resultByOperation.get(request.command.operation));
+    return response(request, resultByOperation.get(request.request_id));
   }, requests.map((request) => request.request_id));
 
   await client.getCapabilities();
@@ -111,7 +111,17 @@ test("compatibility fixtures cover the complete public client", async () => {
     },
   });
   await client.reconcileMutation("fixture-action", 0);
+  await client.observeApplicationScene({
+    session_id: "session_fixture", window_ref: "window_fixture",
+    include_screenshot: true, accessibility: "interactive",
+  });
 
+  const after = await client.performAction({
+    session_id: "session_fixture", window_ref: "window_fixture",
+    observation_id: "observation_fixture", action: { kind: "focus_window" },
+    observe_after: { include_screenshot: true, accessibility: "interactive", application_scene: false },
+  });
+  assert.equal(after.output.observation.observation_id, "observation_after_fixture");
   assert.deepEqual(sent, requests);
 });
 
@@ -261,4 +271,22 @@ test("selectors prefer exact matches and reject ambiguous substrings", () => {
   assert.equal(selectWindow(windows, "window_fixture").title, "Fixture");
   assert.equal(selectWindow(windows, "Fixture").title, "Fixture");
   assert.throws(() => selectWindow(windows, "Fixt"), /ambiguous/);
+});
+
+test("normalized fractions survive transport and nonfinite values are rejected", async () => {
+  let calls = 0;
+  const client = fixtureClient(async (_endpoint, payload) => {
+    const request = JSON.parse(payload.toString("utf8"));
+    assert.deepEqual(request.command.input.action.point, {x: 0.25, y: 999.75});
+    calls++;
+    throw new Error("fixture transport stop");
+  }, ["fraction"]);
+  const input = {session_id: "s", window_ref: "w", observation_id: "o",
+    action: {kind: "move_pointer", point: {x: 0.25, y: 999.75}, duration_ms: 0}};
+  await assert.rejects(client.performAction(input));
+  assert.equal(calls, 1);
+  for (const x of [NaN, Infinity, -Infinity, -0.1, 1000.1]) {
+    await assert.rejects(client.performAction({...input, action: {...input.action, point: {x, y: 0}}}), /finite coordinates/);
+  }
+  assert.equal(calls, 1);
 });

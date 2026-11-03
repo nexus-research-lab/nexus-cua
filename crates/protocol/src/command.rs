@@ -60,6 +60,10 @@ pub enum Command {
     ListDisplays(SessionInput),
     /// Capture one exact window.
     ObserveWindow(crate::ObserveWindowInput),
+    /// Observe the authorized application's scene on the anchor window's display.
+    /// The returned window observation retains the anchor guard; its screenshot
+    /// mapping covers the display and never grants authority to other applications.
+    ObserveApplicationScene(crate::ObserveWindowInput),
     /// Capture one exact physical display for desktop overview.
     ObserveDisplay(crate::ObserveDisplayInput),
     /// Read bounded plain text under separate clipboard authority.
@@ -88,6 +92,9 @@ pub struct ReconcileMutationInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PerformActionInput {
+    /// Optional fresh observation returned with the action result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observe_after: Option<ObserveAfterOptions>,
     /// Runtime-issued session identity.
     pub session_id: SessionId,
     /// Session-scoped target window.
@@ -96,6 +103,19 @@ pub struct PerformActionInput {
     pub observation_id: ObservationId,
     /// Authorized action.
     pub action: Action,
+}
+
+/// Bounded post-action observation of the same authorized target.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObserveAfterOptions {
+    /// Include an image using the configured capture size limit.
+    pub include_screenshot: bool,
+    /// Accessibility detail requested for the resulting state.
+    pub accessibility: crate::AccessibilityMode,
+    /// Include same-process menus and popups on the anchor display.
+    #[serde(default)]
+    pub application_scene: bool,
 }
 
 /// Deterministic verification input.
@@ -114,6 +134,12 @@ pub struct VerifyStateInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionOutput {
+    /// Fresh observation when requested; the old guard always remains consumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<Box<crate::WindowObservation>>,
+    /// Post-action read failure, which never changes the recorded mutation result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_error: Option<crate::CuaError>,
     /// Platform delivery route actually used.
     pub delivery_mode: DeliveryMode,
     /// Whether the platform reported successful dispatch.
@@ -124,7 +150,8 @@ pub struct ActionOutput {
     pub evidence_kind: ActionEvidenceKind,
     /// Truthful outcome of any host-authorized foreground restoration attempt.
     pub foreground_restoration: ForegroundRestorationStatus,
-    /// Whether callers must observe again before another mutation.
+    /// Whether pre-action observations were invalidated. A returned fresh
+    /// observation, when present, may guard the next mutation.
     pub observation_invalidated: bool,
 }
 
@@ -202,7 +229,7 @@ pub struct MutationReconciliation {
 )]
 pub enum CommandResult {
     /// Driver capability response.
-    Capabilities(DriverCapabilities),
+    Capabilities(Box<DriverCapabilities>),
     /// Operating-system permission response.
     PermissionStatus(PermissionStatus),
     /// Short-lived running-application discovery response.

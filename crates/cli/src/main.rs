@@ -25,7 +25,7 @@ async fn main() -> ExitCode {
         report.emit();
         return ExitCode::from(report.exit_code());
     }
-    match run(cli).await {
+    match nexus_cua_platform::with_native_main_thread(Box::pin(run(cli))).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let report = error.report();

@@ -39,7 +39,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::{sleep, timeout};
 use tokio_rustls::{TlsAcceptor, TlsConnector, client::TlsStream};
 use uuid::Uuid;
@@ -482,6 +482,7 @@ struct FixtureState {
 struct FixtureWorker {
     environment: EnvironmentDescriptor,
     state: Mutex<FixtureState>,
+    changed: Notify,
 }
 
 impl FixtureWorker {
@@ -489,6 +490,7 @@ impl FixtureWorker {
         Self {
             environment: EnvironmentDescriptor::local_user_desktop(),
             state: Mutex::new(FixtureState::default()),
+            changed: Notify::new(),
         }
     }
 }
@@ -521,10 +523,35 @@ impl DesktopWorker for FixtureWorker {
                 } else {
                     let result = fixture_action_output();
                     state.mutations.insert(request_id.clone(), result.clone());
+                    self.changed.notify_waiters();
                     result
                 }
             }
             Command::ReconcileMutation(input) => {
+                // Honor the query's bounded wait. The controller may reconnect
+                // before the disconnected mutation finishes; returning unknown
+                // here used to advance the fixed transport scenario prematurely.
+                let _ = timeout(
+                    Duration::from_millis(u64::from(input.wait_ms.min(5_000))),
+                    async {
+                        loop {
+                            let changed = self.changed.notified();
+                            tokio::pin!(changed);
+                            changed.as_mut().enable();
+                            if self
+                                .state
+                                .lock()
+                                .await
+                                .mutations
+                                .contains_key(&input.request_id)
+                            {
+                                break;
+                            }
+                            changed.await;
+                        }
+                    },
+                )
+                .await;
                 let state = self.state.lock().await;
                 let (admission, disposition, output) = match state.mutations.get(&input.request_id)
                 {
@@ -617,6 +644,8 @@ fn fixture_observation() -> CommandResult {
 
 fn fixture_action_output() -> CommandResult {
     CommandResult::ActionPerformed(ActionOutput {
+        observation: None,
+        observation_error: None,
         delivery_mode: DeliveryMode::System,
         dispatched: true,
         effect_status: ActionEffectStatus::Confirmed,
@@ -918,6 +947,51 @@ async fn assert_untrusted_client_rejected(
     }
 }
 
+// The reconnect can reach the worker before the disconnected request is admitted.
+// Query the original mutation identity; never replay the mutation to hide that race.
+async fn reconcile_disconnected_mutation(
+    bootstrap: &WorkerBootstrap,
+    certificates: &CertificateMaterial,
+    mutation_id: &str,
+    max_frame_bytes: usize,
+) -> Result<MutationReconciliation, HarnessError> {
+    timeout(Duration::from_secs(5), async {
+        for attempt in 0..10 {
+            let request = execute_request(
+                bootstrap,
+                &format!("request_reconcile_{attempt}"),
+                Command::ReconcileMutation(ReconcileMutationInput {
+                    request_id: RequestId::new(mutation_id),
+                    wait_ms: 1_000,
+                }),
+            );
+            let response = expect_execute(
+                round_trip(bootstrap, certificates, &request, max_frame_bytes).await?,
+            )?;
+            let GatewayOutcome::Success {
+                result: GatewayResult::Core(CommandResult::MutationReconciled(reconciliation)),
+            } = response.outcome
+            else {
+                return Err(HarnessError::Assertion(
+                    "disconnected mutation did not reconcile",
+                ));
+            };
+            if !matches!(
+                reconciliation.disposition,
+                MutationDisposition::Unknown | MutationDisposition::Pending
+            ) {
+                return Ok(reconciliation);
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        Err(HarnessError::Assertion(
+            "mutation reconciliation exceeded its bounded query budget",
+        ))
+    })
+    .await
+    .map_err(|_| HarnessError::Assertion("mutation reconciliation exceeded its deadline"))?
+}
+
 async fn send_and_disconnect(
     bootstrap: &WorkerBootstrap,
     certificates: &CertificateMaterial,
@@ -936,7 +1010,14 @@ async fn send_and_disconnect(
     timeout(IO_TIMEOUT, async {
         stream.write_all(&length.to_be_bytes()).await?;
         stream.write_all(&payload).await?;
-        stream.flush().await
+        stream.flush().await?;
+        // A local TLS flush does not prove peer admission: dropping the socket
+        // immediately can discard the request on Windows. Wait for one byte of
+        // response framing, then disconnect without consuming a result. This
+        // establishes post-admission loss while leaving the controller unable
+        // to classify the effect without reconciliation.
+        let mut prefix_byte = [0_u8; 1];
+        stream.read_exact(&mut prefix_byte).await.map(|_| ())
     })
     .await
     .map_err(|_| HarnessError::BootstrapTimeout)??;
@@ -1157,6 +1238,7 @@ async fn run_controller(
         &bootstrap,
         mutation_id,
         Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: SessionId::new("session_remote_fixture"),
             window_ref: WindowRef::new("window_remote_fixture"),
             observation_id: ObservationId::new("observation_remote_fixture"),
@@ -1164,24 +1246,9 @@ async fn run_controller(
         }),
     );
     send_and_disconnect(&bootstrap, &certificates, &mutation, max_frame_bytes).await?;
-    let reconcile = execute_request(
-        &bootstrap,
-        "request_reconcile",
-        Command::ReconcileMutation(ReconcileMutationInput {
-            request_id: RequestId::new(mutation_id),
-            wait_ms: 1_000,
-        }),
-    );
-    let reconcile_response =
-        expect_execute(round_trip(&bootstrap, &certificates, &reconcile, max_frame_bytes).await?)?;
-    let GatewayOutcome::Success {
-        result: GatewayResult::Core(CommandResult::MutationReconciled(reconciliation)),
-    } = reconcile_response.outcome
-    else {
-        return Err(HarnessError::Assertion(
-            "disconnected mutation did not reconcile",
-        ));
-    };
+    let reconciliation =
+        reconcile_disconnected_mutation(&bootstrap, &certificates, mutation_id, max_frame_bytes)
+            .await?;
     if reconciliation.admission != MutationAdmission::Admitted
         || reconciliation.disposition != MutationDisposition::Succeeded
         || reconciliation.worker_epoch.as_deref() != Some(bootstrap.lease.worker_epoch.as_str())
@@ -1258,4 +1325,69 @@ async fn run_controller(
         ));
     }
     write_private_new(output, &serialized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reconciliation_waits_for_inflight_mutation_without_replay() {
+        let worker = FixtureWorker::new();
+        let mutation_id = RequestId::new("inflight");
+        let mutation = worker.dispatch(
+            mutation_id.clone(),
+            2_000,
+            Command::PerformAction(PerformActionInput {
+                observe_after: None,
+                session_id: SessionId::new("session_remote_fixture"),
+                window_ref: WindowRef::new("window_remote_fixture"),
+                observation_id: ObservationId::new("observation_remote_fixture"),
+                action: Action::FocusWindow,
+            }),
+        );
+        let query = worker.dispatch(
+            RequestId::new("query"),
+            2_000,
+            Command::ReconcileMutation(ReconcileMutationInput {
+                request_id: mutation_id,
+                wait_ms: 1_000,
+            }),
+        );
+        let (_, response) = tokio::join!(mutation, query);
+        let ResponseOutcome::Success {
+            result: CommandResult::MutationReconciled(value),
+        } = response.outcome
+        else {
+            panic!("expected reconciliation");
+        };
+        assert_eq!(value.disposition, MutationDisposition::Succeeded);
+        assert_eq!(worker.state.lock().await.mutations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_mutation_query_remains_bounded() {
+        let worker = FixtureWorker::new();
+        let response = timeout(
+            Duration::from_secs(1),
+            worker.dispatch(
+                RequestId::new("query"),
+                1_000,
+                Command::ReconcileMutation(ReconcileMutationInput {
+                    request_id: RequestId::new("absent"),
+                    wait_ms: 10,
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        let ResponseOutcome::Success {
+            result: CommandResult::MutationReconciled(value),
+        } = response.outcome
+        else {
+            panic!("expected reconciliation");
+        };
+        assert_eq!(value.disposition, MutationDisposition::Unknown);
+        assert!(worker.state.lock().await.mutations.is_empty());
+    }
 }

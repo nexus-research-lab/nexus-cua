@@ -1,14 +1,24 @@
 # Nexus Computer Use Runtime 完整产品与开发 PRD
 
-- 状态：`0.1.x` 唯一产品开发基线
+- 状态：`0.2.0-rc.1` macOS 测试预发布基线
 - 语言：中文
 - 适用范围：`nexus-cua` 仓库
-- 最后更新：2026-09-01
+- 最后更新：2026-11-03（接管、低复制复核与动作后观察）
 
 本文档是 `nexus-cua` 的唯一产品级入口，统一说明产品定位、系统结构、
 能力范围、使用方式、安装与集成、权限模型、性能目标、CI/CD、验收标准和
 开发顺序。协议字段、运行时细节和平台证据仍由专门的技术文档承载，但不得
 与本 PRD 的产品决策冲突。
+
+> **2026-11-02 设计修订说明。** 真实使用暴露出三个根本问题：用户看不到 Agent
+> 正在观察/操作（无录屏指示、无操作反馈）；Agent 经常"看不到 app"（无窗口应用、
+> 其他桌面空间、全屏、弹出菜单都在观察之外）；多显示器难以区分。它们源于本 PRD
+> 早期"只观察单个精确窗口、一次性截图、显示器只读概览"的设计，而不是个别实现
+> 缺陷。§2.5–§2.7 给出修订后的核心决策，§23 给出完整审查、根因、解决方案和
+> 验收条件。凡本 PRD 与 [Architecture](architecture.md)、
+> [Protocol v1](specs/protocol-v1.md)、[Runtime Contract v1](specs/runtime-contract-v1.md)
+> 中"exact-window-only 观察"相关表述冲突，以本 PRD 为准；技术文档在对应实现
+> 落地的同一变更中同步修改。
 
 ## 1. 一句话定义
 
@@ -60,6 +70,69 @@ MCP 和 CLI 只是两种薄入口。共同操作必须具有相同的参数语�
 默认模式直接控制用户当前的真实桌面，因此可以看到用户在 Finder、资源管理器
 或桌面上实际能看到的文件和窗口。VM 是可选环境 provider，只用于并行独立桌面、
 不可信任务、可复现环境和回滚，不是本地 CUA 的前置条件。
+
+### 2.5 看得见场景，只动被授权的应用（2026-11 修订）
+
+原设计把"观察单位"和"授权单位"都定为单个精确窗口：模型只能看到一个窗口
+裁剪图，显示器截图只读且需另行授权。结果是右键菜单、下拉菜单、自动补全、
+sheet 之外的独立对话框、tooltip 这些属于同一应用但不在主窗口内的 UI 全部不可见，
+多窗口应用要逐个切换，模型也无法理解目标窗口在哪块屏幕、被什么遮挡。
+
+修订后把两者拆开：
+
+- **观察单位 = 应用场景（application scene）**：目标应用所在显示器的整屏画面，
+  但只渲染被授权应用（及其被允许的系统辅助进程，例如打开/保存面板服务）的
+  全部窗口，包括菜单、弹窗、popover、tooltip；其他应用区域被遮盖。macOS 使用
+  ScreenCaptureKit 的 display + including-applications 过滤器原生实现；Windows 使用
+  Windows.Graphics.Capture 显示器捕获加基于 z-order 可见区域的软件遮盖。
+- **授权单位 = 应用（及其窗口）**：像素动作在派发前对目标点做 hit-test，命中的
+  最上层窗口必须属于被授权应用或其允许的辅助进程，否则 `not_dispatched`。
+  语义动作仍绑定 observation 内的 element ref。
+- 精确窗口观察（`observe_window`）保留，用于需要小图、高精度或后台遮挡场景；
+  整屏无遮盖的显示器观察仍是独立 read authority，只用于用户明确允许的全局概览。
+- 隐私不因此放宽：未授权应用的像素不进入截图，也不进入 artifact、日志或指纹。
+
+### 2.6 用户始终知道 Agent 在看、在动（2026-11 修订）
+
+真实桌面 CUA 的第一产品要求是"可感知、可打断"。原设计使用一次性截图且没有
+任何操作反馈，用户既看不到系统录屏指示，也不知道 Agent 下一步点哪里。对照
+用户实测：Codex 的 Computer Use 会触发系统屏幕录制指示，本项目不会。
+
+修订后的要求：
+
+1. **系统级指示**：session 处于活动观察期时，Runtime 为目标显示器保持一个有界的
+   捕获流（macOS `SCStream`，Windows WGC 并保留系统黄色边框），使操作系统的
+   录屏/捕获指示持续可见；该流同时作为 warm capture pipeline 提升性能，空闲超时
+   或 session 关闭即停止。
+2. **产品级指示**：Runtime 通过 presence 事件告诉宿主"正在观察哪个应用""即将在
+   哪个点执行什么动作"；宿主渲染目标应用高亮边框、顶部 HUD（应用名 + 当前动作 +
+   停止按钮）、Agent 光标/点击涟漪。所有 overlay 必须从捕获中排除（macOS 过滤器
+   excepting windows，Windows `WDA_EXCLUDEFROMCAPTURE`），且鼠标穿透。
+3. **紧急停止**：全局快捷键与 HUD 停止按钮立即关闭 admission 并撤销 session；
+   已 admitted 的动作如实报告，不谎称回滚。
+4. **用户接管**：macOS 两次原生动作之间的输入保留原授权，等待连续空闲 2 秒
+   （单次最多 5 秒），要求重新观察；持续活动返回 `busy/not_dispatched`。
+   原生动作执行期间的输入返回并锁定 `user_active`，可能已执行的部分如实报告
+   `indeterminate`，需用户明确继续后重新授权。停止、到期和监听失效不自动恢复。
+5. 独立 MCP/Codex 路径没有宿主 UI 时，`nexuscua` 自带最小指示（菜单栏/托盘状态项 +
+   目标边框 + 停止项），不能因为没有宿主就静默操作。
+
+### 2.7 一步一循环的模型交互（2026-11 修订）
+
+原设计每个 observation 只能驱动一个动作，且每次动作前要整幅重截图做校验，
+模型每一步至少两次往返；Nexus 路径又叠加了 30 秒观察有效期和逐动作人工审批，
+审批稍慢动作就因 stale 失败。修订后：
+
+- 动作默认返回动作后的场景观察（`observe_after`，带有界的界面稳定等待），
+  一次往返完成"动作 + 新画面"；
+- 所有适配器（MCP、CLI、Nexus、SDK helper）统一使用左上原点 `0..1000` 归一化
+  坐标，归一化映射下沉到协议层，不再各自实现；
+- 截图在捕获阶段按宿主给定的模型图像预算（例如长边上限）缩放，不再把物理
+  分辨率原图交给模型；
+- 观察有效期由宿主统一配置，所有入口默认一致；人工审批等待时间不计入有效期，
+  审批通过后先做轻量视觉复核，变化时直接返回新观察供模型重新决策；
+- 授权在"选择目标"时一次性确认（应用、动作类别、前台输入、时长），只有高风险
+  动作（退出应用、剪贴板写入、宿主策略标记的动作）逐次确认。
 
 ## 3. 产品目标
 
@@ -351,16 +424,19 @@ policy，通过保护 channel 获取 grant。Agent Skill 永远不包含 authori
 
 | 能力 | 当前状态 | 完成标准 |
 | --- | --- | --- |
-| 运行中应用发现 | 已实现 | 短期 discovery ref、身份复核、无 PID authority |
+| 运行中应用发现 | 需修正 | 以系统运行应用列表为来源（含无窗口、已隐藏应用并标注窗口数与隐藏状态），而不是从可见窗口反推；短期 discovery ref、身份复核、无 PID authority |
 | 已安装应用发现 | 已实现 | macOS bundle 与 Windows Start Menu 受控来源 |
 | 冷启动应用 | 已实现 | 单次 launch ref、路径不可由模型提供、进程代际复核 |
+| 激活应用 | 待开发 | 取消隐藏并切换到应用所在桌面空间/全屏空间；需要前台授权 |
 | 协作退出 | 已实现 | 只终止精确进程代际，不升级为任意 kill |
-| 顶层窗口枚举 | 已实现 | exact window ref、重启和替换失效 |
-| 窗口截图 | 已实现 | 精确窗口、DPI 映射、受控临时产物 |
+| 顶层窗口枚举 | 需修正 | 窗口状态使用枚举 `normal/minimized/app_hidden/other_space/fullscreen_space/offscreen`，最小化由 AX/UIA 回读而非 `!visible` 推断；携带 `display_ref`、z-order、窗口角色（standard/dialog/sheet/panel）；exact window ref、重启和替换失效 |
+| 应用场景观察 | 待开发 | 见 §2.5：目标显示器整屏 + 仅渲染授权应用全部窗口（含菜单/弹窗），其他区域遮盖；DPI 映射、受控临时产物 |
+| 窗口截图 | 已实现（降级为辅助） | 精确窗口、DPI 映射、受控临时产物；不再是模型默认观察 |
+| 物理显示器身份 | 需修正 | 显示器名称、序号（左→右、上→下）、缩放比例、像素尺寸、主屏、是否含光标/前台窗口、所含窗口；截图附带可读标签 |
 | 物理显示器概览 | 已实现 | 独立只读 authority，不能作为动作 guard |
 | 窗口聚焦 | 已实现 | 显式授权，不从失败动作静默升级 |
 | 移动/缩放窗口 | 已实现 | 系统路由、fresh observation、几何验证 |
-| 最小化/恢复 | 已实现 | 系统路由和状态回读 |
+| 最小化/恢复 | 已实现 | 系统路由和状态回读；所有模型入口必须暴露恢复动作 |
 
 ### 8.2 视觉与语义观察
 
@@ -375,7 +451,17 @@ policy，通过保护 channel 获取 grant。Agent Skill 永远不包含 authori
 - zoom 是服务端有界裁剪，不是模型厂商特性。
 
 所有视觉坐标使用左上角原点的 `0..1000` 归一化整数。模型看到缩放后的图片也
-不会改变坐标含义。
+不会改变坐标含义。该规则是协议级要求：Runtime 原生接受归一化坐标，MCP、CLI、
+Nexus 和 SDK 不得各自实现或绕过（2026-11 前只有 MCP 实现）。
+
+2026-11 修订新增：
+
+- 默认观察是 §2.5 的应用场景；观察结果附带显示器标签和授权窗口清单
+  （window ref、标题、在图中的归一化矩形、状态）；
+- 截图在捕获阶段按宿主给定的模型图像预算缩放（默认长边不超过 1568 像素，
+  宿主可按模型调整），不对物理分辨率原图做 PNG 编码；
+- 校验用指纹使用低分辨率捕获，不再在每次动作前整幅重截图；
+- 动作可返回动作后观察（`observe_after`），界面稳定等待有上限。
 
 ### 8.3 原生动作
 
@@ -387,8 +473,22 @@ policy，通过保护 channel 获取 grant。Agent Skill 永远不包含 authori
 | 语义 | focus element、invoke、set text value、set range value、toggle、select、expand/collapse |
 | 指针 | left/middle/right click、multi-click、bounded hold、move、drag |
 | 键盘 | type text、normalized key chord |
-| 滚动 | pixel scroll、可选 semantic target |
+| 滚动 | 在指定点滚动（2026-11 修订：必须带坐标）、可选 semantic target |
 | 剪贴板 | bounded plain-text read、fresh-ref compare-and-replace write |
+
+跨平台语义必须一致（2026-11 审查发现多处不一致，见 §23.3）：
+
+- 滚动单位是逻辑像素，两平台换算一致；滚动事件必须投递到指定点，且该点
+  hit-test 属于授权应用，不能落在当前光标下的任意应用；
+- 键名使用平台中立集合：`mod`（macOS 为 Command、Windows 为 Ctrl）、`cmd`、
+  `ctrl`、`alt`/`option`、`shift`、`win`；`backspace` 与 `delete`（向前删除）语义
+  两平台一致；常见别名（`ctrl`、`cmd`、`esc`、`del`）在入口归一化；
+- 支持标点与符号键（`,` `.` `/` `;` `'` `[` `]` `\` `-` `=` `` ` ``），并按当前键盘
+  布局把字符映射到物理键，不假设美式 ANSI 布局；
+- 点击前先移动指针到目标点，按下/抬起与多击之间有平台合理间隔；文字输入按块
+  节流，避免 Electron/Chromium 类应用丢字；
+- 中文等输入法处于组字状态时，`press_keys` 的字母键不得被当作文本输入：
+  派发前检测并报告，或由 `type_text` 路径绕过输入法。
 
 每个新增原生动作必须同时具备：
 
@@ -490,8 +590,15 @@ test provider 完整，但不要求生产 VM backend 才能完成本地产品。
 优先级时间范围：P0 必须在本 PRD 的 M1–M6 完成；P1 是本仓完成后的下一产品
 阶段，除非 M2 只要求其 contract/test provider；P2 是长期候选，不进入当前排期。
 
+2026-11 修订：以下"设计修订"条目优先于本表其他 P0，排期见 §21 R0–R2。
+
 | 项目 | 优先级 | 说明 |
 | --- | --- | --- |
+| 应用场景观察与 hit-test 授权 | P0（设计修订） | §2.5；解决"看不到菜单/弹窗/多窗口"和多屏上下文缺失 |
+| 用户可感知与紧急停止 | P0（设计修订） | §2.6；系统录屏指示、presence 事件、宿主 overlay、停止快捷键、用户接管；原"synthetic per-agent cursor P2"并入此项并提升 |
+| 应用/窗口/显示器发现修正 | P0（设计修订） | 无窗口应用、隐藏应用、其他桌面空间、全屏空间、显示器身份，见 §23.2 |
+| 交互循环与坐标统一 | P0（设计修订） | §2.7；observe_after、协议级归一化坐标、捕获阶段缩放、统一观察有效期 |
+| 跨平台输入一致性缺陷 | P0（缺陷） | 滚动坐标与单位、键名语义、键表与布局、点击/输入节奏，见 §23.3 |
 | Windows x64 完整原生证据 | P0 | 功能已大量实现，但缺维护硬件和真实 Codex 闭环 |
 | 统一公开 `nexuscua` CLI | P0 | 公共入口、结构化 `version`、MCP、Codex stdio integration、真人 authority lifecycle，以及 host-bound service/session/app/window/display/clipboard/action/verify 命令族已实现；稳定 exit/error code 与脱敏 stderr 合同已实现；仍缺可信宿主自动启动和完整跨 adapter 撤销 |
 | Skill 共同源与双 binding 生成 | P0 | 共同源、canonical catalogue、带 binding digest 的 MCP/CLI 两种单接口 Skill 与漂移检查已实现；CLI 可通过受认证 `session catalogue` 读取服务实时 schema；仍需 clean-host 单 binding 验收 |
@@ -502,8 +609,8 @@ test provider 完整，但不要求生产 VM backend 才能完成本地产品。
 | Nexus 下游 broker/installer | 后续 | 必须等本仓完成，不在当前仓实现 |
 | 真实 secure-stream 双端集成 | 已实现（本仓范围） | 两进程临时 mTLS reference harness、断线 reconcile、epoch replay 拒绝、artifact/frame 上限与脱敏证据已实现；生产 listener 仍由后续宿主提供 |
 | 可选 VM backend | P1 | provider contract 已有，实际 backend 未实现 |
-| 有界录制/轨迹 | P1 | 默认关闭，若实现必须独立授权和限制保留 |
-| synthetic per-agent cursor | P2 | 非首版阻塞项 |
+| 有界录制/轨迹 | P1 | 默认关闭，若实现必须独立授权和限制保留；与 §2.6 的实时指示无关，指示不录制、不保留帧 |
+| synthetic per-agent cursor | 已并入 P0 | 作为 §2.6 产品级指示的一部分（Agent 光标/点击涟漪），不再单列 |
 | Linux | P1 | 需要完整 X11/Wayland/AT-SPI 与维护矩阵 |
 
 ### 8.10 trycua 对照基线
@@ -993,6 +1100,28 @@ Nexus 下游接入在独立 branch/worktree 中进行，当前 macOS 开发链�
 一次性动作审批和定向测试；签名 payload、clean-host、真实 Mac 权限撤销、Codex acceptance
 仍未关闭。
 
+**2026-11 修订后的 Nexus 接入设计**（问题清单见 §23.4，本仓只定义合同，实现在 Nexus）：
+
+1. **目标选择即授权**：`select_target` 弹出一次授权卡片，显示应用身份、动作类别、
+   是否允许前台输入、时长；用户确认后才打开 Runtime session。session 只授予确认
+   的动作集合，不再默认授予全部 capability（尤其是 `terminate`）。
+2. **生命周期跟随回合**：session TTL 与 Nexus round 绑定，Host 在 TTL 到期前续期，
+   round 结束、用户停止、功能关闭或 owner 切换立即关闭；不得使用固定 120 秒且不续期。
+3. **观察与动作**：模型默认拿到应用场景观察（§2.5）；动作使用 `0..1000` 归一化坐标
+   并默认返回动作后观察（§2.7）；暴露恢复最小化、窗口移动/缩放、激活应用、启动
+   应用、range 控件、长按等 Runtime 已支持的动作；参数上限与 Runtime 合同一致。
+4. **逐次确认仅限高风险**：退出应用、剪贴板写入及宿主策略标记的动作逐次确认；
+   确认等待不计入观察有效期，确认后先做轻量复核。
+5. **可感知**：Nexus 桌面端订阅 presence 事件，渲染目标高亮、HUD、Agent 光标和
+   停止按钮，注册全局停止快捷键；用户接管时暂停前台动作（§2.6）。
+6. **打包与系统权限**：sidecar 放在 `Nexus.app` bundle 内，与主程序同一 Team ID
+   签名，使屏幕录制与辅助功能权限归属于 Nexus；设置页提供权限检测和跳转引导，
+   不自动点击系统授权弹窗。Windows 版由 Nexus 主进程在派发前台动作前授予
+   sidecar 前台激活许可（`AllowSetForegroundWindow`）。
+7. **合入方式**：集成分支先变基到最新 Nexus `main`，SDK 固定到本仓精确 tag/commit；
+   满足条件后由 Nexus 按其流程以功能开关默认关闭合入，内部试用通过 §20 验收后
+   再默认开启；本仓阶段不直接修改 Nexus `main`。
+
 ## 15. 视觉模型兼容
 
 Runtime 不调用模型 provider。兼容性由外部 harness 完成：
@@ -1044,6 +1173,13 @@ API 文档本身不能替代端到端证据。
 | pixel + semantic combined observation | `<= 180 ms` |
 | semantic action preflight + dispatch | `<= 50 ms` |
 | foreground action preflight + dispatch | `<= 60 ms` |
+| 应用场景观察（单显示器，含模型尺寸缩放与编码） | `<= 150 ms` |
+| 动作 + 动作后观察（不含界面稳定等待） | `<= 220 ms` |
+| 动作前低分辨率视觉复核 | `<= 20 ms` |
+
+2026-11 修订说明：历史 4K 诊断中窗口捕获 p95 约 166 ms、前台动作 p95 约 128 ms，
+主要来自物理分辨率捕获/编码以及动作前整幅重截图。修订后的预算以"捕获阶段缩放 +
+warm stream + 低分辨率复核"为前提；交给模型的单张图片默认不超过 1 MiB 编码字节。
 
 ### 16.2 资源预算
 
@@ -1053,6 +1189,9 @@ API 文档本身不能替代端到端证据。
 - 单个 4K capture pipeline 的 GPU/CPU buffers 目标 `< 128 MiB`；
 - 默认最多 64 local connections、64 in-flight requests、64 sessions；
 - Windows 默认最多 4 个 warm capture pipelines，每个最多保留 2 帧；
+- §2.6 的活动捕获流按显示器复用，同时最多 2 条，每条只保留最新 1 帧，帧率按需
+  （无观察请求时降到最低档），session 关闭或空闲 30 秒即停止；指示状态不得因
+  降频而消失；
 - MCP image cache 总量上限 32 MiB；
 - 每个 session、tree、frame、artifact、ledger、worker、lease 和 retry 都有显式上限；
 - 无请求时禁止 active polling；
@@ -1368,10 +1507,14 @@ Engineering candidate 可以完成 Windows x64、macOS 签名、SBOM 和干净�
 
 macOS Apple Silicon 和 Windows 11 x64 均必须覆盖：
 
-- running/installed discovery；
-- cold launch；
+- running/installed discovery，包括无窗口应用、隐藏应用、其他桌面空间与全屏空间窗口；
+- cold launch 与激活应用；
+- 应用场景观察：右键菜单、下拉菜单、自动补全、独立对话框可见，未授权应用被遮盖；
+- hit-test：点击/滚动落在未授权应用上时 `not_dispatched`；
 - exact window/display capture；
-- mixed DPI 和多显示器；
+- mixed DPI 和多显示器，显示器名称/序号/缩放与截图标签正确；
+- 活动 session 期间系统录屏/捕获指示可见，关闭后消失；overlay 不进入截图；
+- 紧急停止与用户接管；
 - AX/UIA semantic tree 和所有声明动作；
 - pixel、keyboard、scroll、drag、hold；
 - background/foreground 与 foreground restoration；
@@ -1452,6 +1595,45 @@ Kimi、GLM 或 DeepSeek 组合只有在具备相应 API/模型凭据时执行真
 没有凭据时不阻塞 Runtime/MCP contract，但不能发表对应模型兼容声明。
 
 ## 21. 开发顺序
+
+### 2026-11 优先级调整
+
+核心观察/动作循环尚未在 Nexus 中跑通真实任务，而仓库已同时推进 remote gateway、
+worker registry、VM 环境合同、三套 SDK、多渠道打包和 authority provider。修订后：
+
+- **先做 R0 → R1 → R2**，它们是 Nexus 可用的前提；
+- M1（Windows）与 R1 并行，但 Windows 实现直接按修订后的合同做，不再补旧设计证据；
+- **冻结** M2 中 remote/VM/policy 的新增工作（保留现有代码与回归测试，不再扩展）、
+  M4 中 Homebrew/WinGet/npm 渠道与 registered HTTP integration、M6 的渠道 clean-host；
+  解冻条件是 R2 在 Nexus 内部试用通过；
+- M5 的性能证据在 R1 完成后按 §16 新预算重新采集，旧 4K 诊断只作对比。
+
+### R0 — 输入与配置缺陷修复（本仓）
+
+- 修复 §23.3 B1–B8：滚动坐标与 hit-test、滚动单位、键名语义与别名、标点键与键盘
+  布局、Windows 扩展键标记、点击/输入节奏、输入法检测、`serve` 观察有效期可配置；
+- 为每项增加确定性测试与 fixture 场景。
+
+完成条件：两平台同一动作序列在 fixture 上产生相同效果。
+
+### R1 — 观察模型与可感知（本仓）
+
+- 应用/窗口/显示器发现修正（§23.2 D2、D3）；
+- 应用场景观察与 hit-test 授权（§2.5，§23.2 D1）；
+- 捕获阶段缩放、低分辨率复核、warm stream、`observe_after`、协议级归一化坐标（§2.7，§23.5）；
+- 系统级指示、presence 事件、紧急停止与用户接管合同；独立 MCP 路径的最小指示（§2.6）；
+- 同步修改 Architecture、Protocol、Runtime Contract、Skill 与 SDK。
+
+完成条件：§20.2 新增场景在 macOS 通过；Codex MCP 能完成"打开下拉菜单并选择一项"的
+真实任务；活动期间系统指示可见。
+
+### R2 — Nexus 接入（Nexus 仓，独立分支）
+
+- 按 §14.4 修订设计实施，关闭 §23.4 N1–N7；
+- 真实 Nexus Agent 完成至少三类任务（菜单操作、多窗口、跨显示器）并连续 3/3 通过。
+
+完成条件：集成分支具备以功能开关默认关闭合入 Nexus 主线的条件，可开始内部试用；
+是否及何时合入由 Nexus 仓库按其流程决定，本阶段不直接修改 Nexus `main`。
 
 ### M0 — 文档和合同收敛
 
@@ -1572,63 +1754,592 @@ M7 不替代本仓 M0–M6 的签名、双平台和发布门槛。
 12. 真实 Codex MCP 在两个平台通过最终流程；
 13. 没有发布任何正式版本；
 14. 八小时 soak 被明确保留为未来 release gate；
-15. Nexus `main` 主分支仍未被本阶段直接修改；当前集成只存在于独立 branch/worktree。
+15. Nexus `main` 主分支仍未被本阶段直接修改；当前集成只存在于独立 branch/worktree；
+16. 默认观察是应用场景，菜单/弹窗/多窗口可见，未授权应用像素不可见，像素动作
+    经 hit-test 授权（§2.5）；
+17. 活动 session 期间系统级指示持续可见，presence 事件、紧急停止和用户接管可测试（§2.6）；
+18. 所有入口使用协议级归一化坐标，动作可返回动作后观察，交给模型的图片符合
+    图像预算（§2.7）；
+19. §23 列出的 D/B/P/N 类问题全部关闭或有明确的延期记录。
 
-## 23. 2026-09-14 执行盘点与剩余工作
+## 23. 2026-11-02 设计与实现审查
 
-本节是本 PRD 的执行快照，不新增另一份路线图。检查对象为 `main` 工作区，
-基准提交 `7644308`，包含大量尚未提交的实现；不能把工作区能力视为远端已交付。
+本节取代 2026-10-26 的执行盘点，是本 PRD 当前的执行快照，不新增另一份路线图。
+问题按类别编号：D = 设计层，B = 实现缺陷，P = 性能，N = Nexus 集成，
+W = Windows 测试重点。每个问题都给出现象、根因（含源码位置）、解决方案和验收条件；
+关闭一个问题必须同时满足其验收条件并在本节更新状态。
 
-### 23.1 当前智能体执行边界（2026-10-13）
+### 23.1 审查范围与总体结论
 
-本轮执行目标已明确收窄为 **macOS 14+ Apple Silicon**：本智能体继续完成该平台
-的驱动、可信宿主生命周期、MCP/CLI 一致性、签名候选准入和真实 Codex acceptance
-所需的仓库实现与可运行入口。Windows x64 的驱动、维护硬件、权限、Codex 和
-clean-host 证据由另一个智能体接续；这些条件仍然保留在全局 M0–M6 DoD 中，不能
-用 macOS 结果替代，也不能把本轮局部完成写成双平台完成。
+- `nexus-cua`：本地 `main`，提交 `e5944fc`；`cargo test --workspace` 通过。
+- Nexus：Computer Use 集成位于独立 `cua` 分支（worktree
+  `worktrees/nexus/cua-macos-integration`，提交 `2ffa5ee6a`），该分支落后 Nexus
+  `main` 106 个提交；功能开关 `NEXUS_COMPUTER_USE_ENABLED` 默认关闭。
+- 方法：阅读当前源码、PRD、平台验证记录和本地 `target/native-evidence` 历史报告，
+  结合用户真实使用反馈。未重跑真实桌面动作，未验证签名候选或干净机器安装。
 
-因此下面的“当前判断”只说明本轮 macOS 工作区状态；凡涉及 Windows 的条目仍是
-全局待验收条件，直到另一智能体提交对应的 exact evidence。
+结论：
 
-当前阶段是“主体实现已存在，宿主生命周期与工程交付尚未闭环”。不使用单一
-完成百分比：源码覆盖、真实桌面成功和签名候选验收不是同一分母。
+1. **Runtime 的安全与可靠性内核是对的，保留**：opaque refs、进程/窗口代际复核、
+   新鲜观察、同 `request_id` 对账、有界资源、平台 actor 所有权。
+2. **产品层的观察模型和用户可感知设计是错的，必须修订**：只观察单个窗口、
+   一次性截图、无任何操作反馈，直接造成"看不到 app、不知道 Agent 在干什么、
+   分不清屏幕"。修订方向见 §2.5–§2.7，具体问题见 §23.2。
+3. **存在会让两平台行为不一致或越过授权边界的输入缺陷**（§23.3）。
+4. **Nexus 集成分支有几处参数和流程设计会让真实任务必然失败**（§23.4）。
+5. **范围超前于产品验证**：核心循环尚未在 Nexus 中跑通，仓库已同时推进 remote、
+   VM、多渠道等工作；按 §21 冻结非关键工作。
 
-| 里程碑 | 当前判断 | 尚未关闭的完成条件 |
+| 里程碑 | 当前判断 | 修订后处理 |
 | --- | --- | --- |
-| M0 | 主 PRD 已收敛 | 维护 runner 与工程 owner 的可用性仍需确认 |
-| M1 | macOS 驱动与 fixture 已存在 | macOS 维护硬件上的完整矩阵、签名身份、权限和 background/restoration 证据；Windows x64 由另一智能体验收 |
-| M2 | host/registry/gateway/environment 与两进程 mTLS harness 已存在 | 保持回归和有界资源验证；生产 remote listener 与真实 VM backend 不属于本期 |
-| M3 | macOS CLI、双 MCP transport、Skill、provider 主体存在 | macOS 自动启动/续期、跨 adapter 撤销、CLI/MCP 共同操作端到端一致性 |
-| M4 | macOS profile、Codex stdio assistant、渠道生成器存在 | macOS registered HTTP 接入、CLI 宿主启动安装、macOS clean-host 生命周期验证 |
-| M5 | source gate、native/remote harness 与证据检查存在 | 唯一真实 Codex acceptance harness、macOS 性能与 engineering evidence；Windows 由另一智能体验收 |
-| M6 | checksum/SBOM/manifest 和渠道准入检查存在 | macOS 先签名再验收、真实候选 3/3 Codex 流程、macOS clean-host 验收；全局双平台 DoD 仍未关闭 |
+| R0 | 新增；输入与配置缺陷未修 | 立即开始 |
+| R1 | 新增；场景观察、可感知、交互循环均未实现 | R0 后开始，与 M1 并行 |
+| R2 | Nexus 分支有基础实现，但存在 N1–N7 | R1 合同稳定后实施 |
+| M0 | 主 PRD 已收敛，本次修订后需同步技术文档 | 随 R1 实施同步 |
+| M1 | macOS 驱动与 fixture 已存在；历史 native 报告 15 个场景组通过（旧设计） | Windows 按修订合同实现；macOS 补 §20.2 新场景 |
+| M2 | host/registry/gateway/environment 与两进程 mTLS harness 已存在 | 冻结新增，只保留回归 |
+| M3 | CLI、双 MCP transport、Skill、provider 主体存在 | 剩余项排在 R2 之后 |
+| M4 | profile、Codex stdio assistant、渠道生成器存在 | 渠道与 registered HTTP 冻结 |
+| M5 | source gate、harness、Codex acceptance 入口存在 | R1 后按新预算重新采集 |
+| M6 | checksum/SBOM/manifest、签名预检存在 | R2 内部试用通过后再推进 |
 
-与 trycua 的比较分两层。2026-09-14 在线核对的
-[官方仓库](https://github.com/trycua/cua) 已提供 Driver、Fleets、Lume 和 Bench，
-Driver 覆盖 macOS、Windows、Linux，并有 CLI/MCP/SDK 接入。该在线检查用于产品
-范围核对，不替代 §8.10 固定 revision 的代码对照，也不构成双方性能或成功率基准。
-本仓与 Driver 的基础观察/动作范围已有大量重叠，主要差距在后台输入广度、Linux、
-安装接入和维护验证；与完整 trycua 平台相比还缺真实 VM/fleet 生命周期和评测生态。
-Browser DOM/CDP、模型 loop 是本仓永久边界，不计作必须补齐的缺陷。
+### 2026-11-02 实施复核（进行中）
 
-按可验收成果分成以下 **10 个剩余工作包**，并非十个等量小任务：
+- 用户确认既有发布只用于测试流水线，无实际用户，本轮不保留旧协议兼容层。
+  Runtime、SDK、Nexus 必须一起重建；坐标合同改为统一 `NormalizedPoint`，滚动点必填。
+- 已修改：B1 显式滚动点与派发 hit-test、B2 系统滚轮设置换算、B3 删除方向、
+  B4 `mod` 与常用别名、B6 扩展键/扫描码、B7 指针预移动及有界 Unicode 分块节流、
+  B8 统一有效期与服务参数。B4 capabilities 已报告主修饰键，B5 已使用当前布局解析
+  字符与符号；无修饰的单字符按键走 Unicode 输入。B7 输入法组字状态的完整检测
+  仍待完成，不能把源码修复标成整项原生验收通过。
+- B2 验收需区分逻辑意图和应用滚轮量化：Windows 按系统行/字符数与每单位 16
+  逻辑像素换算，禁用/整页滚动配置明确拒绝。跨任意应用的像素误差 ≤10% 不能仅
+  从 SendInput 返回值推导，须在指定 fixture 中测量。
+- Nexus `cua` 已合并本地 `main` `74d8fe98b`，合并提交 `2b2d5d031`；旧沙箱
+  恢复实现没有复活。合并后的 `make check` 与前端 `npm run check` 已通过；后续
+  坐标接入改动单独验证。
+- R1 已加入会话绑定的 macOS `SCStream` 窗口捕获，最多两个热流、每流一张
+  最新 Rust 帧、10fps、30 秒空闲回收；会话关闭/过期撤销捕获所有权。
+  这还不是 PRD 的按显示器共享场景流。系统录屏指示、原生释放时延与性能预算
+  尚未验收；presence、用户接管、动作后观察仍待实现。
+- 本轮 macOS `make check` 通过（含会话关闭/过期/关闭 runtime 的所有权测试）。
+  已定位并修复 fixture 状态标签撑宽窗口导致的 geometry stale；滚动目标改用
+  AX hit-test，最小化改读 AXMinimized。持续流版本已通过核心动作、跨屏、窗口替换和会话过期路径；
+  修复了已销毁 AX 对象导致列表整体失败的问题。完整回归仍阻塞于最小化状态
+  检查。独立 fixture 在无 runtime/捕获时也未成功最小化，尚未确定 AppKit/桌面
+  原因。已加入不申请前台输入的 `desktop-conditions` 诊断；临时截图和令牌已清理。
+- Windows x64 SSH 测试机已连通，WPF fixture 构建通过；Rust 1.88 GNU 全工作区
+  Clippy 及 Python、Go、TypeScript SDK 测试曾通过。LLVM-MinGW 的 `ld.lld`
+  配合 `link-self-contained=yes` 已解决原先测试二进制启动与 proc-macro 链接问题。
+  随后工作区测试暴露远程 harness 在断线后过早查询的竞态；已加入有界只读
+  reconciliation 等待，本地与 Windows 工作区测试均通过。完整原生验收仍未完成。
+- Windows 活动控制台 session 2 的原生回归失败在 `observe_display`：WGC
+  `CreateForMonitor` 返回 `0x80070057`，尚未进入窗口动作验收。两次临时任务和
+  进程均已结束，截图与令牌已删除。窗口单独诊断已进入辅助功能检查，但 fixture
+  按钮未暴露预期 invoke，仍未通过。恢复 CI 不代表本轮 Windows 原生测试通过。
 
-1. 稳定 CLI exit/error 合同及安全输出：已实现非零 operation failure、脱敏报告及未知 disposition；持续回归，禁止按退出码自动重发 mutation。
-2. 可信宿主 service 自动启动及跨 adapter 撤销编排；provider grant 已有界续租，仍需与宿主启动生命周期合并验收。
-3. CLI/MCP 运行中 adapter 的撤销、退出和清理闭环。
-4. registered HTTP integration 与单 binding 安装/移除。
-5. CLI/MCP shared-operation conformance，覆盖 timeout/reconcile 与单次 effect。
-6. 唯一真实 Codex acceptance harness、固定 prompt、事件策略校验及脱敏 summary。
-7. macOS Apple Silicon native matrix、权限与 background/restoration 证据；Windows x64 由另一智能体完成同一合同。
-8. macOS benchmark、idle、engineering soak 与资源增长问题收敛；Windows 保持独立证据链。
-9. macOS 先签名 exact payload，再 native/remote/Codex 验收的工程候选流水线。
-10. macOS archive/npm/Homebrew 干净机器 install/repair/upgrade/rollback/uninstall；Windows 渠道由另一智能体验收。
+### 23.2 设计层问题（D 类）
 
-本轮执行先后：持续 source gate → 1–5（macOS）→ 6 与 9（macOS）→ 7–8（macOS）→
-10（macOS）和候选验收。已有代码只能缩短实现，不能免除实际证据。7–10 涉及维护
-机器、签名身份、OS 权限和 Codex 凭据；缺失时记录具体外部条件，继续完成可独立
-推进的仓库工作。另一智能体应沿用同一顺序完成 Windows x64，不得降低矩阵。
-Goal 以 §22 为完成条件；不发布、不打 tag、不执行八小时 release soak，不直接修改 Nexus `main`。
+#### D1 观察只有单个窗口，菜单、弹窗和上下文全部不可见
+
+- **现象**：模型点开下拉菜单、右键菜单或自动补全后重新观察，看不到弹出内容；
+  多窗口应用需要逐个切换窗口；模型不知道目标窗口在屏幕上的位置和周边。
+- **根因**：窗口截图使用 desktop-independent-window 过滤器，只渲染一个窗口
+  （[capture.rs](../crates/platform/src/macos/capture.rs) `load_capture_filter`）；
+  菜单、popover、tooltip 在系统中是独立窗口且通常不在 layer 0，而窗口枚举只收
+  layer 0（同文件 `native_window`）；整屏显示器观察被设计为另行授权的只读概览，
+  不能驱动动作。这是 PRD 早期"观察单位 = 授权单位 = 精确窗口"的直接后果。
+- **方案**（§2.5）：
+  1. 新增应用场景观察：macOS 使用 ScreenCaptureKit 的
+     display + including-applications 过滤器，只包含授权应用及允许的辅助进程，
+     天然包含该应用的菜单与弹窗；Windows 使用 WGC 显示器捕获，按 z-order 计算
+     授权进程全部顶层窗口（含 popup/菜单类窗口）的可见区域，其余像素遮盖。
+  2. 辅助进程允许清单由 Runtime 维护且封闭：例如 macOS 打开/保存面板服务进程可
+     归属于发起应用；系统认证、TCC 授权弹窗、登录窗口永远不纳入。
+  3. 像素动作派发前 hit-test：macOS 用当前屏幕窗口列表按 z-order 求点所在的
+     最上层窗口及其进程；Windows 用 `WindowFromPoint` + 根窗口所属进程。命中
+     未授权进程时返回 `target_not_authorized` 且 `not_dispatched`。
+  4. 观察结果附带授权窗口清单（ref、标题、在图中的归一化矩形、状态）和显示器标签。
+- **验收**：fixture 中打开右键菜单、下拉菜单、自动补全和独立对话框后均可见并可点；
+  同屏另一未授权应用在截图中被遮盖；点击/滚动坐标落在未授权应用上被拒绝且无副作用。
+
+#### D2 应用和窗口发现不完整，"经常看不到 app"
+
+- **现象**：已运行但没有打开窗口的应用（关闭了最后一个窗口的浏览器、菜单栏应用）
+  不在应用列表；在其他桌面空间、全屏空间或被隐藏（⌘H）的应用窗口被当作"已最小化"，
+  观察直接失败；"恢复最小化"对这些窗口无效。
+- **根因**：
+  - 运行中应用从可见窗口反推（[macos/mod.rs](../crates/platform/src/macos/mod.rs)
+    `list_applications` 调用 `windows()` 再去重），没有窗口就没有应用；
+  - `minimized` 被定义为 `!visible`（同文件 `driver_window`），把其他空间、全屏、
+    隐藏、离屏统统当作最小化；
+  - 观察对 `!visible` 直接返回"minimized target cannot provide a frame"；
+  - 捕获过滤器只查询 on-screen 窗口，其他空间的窗口必然 `target_unavailable`；
+  - `list_windows` 丢弃不可见且无标题的窗口。
+- **方案**：
+  1. 应用列表以系统运行应用为来源（macOS `NSWorkspace.runningApplications`，
+     默认 regular 激活策略，accessory 由宿主策略决定；Windows 以拥有顶层窗口或
+     任务栏条目的进程为准），返回窗口数、是否隐藏、是否前台；
+  2. 窗口状态改为枚举 `normal/minimized/app_hidden/other_space/fullscreen_space/offscreen`，
+     最小化来自 AX `AXMinimized` / Win32 `IsIconic`，其他虚拟桌面来自
+     `DWMWA_CLOAKED`；同时返回窗口角色、z-order、所在显示器；
+  3. 新增 `activate_application` 动作（需前台授权）：取消隐藏并激活，系统会切换到
+     该应用所在空间；macOS 公共 API 不能跨空间移动窗口，不使用私有 API；
+  4. 错误携带明确恢复建议：`restore_window`、`activate_application`、
+     `open_window`（通过快捷键或菜单），模型不再盲目重试观察。
+- **验收**：fixture 覆盖无窗口应用、⌘H 隐藏、其他桌面空间、全屏空间、真正最小化
+  五种情况，状态报告正确，按建议动作恢复后可观察。
+
+#### D3 显示器无法区分
+
+- **现象**：多显示器时模型和用户都说不清"哪块屏"；显示器截图与窗口无法对应。
+- **根因**：`DisplaySummary` 只有 ref、逻辑坐标和是否主屏
+  （[observation.rs](../crates/protocol/src/observation.rs)）；`WindowSummary`
+  不含所在显示器；截图没有任何标签。
+- **方案**：显示器增加名称（macOS `NSScreen.localizedName` 按显示器 ID 匹配；
+  Windows `DisplayConfigGetDeviceInfo` 目标名）、稳定序号（按左→右、上→下）、
+  缩放比例、像素尺寸、是否含光标/前台窗口、所含窗口 ref；窗口增加 `display_ref`；
+  场景观察的文字结果包含"显示器 2「名称」2560×1440 @1x，位于主屏右侧"一类标签，
+  多显示器时附一行布局说明。显示器名称属于可见元数据，仍需要 read authority。
+- **验收**：双屏、混合 DPI、负坐标布局下名称、序号、缩放和窗口归属正确；
+  模型在固定 prompt 中能按"左边那块屏上的 X 应用"正确选择目标。
+
+#### D4 用户无法感知 Agent 在观察和操作
+
+- **现象**：用户实测 Codex Computer Use 会触发系统屏幕录制指示，本项目没有任何
+  指示；Agent 点击前用户不知道它要点哪里，也没有一键停止。
+- **根因**：macOS 捕获走一次性截图路线（[Architecture](architecture.md) 明确记载
+  "public one-shot screenshot route"），系统不呈现持续录屏状态；协议没有 presence
+  事件；PRD 把 Agent 光标列为 P2、录制列为可选，没有把"可感知、可打断"作为
+  真实桌面产品的前提。
+- **方案**（§2.6）：
+  1. 活动 session 期间按显示器保持有界 `SCStream`/WGC 会话，产生系统指示；同时作为
+     warm pipeline 取代每次捕获的内容枚举，资源上限见 §16.2；
+  2. 协议新增只读 presence 事件订阅：`session_active`、`observing`、
+     `action_pending`（动作类型、归一化点、目标窗口 ref）、`action_finished`、
+     `session_closed`；事件不含像素、文本或可访问性内容；
+  3. 宿主渲染 overlay 并从捕获中排除；`nexuscua` 独立路径提供最小指示；
+  4. 紧急停止：宿主快捷键/按钮调用 Runtime 的撤销入口，立即关闭 admission 并关闭
+     session；
+  5. 用户接管：检测真实用户输入时前台动作返回 `user_active`；实现必须能区分本进程
+     合成的事件（macOS 使用自有 event source 标记与时间窗，Windows 使用注入标志），
+     优先不需要额外系统权限的方案，若需要必须在权限引导中说明。
+- **验收**：活动期间系统指示持续可见、关闭后 5 秒内消失；overlay 不出现在截图中；
+  停止快捷键在动作序列中途生效且无后续派发；用户移动鼠标后前台动作被拒绝。
+
+#### D5 交互循环过重，stale 循环频繁
+
+- **现象**：每步至少"观察 + 动作"两次往返；推理模型思考稍久或人工审批稍慢，
+  动作就因 stale 失败，模型反复重新观察。
+- **根因**：每个 observation 只能驱动一个动作，动作后立即失效
+  （[service.rs](../crates/runtime/src/service.rs) `perform_action`）；动作前整幅
+  重截图做视觉复核（[macos/mod.rs](../crates/platform/src/macos/mod.rs)
+  `observation_is_current`）；`serve` 路径观察有效期固定 30 秒（见 B8）；Nexus 在
+  观察之后、派发之前插入人工审批（见 N3）。
+- **方案**（§2.7）：动作默认返回动作后观察（有界稳定等待：视觉签名连续两帧不变或
+  到上限）；低分辨率复核；观察有效期统一可配；审批等待不计入有效期，复核失败时
+  在错误中附带新观察。保持"一个 observation 只驱动一个 mutation"的安全不变量，
+  但让下一次 observation 随动作结果免费返回。
+- **验收**：固定任务的往返次数下降约一半；120 秒内的审批等待不导致 stale；
+  复核失败时模型无需额外调用即可拿到新画面。
+
+#### D6 授权粒度与审批位置
+
+- **现象**：Nexus 每个动作都弹审批；选择目标时却授予了全部 capability。
+- **根因**：§9.1 的 "Mutation approval" 层没有区分常规动作与高风险动作，宿主只能
+  选择"逐次全审"或"不审"。
+- **方案**：Session authority 在目标选择时一次性确认（应用、动作类别、前台输入、
+  时长）；Mutation approval 只用于高风险类别（退出应用、剪贴板写入、宿主策略
+  标记）；§9.1 的层次不变，但 Host 必须按此分级实现。
+- **验收**：常规点击/输入不再逐次弹窗；未确认的动作类别被 Runtime 拒绝。
+
+### 23.3 实现缺陷（B 类，R0 修复）
+
+| 编号 | 问题 | 位置 | 后果 | 修复与验收 |
+| --- | --- | --- | --- | --- |
+| B1 | 滚动不带坐标，在当前光标下投递；`element_ref` 只做 focus，不改变滚轮目标 | [macOS input](../crates/platform/src/macos/input.rs) `scroll`；[Windows input](../crates/platform/src/windows/input.rs) `scroll` | 光标不在目标上时滚动其他应用，越过授权边界 | 协议 `Scroll` 增加必填点（归一化），派发前 hit-test，事件位置设为该点；fixture 验证光标位于其他应用时仍只滚目标 |
+| B2 | 滚动单位不一致：协议为像素，Windows 乘以 `WHEEL_DELTA=120` | Windows input `wheel_delta` | 同样 300，Windows 滚约 300 格 | 统一逻辑像素，Windows 按系统滚动行数换算为 wheel delta；两平台 fixture 滚动距离误差 ≤10% |
+| B3 | `delete` 在 macOS 是退格、在 Windows 是向前删除 | 两平台 `key_code` | 同一指令两平台删除方向相反 | `backspace`=退格、`delete`=向前删除（macOS 用 forward-delete 键码）；fixture 断言文本结果一致 |
+| B4 | `meta` 在 Windows 映射为 Win 键；不接受 `ctrl`/`cmd` 等常见别名 | Windows input `press_keys`；[validation.rs](../crates/runtime/src/validation.rs) `is_supported_key` | `meta+c` 在 Windows 触发 Win+C；模型常用键名被拒 | 引入平台中立 `mod`，显式 `cmd`/`ctrl`/`win`，入口归一化别名；capabilities 报告平台主修饰键 |
+| B5 | 键表缺标点与符号键；macOS 使用 ANSI 物理键码 | 两平台 `key_code`、`is_supported_key` | `cmd+,`、`cmd+=`、`cmd+/` 等常用快捷键不可用；非美式布局按错键 | 增加符号键；macOS 按当前输入源把字符映射到键码，Windows 用 `VkKeyScanExW`；fixture 覆盖美式与一个非美式布局 |
+| B6 | Windows `SendInput` 未对方向键、Home/End、PageUp/Down、Delete 设置扩展键标记 | Windows input `keyboard_input` | NumLock 打开时部分应用收到小键盘数字 | 按键码设置 `KEYEVENTF_EXTENDEDKEY` 并填扫描码；NumLock 开/关两种 fixture |
+| B7 | 点击前不移动指针、按下/抬起与多击之间无间隔；文字每 20 个 UTF-16 单元连续发送无节流；未处理输入法组字状态 | 两平台 input | 悬停依赖的 UI 不响应、双击不稳、Electron 类应用丢字；中文输入法下 `press_keys` 字母进入组字 | 点击前 move + 平台间隔；文字分块节流；派发前检测输入法组字状态并报告或切换到 Unicode 路径；Electron fixture 输入 2 KB 文本无丢失 |
+| B8 | `nexuscua serve` 观察有效期固定 30 秒且无参数，MCP 默认 120 秒 | [commands.rs](../crates/cli/src/commands.rs) `serve` 使用 `RuntimeConfig::new` 默认值 | Nexus 路径 stale 率远高于 MCP，两个入口语义不一致 | `serve` 增加与 MCP 相同的参数和默认值，Runtime 默认值统一；contract test 断言两入口一致 |
+
+### 23.4 Nexus 集成问题（N 类，R2 修复，代码在 Nexus 仓）
+
+| 编号 | 问题 | 位置（Nexus `cua` 分支） | 后果 | 修复与验收 |
+| --- | --- | --- | --- | --- |
+| N1 | session TTL 固定 120 秒且不续期 | `internal/service/computeruse/service.go` `defaultSessionTTL` | 超过 2 分钟的任务中途 `session_unavailable` | TTL 跟随 round，到期前续期；10 分钟任务不中断 |
+| N2 | `click_point`/`drag` 使用截图像素坐标 | 同文件 `buildAction`；`internal/mcp/command/computer/registry.go` schema | Retina 截图经模型侧缩放后点击偏移 | 改为 `0..1000` 归一化（R1 后由协议原生支持）；4K/Retina 下点击误差 ≤ 1% |
+| N3 | 人工审批位于观察之后、派发之前 | `performAction` 中 `approve()` | 审批超过有效期必然 stale | 按 D5/D6：常规动作不逐次审批；逐次审批不计入有效期，审批后复核 |
+| N4 | `SelectTarget` 授予全部 capability 与前台输入 | `SelectTarget` 中 `AllowedActions: capabilities.Actions` | 授权过宽，包括退出应用 | 只授予用户在目标选择时确认的动作类别 |
+| N5 | 未暴露最小化恢复、窗口移动/缩放、启动/激活应用、range、长按、后台点击；滚动量上限 ±1,000,000 与 Runtime 100,000 不一致 | `buildAction`、registry schema | 遇到最小化窗口无法恢复；超限请求直接报错 | 暴露 Runtime 已支持动作，参数上限从 Runtime capabilities 生成 |
+| N6 | 分支落后 Nexus `main` 106 个提交；SDK 依赖为伪版本 | `go.mod` | 合入冲突与不可追溯依赖 | 变基到最新 `main`；SDK 固定到本仓精确 tag/commit |
+| N7 | sidecar 打包位置、签名与系统权限归属未在真实机器验证；Windows 前台激活许可未实现 | `scripts/desktop/*`、权限设置页 | 权限可能记在 sidecar 而非 Nexus 名下；Windows 前台动作全部失败 | sidecar 置于 `Nexus.app` 内同 Team ID 签名；干净机器验证权限归属与撤销；Windows 主进程授予前台许可 |
+
+### 23.5 性能问题（P 类，R1 修复）
+
+- **P1 物理分辨率截图全流程**：RGBA PNG 全尺寸编码、写盘 `fsync`、宿主再读回并
+  base64（[artifact_store.rs](../crates/runtime/src/artifact_store.rs) `write_image`；
+  Nexus `readArtifact`）。历史 4K 诊断窗口捕获 p95 约 166 ms，超 100 ms 预算；
+  模型 API 本来就会缩图，原图既耗时又浪费 token。
+  **修复**：捕获配置直接输出模型预算尺寸；去掉 alpha；临时 artifact 不 `fsync`；
+  宿主优先使用 checked take 取字节，避免二次路径读取。
+- **P2 动作前整幅重截图复核**：指纹只用 32×32 亮度网格，却整幅捕获
+  （[macos/mod.rs](../crates/platform/src/macos/mod.rs) `observation_is_current`）。
+  历史 4K 诊断前台动作 p95 约 128 ms，超 60 ms 预算。
+  **修复**：复核使用极小尺寸捕获或 warm stream 最新帧。
+- **P3 捕获前内容枚举**：目标变化或缓存失效时每次查询 shareable content。
+  **修复**：由 §2.6 的 warm stream 承担，枚举只在拓扑变化时发生。
+- **P4 每步两次往返**：见 D5，由 `observe_after` 解决。
+- **验收**：§16.1 新增预算在 4K 与 Retina 两种 runner 上通过，并绑定 source revision
+  与 runtime digest。
+
+### 23.6 Windows 测试重点（W 类）
+
+除 B2、B3、B4、B6 外，Windows 实测优先覆盖：
+
+- **W1 前台锁**：后台 sidecar 调用 `SetForegroundWindow` 常被系统拒绝
+  （Windows input `activate`），表现为所有前台动作 `ForegroundRequired`；验证宿主授予
+  前台许可后的成功率，不使用模拟按键等绕过手段作为静默回退。
+- **W2 UIPI**：目标为管理员权限窗口时错误清晰、无部分派发。
+- **W3 每显示器 DPI**：混合缩放、负坐标、跨屏窗口的坐标映射。
+- **W4 WGC**：系统边框行为、Win10/Win11 差异；场景遮盖对 cloaked 窗口、
+  其他虚拟桌面窗口和菜单类窗口的处理。
+- **W5 CI**：`e5944fc` 暂停了 Windows native CI；R0 修复后恢复 Windows source gate，
+  维护硬件 native 证据按修订合同采集。
+
+### 23.7 范围收敛与原工作包去向
+
+原 2026-10-26 的 10 个剩余工作包按以下方式处理：
+
+| 原工作包 | 去向 |
+| --- | --- |
+| 1 CLI exit/error 合同 | 已实现，持续回归 |
+| 2 可信宿主自动启动与撤销编排 | 并入 R2（Nexus 宿主生命周期）与 D4 紧急停止 |
+| 3 运行中 adapter 撤销闭环 | 并入 D4 紧急停止合同，R1 |
+| 4 registered HTTP integration | 冻结 |
+| 5 CLI/MCP shared-operation conformance | R1 后按新合同执行 |
+| 6 Codex acceptance 3/3 | R1 后执行，固定流程增加菜单与多显示器场景 |
+| 7 native matrix | 按 §20.2 新场景重做 |
+| 8 性能与 soak | 按 §16 新预算重做（P1–P4） |
+| 9 签名候选流水线 | R2 内部试用通过后推进 |
+| 10 渠道 clean-host | 冻结（Nexus 内置 sidecar 的 clean-host 由 N7 覆盖） |
+
+trycua 对照（§8.10）结论不变：基础观察/动作范围已大量重叠，差距在后台输入广度、
+Linux、安装接入与维护验证；Browser DOM/CDP 与模型 loop 是永久边界。
+
+### 23.8 既有证据与效力
+
+- `target/native-evidence/macos-apple-silicon/validation.json` 的 15 个场景组通过，
+  覆盖混合 DPI、多显示器、负坐标、遮挡/最小化、前台/语义动作、同请求对账、
+  会话过期、陈旧观察和 artifact 清理。它们验证的是旧的单窗口观察设计，修订后的
+  场景观察、hit-test、presence 需要新证据。
+- `restart.json`、`fault-preflight.json`、`fault-dispatch.json` 的重启与故障场景
+  仍有效，但不替代权限拒绝/撤销及 background/restoration 验收。
+- `benchmark.json` 未绑定 source revision/runtime SHA-256；
+  `benchmark-4k-sck-diagnostic.json` 的截图与前台动作预算未通过（根因见 P1、P2）；
+  `soak-4k-sck-5m.json` 有内存单调增长，其他诊断运行无增长，引入 warm stream 后
+  必须重新做 soak 归因。
+- [平台验证记录](platform-validation.md) 中真实 Codex 经 MCP 的开发验证仍有参考价值，
+  不等于签名候选 3/3 验收。
+- 本地 `target/` 报告不在版本控制中，`passed` 或 `accepted_release_evidence` 字段
+  不能直接认定当前提交已通过。
+
+### 23.9 本次修订的质量门禁
+
+本次只修改本 PRD，不修改源码与其他文档；技术文档在 R1 实现时同步更新。
+提交前运行 `make check`，Markdown 链接检查须通过。
+
+### 23.10 第二轮审查：`47800d9` 与 Nexus `64cf8e9e8` 的修复要求
+
+审查对象：nexus-cua 提交 `47800d9`（R0 大部分与 R1 会话热流）和 Nexus `cua` 分支
+提交 `64cf8e9e8`。`make check` 通过；B1–B6、B8 的源码修复方向正确，协议级
+`NormalizedPoint`、滚动方向、`mod`、布局解析、Windows 扩展键与滚轮换算、输入
+节流、会话捕获所有权撤销均保留。以下 C1–C12 是必须修复的问题，编号供提交信息
+和本节状态更新引用。
+
+**执行规则**
+
+- 每个 C 项单独提交，提交信息引用编号；源码、协议 schema、三套 SDK、Skill、
+  [Protocol](specs/protocol-v1.md)、[Runtime Contract](specs/runtime-contract-v1.md)
+  和 `CHANGELOG.md` 在同一提交内同步。
+- 每项必须新增确定性测试；需要真实桌面的验收写入
+  [平台验证记录](platform-validation.md)，没有原生证据时只能标"源码已修复"。
+- 不得新增空闲轮询、无界队列、无界重试或跨 actor 移动原生对象；
+  `make check PYTHON=<python3.10+>` 通过后才能提交。
+- 推送远端、改动 Nexus 以外的仓库或修改 CI secret 前先征得用户同意。
+
+**建议顺序**：C5、C10 → C1、C2 → C3 → C6、C7、C8 → C4 → C9 → C11 → C12。
+
+#### C1 窗口列表与观察不得依赖辅助功能（高）
+
+实施状态：源码已修复；增加无权限、80 窗口、身份失败和超时的确定性覆盖。原生权限撤销与不同 AX 标题验收待执行。
+
+- **问题**：`list_windows` 对每个窗口调用 AX 查询最小化状态；无辅助功能权限时整个
+  调用失败；AX 查找失败（含系统窗口标题与 AX 标题不一致、身份歧义）时窗口被
+  `continue` 静默丢弃；单应用超过 64 个窗口直接 `Busy`。带截图的 `observe` 即使
+  `accessibility = disabled` 也强制 AX 查询。位置：
+  [macos/mod.rs](../crates/platform/src/macos/mod.rs) `list_windows`、
+  `observe_window_owned`；[semantic.rs](../crates/platform/src/macos/semantic.rs)
+  `window_minimized`、`find_window`。这会让"看不到 app"更严重。
+- **修复**：
+  1. 窗口集合只由系统窗口列表决定，AX 只做状态增强，任何 AX 失败都不得删除窗口
+     或让列表失败；恢复原有的 `visible || !title.is_empty()` 噪声过滤。
+  2. 协议把 `WindowSummary.minimized: bool` 替换为封闭枚举 `state`，本项先提供
+     `normal | minimized | offscreen | unknown`（D2 再追加 `app_hidden`、
+     `other_space`、`fullscreen_space`）。AX 不可用、超时、歧义或标题不一致时为
+     `unknown`，不可见时至少为 `offscreen`。
+  3. 未授予辅助功能权限时完全不调用 AX。
+  4. AX 增强按 z-order 只处理前 16 个窗口，共享 750 ms 预算；超出预算或数量的
+     窗口为 `unknown`，不报错。
+  5. `observe` 的最小化前置检查：有 AX 权限时读 `AXMinimized`；无权限时以
+     系统窗口列表的可见性判断，不可见返回 `TargetUnavailable` 并建议
+     `restore_window`/`activate_application`。
+- **验收**：撤销辅助功能权限后 `list_windows` 与仅截图 `observe` 成功；fixture
+  增加一个 `accessibilityTitle` 与窗口标题不同的窗口，它仍出现在列表中且状态为
+  `unknown` 或正确值；单应用 80 个窗口时列表成功返回。
+
+#### C2 热流在静态画面下必须可用（高）
+
+实施状态：源码已修复；增加静态完整帧复用、停止后拒绝缓存、首帧超时回退的确定性测试。刷新等待上限 100ms；原生静止 5 秒、内容更新与 p95 验收待执行。
+
+- **问题**：`CaptureStream::snapshot` 要求请求之后收到新的帧回调，否则 1 秒后
+  报错并拆除流（[stream.rs](../crates/platform/src/macos/stream.rs)、
+  [capture.rs](../crates/platform/src/macos/capture.rs) `stream_capture`）。
+  ScreenCaptureKit 在内容不变时可能不再回调，动作前视觉复核也走这条路径，
+  静止窗口上的观察和动作都可能失败。
+- **修复**：
+  1. 帧槽记录"最近完整帧"和"流状态"（运行/停止/目标不可用）。流运行中且已有
+     完整帧时，等待不超过两个帧间隔（200 ms）仍无回调，即视为内容未变并返回
+     最近帧。
+  2. 为 `SCStream` 设置 delegate，收到停止或错误时标记失效；下一次请求重建，
+     不在请求路径上等满 1 秒。
+  3. 流启动后 1 秒内没有首帧时，本次请求回退到一次性截图，流保留，不把错误
+     暴露给调用方。
+  4. 动作前复核直接使用最近帧，不等待新回调。
+- **验收**：静止窗口观察后等 5 秒再观察并执行动作，二者都成功，观察 p95 ≤ 150 ms；
+  内容变化后 200 ms 内的观察反映新内容；目标窗口关闭时返回明确的
+  `TargetUnavailable`，并释放流。
+
+#### C3 Nexus 分支必须在不依赖本机 `go.work` 时可构建（高）
+
+实施状态：已完成。经用户批准推送 Runtime 236fb58；Nexus d2d1f504d 固定精确 SDK 伪版本与校验和，新增独立构建目标并在后端 CI 禁用 workspace。干净 clone 的 GOWORK=off 全量 Go 构建和两个 CUA 接入包测试通过；Nexus 分支尚未推送。
+
+- **问题**：Nexus `go.mod` 仍锁定 2026-10-20 的旧 SDK 伪版本，能编译只是因为有
+  被 gitignore 的本地 `go.work` 指向本机 nexus-cua；`GOWORK=off go build` 报
+  `undefined: nexuscua.NormalizedPoint`。
+- **修复**：征得用户同意后推送 nexus-cua；Nexus `go.mod` 固定到该提交的精确版本
+  并更新 `go.sum`；Nexus 增加 `GOWORK=off` 的构建/测试检查（Makefile 目标或 CI 步骤）；
+  永不提交 `go.work`。
+- **验收**：在干净 clone 中 `GOWORK=off go build ./... && GOWORK=off go test ./internal/service/computeruse/... ./internal/mcp/command/computer/...` 通过。
+
+#### C4 热流按需转换并在捕获阶段缩放（中，含 P1）
+
+实施状态：源码已修复；macOS 原生缓冲留在输出队列，按请求转换；流和一次性捕获按默认 1568 长边配置。RGB PNG 与缩放映射有确定性测试。Windows WGC 保持原生采集尺寸，在编码阶段有界缩放。原生视频 60 秒 CPU、4K PNG 大小与点击验收仍待执行。
+
+- **问题**：每个完整帧都在回调队列上做全分辨率 BGRA→RGBA 转换与反预乘，
+  10 fps 持续进行，与是否有人观察无关；取帧时再完整复制一份；流尺寸等于物理
+  分辨率。窗口内播放视频时 CPU 持续升高，内存翻倍。
+- **修复**：
+  1. 帧槽只保留最新一帧的原生像素缓冲引用（替换时释放旧的），转换只在
+     `snapshot` 时由捕获 actor 执行，且只转换一次；遵守"原生对象留在所属
+     actor"规则，像素缓冲不离开捕获侧。
+  2. `RuntimeConfig` 增加模型图像长边上限（默认 1568），`serve` 与 MCP 提供同名
+     参数；流配置直接输出该尺寸，`ScreenshotMapping` 反映实际像素尺寸。
+  3. 产物 PNG 去掉 alpha 通道（RGB）。
+  4. 一次性截图路径同样按该上限配置输出尺寸。
+- **验收**：session 打开但无观察请求时，目标窗口播放视频 60 秒，sidecar 平均 CPU
+  < 2%；4K 窗口观察输出长边 ≤ 1568，编码后 ≤ 1 MiB；归一化点击在缩放后仍命中
+  fixture 目标。
+
+#### C5 捕获 actor 禁止空闲轮询（中）
+
+实施状态：已去除周期轮询，改为命令/撤销通知/最近流到期唤醒；新增队列满时撤销不丢失等确定性测试。源码检查通过；当前优化构建的 5 分钟无 session 诊断测得 CPU 0.0%、文件描述符 22→22、无持续内存增长。原生 100ms 释放及正式 runner 验收仍待采集。
+
+- **问题**：`actor_loop` 用 `recv_timeout(100ms)` 永久轮询，即使没有任何 session
+  （[capture.rs](../crates/platform/src/macos/capture.rs)），违反"无请求时禁止
+  active polling"。
+- **修复**：没有热流时阻塞 `recv`；有热流时超时设为最早一个流的空闲到期时间。
+  `session_closed` 通过 `try_send` 向 actor 发送 `Prune` 命令，使撤销立即生效且
+  不依赖轮询；通道满时由下一次命令或到期唤醒处理，不得阻塞调用方。
+- **验收**：无 session 空闲 5 分钟，捕获线程无周期唤醒（`sample` 或
+  native-harness idle 证据）；session 关闭后 100 ms 内释放流（保留现有所有权测试）。
+
+#### C6 指针命中检查改为窗口层级判断，并覆盖全部像素动作（中）
+
+实施状态：源码已修复；检查覆盖两平台全部指定像素动作并移入输入 actor，实机发现 Dock/Stage Manager 的全屏穿透层会被矩形排序误判，改用主线程 AppKit 真实 mouse-down 命中，原生引用不离开所属线程。删除仅复述动作枚举/矩形排序的测试。当前 Mac 原生核心动作、窗口替换和会话过期路径通过；完整回归仍阻塞于 fixture 最小化，同进程菜单及自绘滚动尚待专门验收。
+
+- **问题**：macOS 滚动前不移动指针，只依赖事件位置字段；命中检查使用 AX
+  `AXUIElementCopyElementAtPosition`，在 AX 支持差的应用（Java/Qt/游戏/画布）中
+  失败，同一应用的弹出菜单也会因"窗口身份不符"被拒；Windows 要求根窗口等于
+  目标窗口，同样拒绝同进程弹窗；点击、长按、拖拽没有命中检查。
+- **修复**：
+  1. macOS：通过有界主线程队列调用 AppKit 实际 mouse-down 窗口命中，输入 actor
+     用该窗口的 CG 元数据核验授权进程（跳过 runtime 自身窗口）。原先矩形排序
+     方案会把 Dock/Stage Manager 的全屏穿透层误当遮挡，已由真实命中替代。
+     不依赖 AX，不按应用名或窗口层级建立绕过白名单。
+  2. Windows：`WindowFromPoint` 后取所属进程，要求等于授权进程，不再要求根窗口
+     相等。
+  3. 命中检查放在输入 actor 上、紧挨派发之前执行。适用于前台 `click_point`、
+     `press_point`、`scroll`，以及 `drag` 的起点和终点；`move_pointer` 与后台点击
+     不检查。失败返回 `not_dispatched`，建议 `observe_window`。
+  4. macOS 滚动前先发送一次指针移动到目标点，与点击、Windows 一致。
+- **验收**：另一应用窗口覆盖目标点时，点击/滚动/拖拽被拒且无副作用；同一应用
+  弹出菜单上的点击成功；fixture 中无 AX 信息的自绘视图可滚动。
+
+#### C7 删除被忽略的 `Scroll.element_ref`（中）
+
+实施状态：源码已修复；字段已删除，兼容性 invalid fixture 验证即使传 null 也拒绝。
+
+- **问题**：协议仍接受并解析 `Scroll.element_ref`，但两个平台驱动都直接丢弃，
+  文档未说明。
+- **修复**：本轮协议允许重置，直接从 protocol、schema、三套 SDK、MCP、CLI 和
+  Skill 中删除该字段；语义滚动将来作为独立动作设计。
+- **验收**：schema 不再包含该字段；带该字段的请求因未知字段被拒（兼容性 fixture
+  增加一条 invalid 用例）。
+
+#### C8 归一化坐标支持亚单位精度（中）
+
+实施状态：源码已修复；4K/1366×768 每个轴像素往返测试及非有限值拒绝测试已加入。原生 4× zoom 小目标命中仍待验收。
+
+- **问题**：`click_view_normalized` 把裁剪视图中的点换算回整图 `0..1000` 整数，
+  4K 宽窗口误差约 ±2 px，削弱了 zoom 的意义。
+- **修复**：`NormalizedPoint` 的 `x/y` 改为有限 `f64`，闭区间 `[0, 1000]`，由
+  Runtime 统一舍入到像素；面向模型的工具仍使用整数输入；zoom 路径传入小数。
+  三套 SDK 与 schema 同步；拒绝 NaN/Infinity。
+- **验收**：对 3840×2160 和 1366×768 图像中的每个采样像素，`from_pixel` 后再
+  `to_pixel` 得到同一像素（属性测试）；zoom 4× 后点击 4×4 px 目标命中。
+
+#### C9 Nexus 授权与动作暴露（中，Nexus 仓）
+
+实施状态：Runtime 已增加与校验共享的 action_limits，三 SDK/schema 同步；Nexus 目标授权、回合时限、敏感动作审批、恢复/窗口/数值/长按/启动入口已实现；Runtime 与 Nexus 全量 make check 均已通过；Nexus C9 为 4ebe4ec12。真实 Nexus 权限 UI 和恢复窗口验收仍待执行；固定 SDK 提交属于 C3。
+
+- **问题**：TTL 改为固定 30 分钟但仍不续期、不与回合绑定；前台输入仍无条件授予；
+  逐动作审批仍位于观察之后（N3）；恢复最小化等动作仍未暴露（N5）。
+- **修复**：
+  1. `select_target` 通过现有权限通道发起一次授权，内容为应用身份、动作类别、
+     是否允许前台输入、时长；session 只授予确认的类别和前台开关。
+  2. 常规动作不再逐次审批；退出应用、剪贴板写入及宿主策略标记的动作逐次审批，
+     审批通过后若观察已失效，直接返回 `stale_observation` 并提示重新观察，
+     不自动重放。
+  3. session TTL 取回合剩余上限与 Runtime 上限的较小值，回合结束立即关闭；
+     回合中过期时返回明确错误并要求重新 `select_target`，不静默重开。
+  4. 暴露 `restore_window`（`set_window_minimized=false`）、`set_window_bounds`、
+     `set_range_value`、`press_point`、可启动应用列表与启动；参数上限从 Runtime
+     capabilities 生成。
+- **验收**：常规点击/输入不弹审批；未授权类别被 Runtime 拒绝；最小化窗口可经
+  `restore_window` 恢复后观察；回合结束后旧 session 不可用。
+
+#### C10 删除无效 CLI 参数（低）
+
+实施状态：源码已修复；两个子命令的解析回归测试拒绝此参数，serve/MCP 保留配置。
+
+- **问题**：`nexuscua request` 与 `mutation reconcile` 新增的
+  `--max-observation-age-seconds` 没有任何效果
+  （[commands.rs](../crates/cli/src/commands.rs) `RequestArgs`、`ReconcileArgs`）。
+- **修复**：删除这两个参数，仅保留 `serve` 与 MCP 上的参数。
+- **验收**：CLI 解析测试断言这两个子命令拒绝该参数。
+
+#### C11 窗口枚举只做一次（低）
+
+实施状态：源码已修复；多应用 session 的驱动调用计数和授权集合测试已加入。
+
+- **问题**：Runtime `list_windows` 对每个授权应用调用一次驱动，每次都完整枚举
+  系统窗口。
+- **修复**：驱动接口改为接受授权应用 key 集合，一次枚举后过滤；AX 增强（C1）
+  只作用于授权应用的窗口。
+- **验收**：多应用 session 的 `list_windows` 只触发一次系统枚举（驱动计数测试）。
+
+#### C12 Windows 显示器捕获 `0x80070057`（Windows）
+
+2026-11-03 的源码与测试机复核见 [Windows readiness review](platform-validation.md#windows-readiness-review-2026-11-03)。远端现有测试二进制仍为 0.1.0；以下原生结果是历史诊断，不能当作 rc.4 验收。当前优先补齐原生接管/撤销检查，再验证后台点击效果与 Nexus 前台许可，随后补动作后观察及固定版本打包验收。
+
+实施状态：已补当前拓扑解析、PMv2 验证、WGC 支持检查和无内容最小诊断程序。Windows 11 build 26300 上最小程序的窗口/显示器创建均成功；完整 runtime 已通过显示器观察；进一步补齐 UIA pattern 缓存属性，并修复 WGC 在无画面变化的动作后等待不到新帧。当前原生语义动作、鼠标移动和前台点击通过，后台点击未改变 fixture 计数，整体原生验收未通过。旧 `0x80070057` 根因尚未被单变量复现确认。
+
+- **问题**：活动控制台 session 中 `observe_display` 的 WGC `CreateForMonitor`
+  返回 `E_INVALIDARG`，原生回归无法进入窗口动作阶段。
+- **修复步骤**：
+  1. 在调用点重新解析 `HMONITOR`（`EnumDisplayMonitors`/`MonitorFromPoint`），
+     不复用跨显示拓扑变化的缓存值，并记录（不含内容的）显示器设备名与句柄有效性；
+  2. 确认调用线程已初始化 WinRT/COM 且进程为 Per-Monitor-V2 DPI 感知；
+  3. 调用前检查 `GraphicsCaptureSession::IsSupported()`，不支持时返回 `Unsupported`；
+  4. 在同一机器上用最小复现程序对比窗口捕获与显示器捕获，定位后修复，
+     不得静默回退到旧捕获 API。
+- **验收**：Windows 原生回归的显示器观察、窗口观察和动作场景通过，证据写入
+  [平台验证记录](platform-validation.md)。
+
+#### 本轮仍未开始、不在 C 项内的工作
+
+应用场景观察（D1）、窗口状态完整枚举与激活应用（D2）、显示器身份（D3）、
+presence/紧急停止/用户接管与系统指示验收（D4）、`observe_after`（D5）、
+低分辨率复核（P2）、输入法组字检测（B7 剩余部分），仍按 §21 R1 执行。
+
+### 23.11 2026-11-03 macOS 内部试用收口（进行中）
+
+本轮按用户确认先收口 macOS，保留 §21 对 remote/渠道扩展的冻结。
+当前改动尚未提交或推送，不能将本节视为整体验收完成。
+
+- 应用发现改用系统运行应用列表，原生对象保留在所属线程；主线程按请求有界处理
+  workspace 通知，无空闲轮询。实机验证了服务已发现一次后新启动无窗口 fixture
+  的发现、会话准入、空窗口列表和退出后消失。
+- 新增 `application_scene` capture capability 与 `observe_application_scene`，
+  CLI/MCP 和三 SDK 同步。截图仅包含锚点所在显示器上的授权应用及同进程菜单，
+  AX 仍描述锚点窗口；跨进程辅助面板和多显示器联合场景尚未覆盖。
+  本机已观察到原生 popup，并用场景坐标点击 Menu Beta 使计数 0→1。
+- 台前调度已确认是必须处理的真实环境：用户看到窗口进入左侧栏，原生读取为
+  `AXMinimized=false`、AX 960×748、CG/SC 缩略图 104×134。不能把此状态当作标准
+  minimized，也不能仅因 AXMinimized=false 就报告 normal。
+- 显式 `focus_window` 先核验进程代际再激活，等待几何恢复后仅派发一次 raise；
+  读取绝不自动激活。本机恢复与恢复后的捕获连续 3/3 通过；标准最小化验收仍独立保留。
+- 会话关闭/到期保护传入原生执行线程，在派发前重新核验；长按和拖动中断后释放鼠标。
+  确定性测试覆盖预检期间关闭后不派发；实机三秒长按在确认按下后关闭会话，
+  23.5ms 后检测到释放，返回 `session_unavailable` / `indeterminate`。
+  此单次诊断不是停止延迟保证，也不代表宿主紧急停止或用户接管已完成。
+- presence/用户接管/紧急停止、完整窗口与显示器身份、动作后观察和 Nexus 三类真实
+  任务仍未完成；不得将本轮菜单诊断替代 Nexus 或 release 验收。
+
+#### 用户接管后续实现（2026-11-03）
+
+- macOS 前台授权会话在准入时安装只读事件监听，判断事件类型、来源 PID 和
+  自有合成标记。rc.3 仅额外保留有界的当前键/按钮按下状态、修饰键标志和最近输入时间，
+  不读取或保留按键文字、位置或事件历史。两次动作间的输入等待空闲并要求新观察，
+  不撤销原授权；原生动作执行中的输入锁定为 `user_active`，需用户明确继续后重新授权。
+- 原生线程在派发前及长动作中检查接管标志；停止后只释放已按下的合成输入。
+  事件源显式允许物理输入通过，关闭合成事件抑制。监听权限不足或失效则拒绝继续。
+- 本机实测外部进程鼠标事件中断通过；用户配合的真实鼠标长按中断也通过，并验证
+  同会话后续动作被拒绝。语音提示与人工反应时间计入脚本耗时，不能作为停止延迟。
+- 键盘/安全输入、多设备、宿主 UI 和完整平台验收仍需区分；本次不包含停止入口、
+  presence 或 Nexus 固定 SDK 版本接入。
+
+#### 性能与测试预发布（2026-11-03）
+
+- 热捕获流的动作前复核在原生串行队列上仅复制 32×32 个采样像素，保持原有
+  视觉指纹算法；完整观察仍保留正常截图。冷启动/一次性截图路径不在此次优化内。
+- `observe_after` 已进入 capability、Runtime、通用 MCP 动作和三 SDK；普通动作
+  不传该选项仍保持原行为。后续观察检查同一读权限，最多三次视觉采样后走正常
+  观察路径；观察失败单独返回 `observation_error`，不能据此重做已执行动作。
+- 新观察可作为下一次动作的 guard，旧观察始终作废；相同请求 ID 对账保留原结果。
+  性能脚本只报告有界 fixture 诊断，不替代长时间负载、用户接管或业务完成验收。
+- `v0.2.0-rc.1` 已作为 macOS Apple Silicon 测试预发布，源码固定于
+  `7af97507c55153d262c4dbfd14c7bfa5bdd52ce9`，附校验和、SBOM 和第三方声明；
+  不宣称正式签名/公证、干净机器、双平台或完整 release 验收。
+- Nexus `1cca54d53d13ead7fef36535202fb2d3dc9dcd05` 已固定同版本 Go SDK，
+  本地预览包嵌入发布的原始 runtime，使用独立 bundle ID 和数据目录。打包后真实
+  service→SDK→runtime 测试通过授权、截图交付、连续两步动作、重复请求对账和关闭；
+  本机设置页确认录屏、辅助功能和输入权限可用；独立预览包的启动、窗口路由与退出
+  smoke 通过。生产安装器的正式版本校验保持不变。
+- GLM-4.5 经实际 Nexus 聊天完成 fixture 两次语义按钮动作，动作后新观察与独立窗口
+  读取均确认每步计数加一，最后关闭会话。联调发现 Nexus 将截图 Base64 放入文本结果，
+  已改用 MCP image block，并清理持久化消息中的动作后截图和 AX 树。相同提示词的
+  两轮受控诊断由 30 次工具调用/222.9 秒变为 15 次/90.2 秒，后一次无工具错误；
+  耗时包含模型响应与人工授权等待，不是通用加速承诺，也不替代真实业务或完整平台验收。
+- 解锁桌面后，在同一本机、同一 fixture 上顺序执行三个各 12 次的诊断：基线
+  `7e5e261` 分开执行动作与观察的中位耗时为 254.36 ms；发布版相同路径为
+  209.22 ms；发布版合并接口包含有界稳定等待，为 303.55 ms。三个批次均核对
+  每步只增加一次计数，合并批次另核对相同请求 ID 不重复执行。样本不足以证明通用
+  加速比例，合并接口也不保证低于分开调用的总延迟。
 
 ## 24. 保留的技术文档
 
@@ -1648,3 +2359,11 @@ Goal 以 §22 为完成条件；不发布、不打 tag、不执行八小时 rele
 
 这些文档只负责各自技术细节，不能再引入另一套产品命名、安装 profile、Skill
 策略、路线图或发布逻辑。
+
+#### 台前调度恢复补充（rc.4）
+
+AX 窗口匹配在 restore/resize/raise 的首个原生写入之前失败时，必须返回
+`not_dispatched`；不能让宿主永久等待一个未执行动作的对账。匹配不到当前窗口时
+建议对同一窗口重新做纯元数据观察并明确 `focus_window`。激活应用之后再失败仍是
+`indeterminate`，不能降级为未派发。`validate_macos_stage_manager.py` 覆盖缩略状态
+下 restore 被拒后，沿用相同授权聚焦并重新截图；此诊断不替代完整发布验收。

@@ -1,0 +1,10 @@
+{
+  "protocol_version": "nexus.cua.v1",
+  "request_id": "fixture-removed-scroll-element",
+  "timeout_ms": 30000,
+  "authorization": "fixture-transport-token",
+  "command": {"operation": "perform_action", "input": {
+    "session_id": "session", "window_ref": "window", "observation_id": "observation",
+    "action": {"kind": "scroll", "point": {"x": 500, "y": 500}, "delta_x": 0, "delta_y": 100, "element_ref": null}
+  }}
+}

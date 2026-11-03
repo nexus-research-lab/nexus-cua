@@ -42,6 +42,8 @@ pub enum PolicyOperation {
     ListDisplays,
     /// Observe one guarded window.
     ObserveWindow,
+    /// Capture only an authorized application's scene on its anchor display.
+    ObserveApplicationScene,
     /// Capture one exact physical display.
     ObserveDisplay,
     /// Read bounded plain text from the system clipboard.
@@ -70,6 +72,7 @@ impl PolicyOperation {
             Command::ListWindows(_) => Self::ListWindows,
             Command::ListDisplays(_) => Self::ListDisplays,
             Command::ObserveWindow(_) => Self::ObserveWindow,
+            Command::ObserveApplicationScene(_) => Self::ObserveApplicationScene,
             Command::ObserveDisplay(_) => Self::ObserveDisplay,
             Command::ReadClipboard(_) => Self::ReadClipboard,
             Command::WriteClipboard(_) => Self::WriteClipboard,
@@ -505,7 +508,7 @@ fn require_unique<T: Eq + std::hash::Hash>(
 #[cfg(test)]
 mod tests {
     use nexus_cua_protocol::{
-        Action, Command, DeliveryPreference, PerformActionInput, PointerButton, ScreenshotPoint,
+        Action, Command, DeliveryPreference, NormalizedPoint, PerformActionInput, PointerButton,
         SensitiveText,
     };
 
@@ -513,6 +516,7 @@ mod tests {
 
     fn action_command(action: Action) -> Command {
         Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: nexus_cua_protocol::SessionId::new("session"),
             window_ref: nexus_cua_protocol::WindowRef::new("window"),
             observation_id: nexus_cua_protocol::ObservationId::new("observation"),
@@ -544,7 +548,7 @@ mod tests {
         assert!(
             stack
                 .authorize(&action_command(Action::ClickPoint {
-                    point: ScreenshotPoint { x: 0, y: 0 },
+                    point: NormalizedPoint { x: 0.0, y: 0.0 },
                     button: PointerButton::Left,
                     count: 1,
                     delivery: DeliveryPreference::Background,

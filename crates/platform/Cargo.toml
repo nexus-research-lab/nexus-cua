@@ -10,8 +10,8 @@ description = "Native desktop drivers for Nexus Computer Use Runtime"
 [dependencies]
 async-trait.workspace = true
 hex.workspace = true
-nexus-cua-protocol = { version = "0.1.0", path = "../protocol" }
-nexus-cua-runtime = { version = "0.1.0", path = "../runtime" }
+nexus-cua-protocol = { version = "0.2.0-rc.4", path = "../protocol" }
+nexus-cua-runtime = { version = "0.2.0-rc.4", path = "../runtime" }
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
@@ -21,16 +21,20 @@ zeroize.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 accessibility-sys = "0.2.0"
 block2 = "0.6.2"
+dispatch2 = "0.3.1"
 core-foundation = "0.10.1"
 core-graphics = { version = "0.25.0", features = ["elcapitan", "highsierra"] }
 foreign-types = "0.5.0"
 libc.workspace = true
 macos-accessibility-client = "0.0.2"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "block2", "NSApplication", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "block2", "NSApplication", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSWindow", "NSWorkspace"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGImage"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMSampleBuffer", "CMTime", "objc2-core-video"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVReturn", "CVBuffer", "CVImageBuffer", "CVPixelBuffer"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDate", "NSEnumerator", "NSError", "NSString", "NSURL"] }
-objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "objc2-core-graphics", "SCShareableContent", "SCScreenshotManager", "SCStream"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "dispatch2", "objc2-core-media", "objc2-core-foundation", "objc2-core-graphics", "SCShareableContent", "SCScreenshotManager", "SCStream"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = [

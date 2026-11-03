@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -46,6 +46,8 @@ pub(super) struct NativeWindow {
 
 #[derive(Clone, Debug)]
 pub(super) struct NativeDisplay {
+    pub(super) device_name: String,
+    pub(super) raw_monitor: isize,
     pub(super) key: String,
     pub(super) screen_bounds: ScreenRect,
     pub(super) primary: bool,
@@ -117,7 +119,7 @@ fn actor_loop(receiver: &Receiver<DiscoveryCommand>) {
     }
 }
 
-fn list_displays() -> Result<Vec<NativeDisplay>, DriverError> {
+pub(super) fn list_displays() -> Result<Vec<NativeDisplay>, DriverError> {
     let mut handles = Vec::<isize>::new();
     // SAFETY: EnumDisplayMonitors invokes the callback synchronously while the
     // uniquely borrowed Vec remains live.
@@ -148,23 +150,34 @@ unsafe extern "system" fn collect_monitor(
     // synchronous, so the Vec remains uniquely borrowed.
     let address = usize::from_ne_bytes(lparam.0.to_ne_bytes());
     let displays = unsafe { &mut *std::ptr::with_exposed_provenance_mut::<Vec<isize>>(address) };
+    if displays.len() >= 64 {
+        return false.into();
+    }
     displays.push(isize::from_ne_bytes(monitor.0.addr().to_ne_bytes()));
     true.into()
 }
 
 fn describe_display(raw_monitor: isize) -> Result<NativeDisplay, DriverError> {
     let monitor = HMONITOR(raw_monitor as *mut c_void);
-    let mut info = MONITORINFO {
-        cbSize: u32::try_from(size_of::<MONITORINFO>()).unwrap_or(u32::MAX),
-        ..Default::default()
-    };
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = u32::try_from(size_of::<MONITORINFOEXW>()).unwrap_or(u32::MAX);
     // SAFETY: GetMonitorInfoW copies metadata for the enumerated monitor into
     // the initialized fixed-size structure.
-    if !unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool() {
+    if !unsafe { GetMonitorInfoW(monitor, std::ptr::from_mut(&mut info).cast::<MONITORINFO>()) }
+        .as_bool()
+    {
         return Err(native_failure("GetMonitorInfoW failed"));
     }
-    let bounds = info.rcMonitor;
+    let bounds = info.monitorInfo.rcMonitor;
     Ok(NativeDisplay {
+        device_name: String::from_utf16_lossy(
+            &info.szDevice[..info
+                .szDevice
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(info.szDevice.len())],
+        ),
+        raw_monitor,
         key: format!("hmonitor:{:016x}", monitor.0.addr()),
         screen_bounds: ScreenRect {
             x: f64::from(bounds.left),
@@ -172,7 +185,7 @@ fn describe_display(raw_monitor: isize) -> Result<NativeDisplay, DriverError> {
             width: f64::from(bounds.right.saturating_sub(bounds.left)),
             height: f64::from(bounds.bottom.saturating_sub(bounds.top)),
         },
-        primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+        primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
     })
 }
 

@@ -569,6 +569,7 @@ fn operation_name(command: &Command) -> &'static str {
         Command::ListWindows(_) => "list_windows",
         Command::ListDisplays(_) => "list_displays",
         Command::ObserveWindow(_) => "observe_window",
+        Command::ObserveApplicationScene(_) => "observe_application_scene",
         Command::ObserveDisplay(_) => "observe_display",
         Command::ReadClipboard(_) => "read_clipboard",
         Command::WriteClipboard(_) => "write_clipboard",
@@ -611,6 +612,7 @@ fn response_status(response: &ResponseEnvelope) -> (&'static str, &'static str) 
 
 fn error_code_name(code: ErrorCode) -> &'static str {
     match code {
+        ErrorCode::UserActive => "user_active",
         ErrorCode::ProtocolMismatch => "protocol_mismatch",
         ErrorCode::Unauthorized => "unauthorized",
         ErrorCode::InvalidRequest => "invalid_request",
@@ -704,9 +706,12 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
             Ok(DriverCapabilities {
+                observe_after: false,
+                action_limits: nexus_cua_protocol::ActionLimits::default(),
                 protocol_version: PROTOCOL_VERSION.to_owned(),
                 runtime_version: "test".to_owned(),
                 platform: Platform::Unsupported,
+                primary_modifier: "unsupported".to_owned(),
                 capture_modes: vec![CaptureMode::Window],
                 accessibility_tree: false,
                 input_routes: vec![InputRoute::Foreground],
@@ -730,7 +735,7 @@ mod tests {
 
         async fn list_windows(
             &self,
-            _application_key: Option<&str>,
+            _application_keys: &[String],
         ) -> Result<Vec<DriverWindow>, DriverError> {
             Ok(Vec::new())
         }

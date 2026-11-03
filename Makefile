@@ -9,14 +9,15 @@ PACKAGE_FLAGS ?=
 PYTHON_PACKAGE_FLAGS ?=
 DEV_ROOT ?= .cache/dev
 SCHEMA_DIR ?= schemas/nexus.cua.v1
+PRODUCT_VERSION := $(shell $(PYTHON) -c 'import pathlib,re; print(re.search(r"(?m)^version = \"([^\"]+)\"$$", pathlib.Path("Cargo.toml").read_text()).group(1))')
 PACKAGE_ROOT := $(abspath target/package)
-PROTOCOL_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-protocol-0.1.0
-RUNTIME_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-runtime-0.1.0
-PLATFORM_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-platform-0.1.0
-TRANSPORT_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-transport-0.1.0
-CLI_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-0.1.0
-MCP_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-mcp-0.1.0
-PROVIDER_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-provider-0.1.0
+PROTOCOL_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-protocol-$(PRODUCT_VERSION)
+RUNTIME_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-runtime-$(PRODUCT_VERSION)
+PLATFORM_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-platform-$(PRODUCT_VERSION)
+TRANSPORT_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-transport-$(PRODUCT_VERSION)
+CLI_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-$(PRODUCT_VERSION)
+MCP_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-mcp-$(PRODUCT_VERSION)
+PROVIDER_PACKAGE := $(PACKAGE_ROOT)/nexus-cua-provider-$(PRODUCT_VERSION)
 NATIVE_HARNESS_MANIFEST := tools/native-harness/Cargo.toml
 NATIVE_ENDPOINT ?=
 NATIVE_TOKEN_FILE ?=
@@ -43,7 +44,7 @@ CODEX_SKILL ?=
 CODEX_PROVIDER_IDENTITY ?=
 CODEX_AUTHORITY_SCOPE ?=
 CODEX_COMMAND ?=
-CODEX_PRODUCT_VERSION ?= 0.1.0
+CODEX_PRODUCT_VERSION ?= $(PRODUCT_VERSION)
 CODEX_TIMEOUT_SECONDS ?= 900
 FIXTURE_CONFIGURATION ?= debug
 REMOTE_SOURCE_REVISION ?=
@@ -84,13 +85,13 @@ package: ## Build publishable crate source archives
 package-verify: package ## Compile each archive against this workspace's packaged dependencies
 	rm -rf "$(PROTOCOL_PACKAGE)" "$(RUNTIME_PACKAGE)" "$(PLATFORM_PACKAGE)" \
 		"$(TRANSPORT_PACKAGE)" "$(CLI_PACKAGE)" "$(MCP_PACKAGE)" "$(PROVIDER_PACKAGE)"
-	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-protocol-0.1.0.crate" -C "$(PACKAGE_ROOT)"
-	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-runtime-0.1.0.crate" -C "$(PACKAGE_ROOT)"
-	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-platform-0.1.0.crate" -C "$(PACKAGE_ROOT)"
-	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-transport-0.1.0.crate" -C "$(PACKAGE_ROOT)"
-	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-0.1.0.crate" -C "$(PACKAGE_ROOT)"
-	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-mcp-0.1.0.crate" -C "$(PACKAGE_ROOT)"
-	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-provider-0.1.0.crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-protocol-$(PRODUCT_VERSION).crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-runtime-$(PRODUCT_VERSION).crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-platform-$(PRODUCT_VERSION).crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-transport-$(PRODUCT_VERSION).crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-$(PRODUCT_VERSION).crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-mcp-$(PRODUCT_VERSION).crate" -C "$(PACKAGE_ROOT)"
+	tar -xzf "$(PACKAGE_ROOT)/nexus-cua-provider-$(PRODUCT_VERSION).crate" -C "$(PACKAGE_ROOT)"
 	cp Cargo.lock "$(PROTOCOL_PACKAGE)/Cargo.lock"
 	$(CARGO) check --manifest-path "$(PROTOCOL_PACKAGE)/Cargo.toml" --offline
 	$(CARGO) check --manifest-path "$(PROTOCOL_PACKAGE)/Cargo.toml" --locked --offline

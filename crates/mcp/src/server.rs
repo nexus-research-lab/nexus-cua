@@ -12,11 +12,11 @@ use clap::ValueEnum;
 use nexus_cua_protocol::{
     AccessibilityMode, Action, AppRef, ApplicationLifecycleOperation, AuthorizationToken,
     CapabilityManifest, ClipboardRef, Command, CommandResult, CuaError, DeliveryPreference,
-    DiscoveryRef, DisplayRef, ElementRef, LaunchApplicationInput, ListWindowsInput, ObservationId,
-    ObserveDisplayInput, ObserveWindowInput, OpenSessionInput, PROTOCOL_VERSION,
-    PerformActionInput, PixelSize, PointerButton, ReadClipboardInput, RequestEnvelope, RequestId,
-    ResponseOutcome, ScreenshotMapping, ScreenshotPoint, SensitiveText, SessionId, SessionInput,
-    StatePredicate, VerifyStateInput, WindowRef, WriteClipboardInput,
+    DiscoveryRef, DisplayRef, ElementRef, LaunchApplicationInput, ListWindowsInput,
+    NormalizedPoint, ObservationId, ObserveDisplayInput, ObserveWindowInput, OpenSessionInput,
+    PROTOCOL_VERSION, PerformActionInput, PixelSize, PointerButton, ReadClipboardInput,
+    RequestEnvelope, RequestId, ResponseOutcome, ScreenshotMapping, ScreenshotPoint, SensitiveText,
+    SessionId, SessionInput, StatePredicate, VerifyStateInput, WindowRef, WriteClipboardInput,
 };
 use nexus_cua_runtime::Runtime;
 use nexus_cua_transport::Dispatcher;
@@ -111,6 +111,7 @@ struct RegionView {
     observation_id: ObservationId,
     window_ref: WindowRef,
     source_rect: PixelRect,
+    source_size: PixelSize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -388,6 +389,18 @@ impl NexusCuaMcp {
         observation_id: ObservationId,
         action: Action,
     ) -> Result<CallToolResult, McpError> {
+        self.dispatch_action_observed(request_id, window_ref, observation_id, action, None)
+            .await
+    }
+
+    async fn dispatch_action_observed(
+        &self,
+        request_id: RequestId,
+        window_ref: WindowRef,
+        observation_id: ObservationId,
+        action: Action,
+        observe_after: Option<nexus_cua_protocol::ObserveAfterOptions>,
+    ) -> Result<CallToolResult, McpError> {
         let _operation = self.operation_lock.lock().await;
         let session_id = match self.session_id().await {
             Ok(session_id) => session_id,
@@ -397,6 +410,7 @@ impl NexusCuaMcp {
             .execute_mutation(
                 request_id.clone(),
                 Command::PerformAction(PerformActionInput {
+                    observe_after,
                     session_id,
                     window_ref: window_ref.clone(),
                     observation_id,
@@ -406,15 +420,70 @@ impl NexusCuaMcp {
             .await
         {
             Ok(CommandResult::ActionPerformed(output)) => {
-                self.image_mappings
-                    .lock()
-                    .await
-                    .invalidate_window(&window_ref);
-                mutation_structured(&request_id, &output)
+                self.action_result(&request_id, &window_ref, output).await
             }
             Ok(_) => Err(unexpected_result()),
             Err(error) => Ok(error),
         }
+    }
+
+    async fn action_result(
+        &self,
+        request_id: &RequestId,
+        window_ref: &WindowRef,
+        mut output: nexus_cua_protocol::ActionOutput,
+    ) -> Result<CallToolResult, McpError> {
+        let mut image = None;
+        if let Some(observation) = &mut output.observation {
+            if let Some(screenshot) = &observation.screenshot {
+                let cached = {
+                    let mut mappings = self.image_mappings.lock().await;
+                    let cached = mappings.get(&observation.observation_id, window_ref);
+                    mappings.invalidate_window(window_ref);
+                    cached
+                };
+                let bytes = if let Some(cached) = cached {
+                    Ok(cached.bytes.to_vec())
+                } else {
+                    self.runtime
+                        .take_artifact(screenshot, self.max_image_bytes)
+                        .await
+                };
+                match bytes {
+                    Ok(bytes) => {
+                        image = Some(ContentBlock::image(
+                            base64::engine::general_purpose::STANDARD.encode(&bytes),
+                            screenshot.mime_type.clone(),
+                        ));
+                        self.image_mappings.lock().await.insert(
+                            observation.observation_id.clone(),
+                            window_ref.clone(),
+                            screenshot.mapping,
+                            bytes,
+                        );
+                    }
+                    Err(error) => {
+                        output.observation_error = Some(error);
+                        observation.screenshot = None;
+                    }
+                }
+            } else {
+                self.image_mappings
+                    .lock()
+                    .await
+                    .invalidate_window(window_ref);
+            }
+        } else {
+            self.image_mappings
+                .lock()
+                .await
+                .invalidate_window(window_ref);
+        }
+        let mut result = mutation_structured(request_id, &output)?;
+        if let Some(image) = image {
+            result.content.push(image);
+        }
+        Ok(result)
     }
 
     async fn rebuild_session(&self) -> Result<(), CallToolResult> {
@@ -580,6 +649,9 @@ struct ObserveWindowArgs {
     include_screenshot: Option<bool>,
     /// Semantic detail: disabled, interactive, or full. Defaults to interactive.
     accessibility: Option<AccessibilityMode>,
+    /// On capable platforms, include this application's menus and popups on
+    /// the anchor display. Other applications are excluded. Defaults to false.
+    application_scene: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -598,6 +670,8 @@ struct WriteClipboardArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PerformActionArgs {
+    /// Return a fresh same-target observation without a second tool call.
+    observe_after: Option<nexus_cua_protocol::ObserveAfterOptions>,
     /// Stable host-generated mutation identity; preserve it for reconciliation.
     #[schemars(length(min = 1, max = 128))]
     request_id: String,
@@ -611,7 +685,7 @@ struct PerformActionArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct TerminateApplicationArgs {
+struct GuardedWindowArgs {
     /// Stable host-generated mutation identity; preserve it for reconciliation.
     #[schemars(length(min = 1, max = 128))]
     request_id: String,
@@ -753,6 +827,12 @@ struct GuardedScrollArgs {
     window_ref: String,
     /// Fresh guard returned by the last `observe_window` call.
     observation_id: String,
+    /// Horizontal target coordinate in 0..1000.
+    #[schemars(range(min = 0, max = 1000))]
+    x: u32,
+    /// Vertical target coordinate in 0..1000.
+    #[schemars(range(min = 0, max = 1000))]
+    y: u32,
     /// Horizontal logical scroll delta.
     #[schemars(range(min = -100_000.0, max = 100_000.0))]
     delta_x: f64,
@@ -1266,7 +1346,7 @@ impl NexusCuaMcp {
 
     #[tool(
         name = "observe_window",
-        description = "Observe one exact window. Returns structured accessibility state and, by default, a verified PNG image block. Every call supersedes older observations for that window.",
+        description = "Observe one exact window, or set application_scene=true on a capable platform to include that application's menus and popups on its anchor display. Other applications are excluded. Accessibility describes the anchor window; visual coordinates always refer to the returned screenshot mapping. Every call supersedes older observations for the anchor.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -1282,12 +1362,17 @@ impl NexusCuaMcp {
             Ok(session_id) => session_id,
             Err(error) => return Ok(error),
         };
-        let command = Command::ObserveWindow(ObserveWindowInput {
+        let input = ObserveWindowInput {
             session_id,
             window_ref: WindowRef::new(args.window_ref),
             include_screenshot: args.include_screenshot.unwrap_or(true),
             accessibility: args.accessibility.unwrap_or(AccessibilityMode::Interactive),
-        });
+        };
+        let command = if args.application_scene.unwrap_or(false) {
+            Command::ObserveApplicationScene(input)
+        } else {
+            Command::ObserveWindow(input)
+        };
         let observation = match self.execute(command).await {
             Ok(CommandResult::WindowObserved(observation)) => observation,
             Ok(_) => return Err(unexpected_result()),
@@ -1295,7 +1380,7 @@ impl NexusCuaMcp {
         };
         let structured_content = public_observation_value(observation.as_ref())?;
         let mut summary = format!(
-            "Observed window {} at {}; {} accessibility element(s).",
+            "Observed anchor window {} at {}; {} accessibility element(s). Use the screenshot mapping for visual coordinates.",
             observation.window_ref,
             observation.captured_at,
             observation.elements.len()
@@ -1400,6 +1485,7 @@ impl NexusCuaMcp {
                 observation_id: observation_id.clone(),
                 window_ref: window_ref.clone(),
                 source_rect,
+                source_size,
             },
         );
         let crop_size = PixelSize {
@@ -1446,11 +1532,35 @@ impl NexusCuaMcp {
         &self,
         Parameters(args): Parameters<PerformActionArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch_action(
+        self.dispatch_action_observed(
             RequestId::new(args.request_id),
             WindowRef::new(args.window_ref),
             ObservationId::new(args.observation_id),
             args.action,
+            args.observe_after,
+        )
+        .await
+    }
+
+    #[tool(
+        name = "focus_window",
+        description = "Explicitly activate and focus the authorized anchor window. Requires foreground authority. For an inactive or Stage Manager window, obtain a guard with observe_window(include_screenshot=false, accessibility=disabled), then focus and re-observe. Observation never activates implicitly.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn focus_window(
+        &self,
+        Parameters(args): Parameters<GuardedWindowArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch_action(
+            RequestId::new(args.request_id),
+            WindowRef::new(args.window_ref),
+            ObservationId::new(args.observation_id),
+            Action::FocusWindow,
         )
         .await
     }
@@ -1467,7 +1577,7 @@ impl NexusCuaMcp {
     )]
     async fn terminate_application(
         &self,
-        Parameters(args): Parameters<TerminateApplicationArgs>,
+        Parameters(args): Parameters<GuardedWindowArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.dispatch_action(
             RequestId::new(args.request_id),
@@ -1511,7 +1621,7 @@ impl NexusCuaMcp {
             .lock()
             .await
             .get(&observation_id, &window_ref);
-        let Some(image) = image else {
+        let Some(_image) = image else {
             return Ok(adapter_tool_error(
                 "stale_observation",
                 "normalized click requires this MCP process's current screenshot observation",
@@ -1519,7 +1629,10 @@ impl NexusCuaMcp {
                 Some("observe_window"),
             ));
         };
-        let point = normalized_point(args.x, args.y, image.mapping.pixel_size);
+        let point = NormalizedPoint {
+            x: f64::from(args.x),
+            y: f64::from(args.y),
+        };
         self.dispatch_action(
             RequestId::new(args.request_id),
             window_ref,
@@ -1569,7 +1682,9 @@ impl NexusCuaMcp {
                 Some("observe_window"),
             ));
         };
-        let point = normalized_view_point(args.x, args.y, view.source_rect);
+        let pixel = normalized_view_point(args.x, args.y, view.source_rect);
+        let point = NormalizedPoint::from_pixel(pixel, view.source_size)
+            .ok_or_else(|| McpError::invalid_params("invalid zoom mapping", None))?;
         self.dispatch_action(
             RequestId::new(args.request_id),
             view.window_ref,
@@ -1651,7 +1766,10 @@ impl NexusCuaMcp {
             WindowRef::new(args.window_ref),
             ObservationId::new(args.observation_id),
             Action::Scroll {
-                element_ref: None,
+                point: NormalizedPoint {
+                    x: f64::from(args.x),
+                    y: f64::from(args.y),
+                },
                 delta_x: args.delta_x,
                 delta_y: args.delta_y,
             },
@@ -1695,7 +1813,7 @@ impl NexusCuaMcp {
             .lock()
             .await
             .get(&observation_id, &window_ref);
-        let Some(image) = image else {
+        let Some(_image) = image else {
             return Ok(adapter_tool_error(
                 "stale_observation",
                 "normalized drag requires this MCP process's current screenshot observation",
@@ -1703,14 +1821,19 @@ impl NexusCuaMcp {
                 Some("observe_window"),
             ));
         };
-        let size = image.mapping.pixel_size;
         self.dispatch_action(
             RequestId::new(args.request_id),
             window_ref,
             observation_id,
             Action::Drag {
-                from: normalized_point(args.from_x, args.from_y, size),
-                to: normalized_point(args.to_x, args.to_y, size),
+                from: NormalizedPoint {
+                    x: f64::from(args.from_x),
+                    y: f64::from(args.from_y),
+                },
+                to: NormalizedPoint {
+                    x: f64::from(args.to_x),
+                    y: f64::from(args.to_y),
+                },
                 duration_ms: args.duration_ms.unwrap_or(500),
             },
         )
@@ -1901,6 +2024,7 @@ fn mutation_structured(
 ) -> Result<CallToolResult, McpError> {
     let mut value = serde_json::to_value(value)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    remove_private_artifact_path(&mut value);
     let Some(object) = value.as_object_mut() else {
         return Err(McpError::internal_error(
             "mutation result must serialize as an object",
@@ -1921,13 +2045,6 @@ fn valid_adapter_request_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
-}
-
-fn normalized_point(x: u16, y: u16, size: PixelSize) -> ScreenshotPoint {
-    ScreenshotPoint {
-        x: normalized_axis(x, size.width),
-        y: normalized_axis(y, size.height),
-    }
 }
 
 fn normalized_view_point(x: u16, y: u16, rect: PixelRect) -> ScreenshotPoint {
@@ -2060,6 +2177,9 @@ fn public_observation_value(observation: &impl Serialize) -> Result<Value, McpEr
 }
 
 fn remove_private_artifact_path(value: &mut Value) {
+    if let Some(observation) = value.get_mut("observation") {
+        remove_private_artifact_path(observation);
+    }
     if let Some(screenshot) = value.get_mut("screenshot").and_then(Value::as_object_mut) {
         screenshot.remove("path");
     }
@@ -2341,6 +2461,27 @@ mod tests {
     }
 
     #[test]
+    fn mutation_observation_hides_the_private_artifact_path() {
+        let result = mutation_structured(
+            &RequestId::new("action_test"),
+            &json!({
+                "dispatched": true,
+                "observation": {"screenshot": {
+                    "artifact_ref": "artifact_test", "path": "/private/artifact.png"
+                }}
+            }),
+        )
+        .unwrap();
+        let value = result.structured_content.unwrap();
+        assert!(value["observation"]["screenshot"].get("path").is_none());
+        assert_eq!(
+            value["observation"]["screenshot"]["artifact_ref"],
+            "artifact_test"
+        );
+        assert_eq!(value["dispatched"], true);
+    }
+
+    #[test]
     fn image_cache_enforces_an_aggregate_byte_ceiling() {
         let mapping = ScreenshotMapping {
             screen_bounds: ScreenRect {
@@ -2372,23 +2513,6 @@ mod tests {
         assert_eq!(cache.entries.len(), 1);
         assert_eq!(cache.cached_bytes, image_bytes as u64);
         assert!(cache.cached_bytes <= MAX_CACHED_IMAGE_BYTES);
-    }
-
-    #[test]
-    fn normalized_points_cover_the_exact_image_without_resize_assumptions() {
-        let size = PixelSize {
-            width: 1_920,
-            height: 1_504,
-        };
-        assert_eq!(normalized_point(0, 0, size), ScreenshotPoint { x: 0, y: 0 });
-        assert_eq!(
-            normalized_point(500, 500, size),
-            ScreenshotPoint { x: 960, y: 752 }
-        );
-        assert_eq!(
-            normalized_point(1_000, 1_000, size),
-            ScreenshotPoint { x: 1_919, y: 1_503 }
-        );
     }
 
     #[test]

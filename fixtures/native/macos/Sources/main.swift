@@ -7,6 +7,7 @@ private let secureSentinel = "fixture-secret"
 final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     NSTableViewDataSource, NSTableViewDelegate
 {
+    private let backgroundDiagnostics = ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_BACKGROUND"] == "1"
     private var generation = 1
     private var counter = 0
     private var checked = false
@@ -30,6 +31,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     private let choices = ["Alpha", "Beta", "Gamma"]
     private var window: NSWindow?
     private var occluderWindow: NSWindow?
+    private var discoveryWindows: [NSWindow] = []
     private var textField: NSTextField!
     private var rangeSlider: NSSlider!
     private var stateLabel: NSTextField!
@@ -38,8 +40,20 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
-        createWindow()
-        NSApp.activate(ignoringOtherApps: true)
+        if ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_WINDOWLESS"] != "1" {
+            createWindow()
+        }
+        if ProcessInfo.processInfo.environment["NEXUS_CUA_FIXTURE_DISCOVERY"] == "1" {
+            for index in 1...80 {
+                let extra = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 320, height: 180), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                extra.title = "Discovery Fixture \(index)"
+                extra.setAccessibilityTitle("Different Accessibility Title \(index)")
+                extra.isReleasedWhenClosed = false
+                extra.orderBack(nil)
+                discoveryWindows.append(extra)
+            }
+        }
+        if !backgroundDiagnostics { NSApp.activate(ignoringOtherApps: true) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -123,8 +137,12 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         if captureProfile != nil {
             window.setFrame(frame, display: false, animate: false)
         }
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        if backgroundDiagnostics {
+            window.orderBack(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
         self.window = window
         updateState()
     }
@@ -178,7 +196,12 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             action: #selector(hangDuringInvoke)
         )
         let desktopRow = row([minimize, occluder])
-        let displayRow = row([nextDisplay])
+        let menuChoice = NSPopUpButton(frame: .zero, pullsDown: false)
+        menuChoice.addItems(withTitles: ["Menu Alpha", "Menu Beta", "Menu Gamma"])
+        menuChoice.setAccessibilityLabel("Fixture Popup Menu")
+        menuChoice.target = self
+        menuChoice.action = #selector(selectPopup(_:))
+        let displayRow = row([nextDisplay, menuChoice])
         let faultRow = row([hangBeforeMutation, hangDuringInvoke])
 
         let textCaption = label("Fixture Text")
@@ -319,6 +342,10 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         stateLabel.identifier = NSUserInterfaceItemIdentifier("fixture.state")
         stateLabel.maximumNumberOfLines = 2
         stateLabel.lineBreakMode = .byWordWrapping
+        // State text changes during every probe. It must wrap inside the fixture,
+        // not resize the window and invalidate an unrelated observation guard.
+        stateLabel.preferredMaxLayoutWidth = 340
+        stateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let left = columnView([
             title,
@@ -450,6 +477,13 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
 
     @objc private func minimizeWindow() {
         window?.miniaturize(nil)
+    }
+
+    @objc private func selectPopup(_ sender: NSPopUpButton) {
+        if sender.titleOfSelectedItem == "Menu Beta" {
+            counter += 1
+            updateState()
+        }
     }
 
     @objc private func toggleOccluder() {

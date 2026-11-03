@@ -1,5 +1,74 @@
 # Platform Validation
 
+## Windows readiness review (2026-11-03)
+
+Source reviewed: `6e00e2fab9b6394d1bdb6f90d0b4bed274787fce` (rc.4).
+The [source CI](https://github.com/nexus-research-lab/nexus-cua/actions/runs/41610981684)
+passes, including Windows compilation and contracts. It is not interactive
+Windows desktop acceptance. The reachable Windows 11 build 26300 test machine
+still has a `0.1.0` diagnostic binary; its old reports cannot validate rc.4.
+No Windows driver change or fresh native run was made during this review.
+
+The last saved native fixture run reached semantic input, pointer movement and
+foreground click, then failed the background-click effect check: the expected
+counter increment did not occur. Earlier WGC timeout and UIA cache failures are
+separate historical results, not proof that the current source still fails there.
+
+Work required before Windows can follow the accepted Mac product path:
+
+1. **Native cancellation and user activity.** `WindowsDriver` inherits the default
+   `perform_action_scoped`, which checks authority only before the async call.
+   Its input/UIA actors do not receive `DriverActionGuard`; there is no Windows
+   activity monitor or between-action idle recovery. Carry the guard into native
+   dispatch and bounded input chunks, release held inputs on interruption, and
+   validate close/expiry/stop and physical-input takeover. Keep native objects on
+   their owning actors and keep pre-dispatch versus indeterminate evidence exact.
+2. **Background effect and foreground activation.** Background pointer messages
+   currently go to the top-level HWND; successful `PostMessageW` is only delivery
+   evidence. Reproduce on a pinned build, establish the intended native recipient
+   for supported targets, and verify the fixture effect without a foreground
+   fallback. Nexus has no explicit `AllowSetForegroundWindow` handoff to the CUA
+   sidecar; validate or implement that host handoff with real packaged processes.
+3. **Observation capabilities.** Windows advertises `observe_after=false` and
+   window/display capture only. Add bounded settling and post-action reads if
+   enabling `observe_after`. Same-application scene capture remains unsupported;
+   do not claim it through a desktop screenshot fallback.
+4. **Pinned product acceptance.** Build runtime, harness and fixture from one
+   revision, run on an unlocked interactive desktop, then bundle a Windows Nexus
+   preview with the matching SDK. Cover window restore/replacement, mixed DPI,
+   keyboard/text input, permissions/UIPI, resource release and complete app tasks.
+   The maintained Windows runner manifest is still an unassigned example; Windows
+   release packaging, signing and clean-machine acceptance remain separate gates.
+
+The next native baseline must use the pinned source rather than the existing old
+binary. Prioritize cancellation/takeover before claiming ordinary Windows use is
+ready. These are implementation and acceptance gaps, not a percentage estimate.
+
+## Earlier implementation review (2026-11-02)
+
+The macOS session-owned ScreenCaptureKit stream passes source checks and the
+core native fixture path, including window replacement and session expiry.
+Full native acceptance remains blocked at minimization: an independent fixture
+probe also did not enter the minimized state without a runtime or capture stream.
+System recording-indicator visibility, native stream-release latency, memory
+budgets, application scenes, and user takeover are not yet accepted.
+
+`desktop-conditions` runs only occlusion/minimization with semantic authority and
+foreground input disabled. Set `NEXUS_CUA_FIXTURE_BACKGROUND=1` when launching the
+macOS fixture to avoid activating it; this diagnostic is partial evidence only.
+
+Windows GNU 1.88 workspace Clippy and platform tests pass with LLVM-MinGW
+`ld.lld` and `-C linker-flavor=ld.lld -C link-self-contained=yes`. The full
+workspace test rerun passes after the remote fixture honors reconciliation waits
+and confirms response framing before dropping the disconnected request. A TLS
+flush alone did not prove admission on Windows; no mutation replay was added.
+Interactive display capture now passes in the C12 candidate on Windows 11
+build 26300. Full validation stops at initial window observation with
+`TargetUnresponsive: UI Automation cache build failed`. Earlier window-only
+diagnostics also lacked fixture invocation semantics; Windows native acceptance
+remains open.
+Neither source tests nor the window-only diagnostic establish native acceptance.
+
 ## Codex MCP dogfood
 
 On 2026-08-27, Codex CLI `0.149.0` loaded the project-scoped local
@@ -265,6 +334,18 @@ full native action acceptance that depends on it.
 
 ### Deterministic Windows fixture
 
+For a fresh run, build the workspace, standalone harness and WPF fixture, then
+run `tools/native-harness/run-windows-validation.ps1` in the logged-in desktop
+session. SSH can prepare builds, but its service session cannot validate desktop
+input. If launching through Task Scheduler, use the existing user's interactive
+token and remove the temporary task afterwards. The runner uses a unique pipe,
+token and evidence directory, bounds validation to 180 seconds by default, and
+removes transient captures and its token even on failure. It retains only
+metadata reports under `target/native-evidence/windows-validation`.
+
+The historical results below predate the normalized-coordinate contract and do
+not establish acceptance for the current revision.
+
 The self-contained WPF fixture and standalone harness completed the production
 named-pipe path as the interactive console user. The strict run proved:
 
@@ -399,3 +480,201 @@ The current snapshot does not establish release support. Current acceptance stil
 
 See the [complete product PRD](PRD.zh-CN.md) for ordering and
 [runtime contract](specs/runtime-contract-v1.md) for the normative gates.
+
+C5: command/deadline wake-up and full-queue revocation have deterministic tests.
+Five-minute native idle sampling and 100 ms native stop completion are pending.
+
+C1: permission-free enrichment, 80-window retention, identity failure and shared
+timeout are covered deterministically. Set `NEXUS_CUA_FIXTURE_DISCOVERY=1` to
+create 80 extra windows with different AX titles. Real permission-revocation and
+this native discovery profile remain pending; tests do not establish acceptance.
+
+C2: deterministic stream-state tests cover static cached frames, delegate-style
+stop invalidation and first-frame fallback selection. Native five-second idle,
+content-update latency, p95 latency, and window-close release remain pending.
+
+C8: exhaustive per-axis round trips cover 3840×2160, 1366×768 and 1×1 images.
+Nonfinite/out-of-bounds rejection is tested. Native 4× zoom on a 4×4 pixel
+target is pending; arithmetic tests alone do not establish input acceptance.
+
+C6: Mac full native validation now passes core actions, window replacement and
+session expiry after replacing CG rectangle ordering with AppKit mouse-down hit
+testing. The 31-second run stops at fixture minimization, so full acceptance is
+not claimed. The earlier pointer failure was reproduced with a full-screen Dock
+window (layer 20) above ordinary apps; a content-free AppKit probe correctly hit
+the underlying app. There is no process-name or layer bypass. Main-thread requests
+are capped at 16 with a 250ms deadline; input dispatch remains serialized.
+Native same-process menu and custom-view scrolling coverage is still pending.
+
+## C4 capture conversion and output budget (2026-11-02)
+
+Source changes retain only the latest native macOS pixel buffer on the serial
+output queue and convert pixels on demand. Both stream and one-shot macOS capture
+use the configured image edge (default 1568). The artifact encoder emits RGB PNG
+and applies a bounded resize fallback for Windows native-size capture.
+Deterministic tests cover output dimensions, RGB encoding, alpha compositing,
+and screen mapping. Native 60-second video CPU, 4K encoded size, and scaled
+coordinate hit acceptance are pending; source tests do not establish these.
+
+## C12 Windows monitor diagnostics (2026-11-02)
+
+The driver re-enumerates at most 64 monitors on the capture actor, rejects
+changed bounds or absent handles, verifies process PMv2 DPI awareness and checks
+WGC support. It never falls back to a legacy capture API.
+`cargo run -p nexus-cua-platform --example wgc_probe` is a content-free diagnostic
+for an interactive console session. On Windows 11 build 26300 it reported PMv2
+and WGC supported, successful foreground-window creation (1734×927), and valid
+DISPLAY1 monitor creation (3840×2560). The full candidate passed display overview
+before failing initial UIA cache construction. This does not establish the
+original E_INVALIDARG root cause or acceptance of subsequent window actions.
+Local full make check and Windows GNU 1.88 workspace Clippy/tests passed.
+
+## Static capture timing on the local optimized candidate (2026-11-02)
+
+With foreground input disabled and accessibility disabled, a background fixture
+remained observable after five seconds without content changes. Twenty subsequent
+observations measured p50 100.37ms, p95 103.60ms, max 104.13ms. PNG output was
+1568×1222, at most 167871 bytes; no PNG remained after session close. This is a
+local optimized-build diagnostic, not release-runner acceptance, a 4K-video CPU
+measurement, or proof of the 100ms native stream-stop bound. The corresponding
+debug run measured p95 816.60ms and is not used for performance acceptance.
+
+## C5 idle resource diagnostic (2026-11-02)
+
+The local optimized sidecar ran for 300.04 seconds without sessions or operations.
+The native harness sampled CPU at 0.0%; file descriptors stayed at 22. Physical
+footprint moved from 8,930,024 to 8,946,432 bytes without a monotonic-growth signal.
+The idle CPU and resource gates passed. No qualified runner manifest was supplied,
+so this remains diagnostic evidence and does not establish native stream release
+within 100ms after session close.
+
+## Mac minimization isolation (2026-11-02)
+
+A fresh full run still passed core actions, replacement and session expiry before
+stopping at fixture minimization. An independent minimal AppKit application also
+reported `isMiniaturized=false` after `miniaturize(nil)`, both with and without
+`canJoinAllSpaces`, and with direct versus LaunchServices startup. This rules out
+a failure exclusive to the runtime path; it does not identify the machine or
+AppKit cause. The minimized-window acceptance check remains required and failing.
+
+## Windows UIA and post-mutation capture fixes (2026-11-02)
+
+Native validation exposed missing cached UIA pattern properties: adding a pattern
+alone does not materialize its values. The request now includes the range,
+toggle, selection and expansion properties consumed by the cache-only readers.
+The subsequent native run passed these semantic scenarios.
+
+The run then repeatedly timed out after pointer movement: WGC need not emit a
+frame when cursor capture is disabled and pixels do not change. A changed mutation
+generation now replaces the target capture session before its first observation,
+avoiding both stale queued frames and dependence on a new dirty region. Frame
+draining is capped at the two-buffer pool. This adds session-start cost after
+mutations; its steady-state action latency has not yet been benchmarked.
+
+With both fixes on the current source, display capture, semantic controls, pointer
+movement and foreground click passed. Validation then stopped because background
+click did not increment the fixture counter. Full Windows native acceptance is
+still open. Workspace Clippy and builds passed on GNU Rust 1.88; local full
+`make check` passed. The harness now retries transient observation failures at
+most three times, fails immediately on driver errors and reports phase/request
+metadata; mismatch errors no longer dump fixture accessibility state.
+
+## macOS application discovery and scenes (2026-11-03, in progress)
+
+The current local worktree adds system application discovery independent of
+windows and capability-negotiated application-scene capture. Live diagnostics
+confirmed a newly started windowless fixture can be discovered and admitted
+into a read-only session after an earlier discovery snapshot; its window list
+is empty, and exit removes its old generation. Workspace notifications are
+processed on the bounded main-thread discovery path without idle polling.
+
+A live application-scene screenshot displayed the fixture's native popup menu
+while excluding other applications and the desktop. A scene-coordinate click
+on `Menu Beta` incremented the fixture counter from zero to one. Screenshots
+were removed by session close. This is a local diagnostic, not Nexus task 3/3
+acceptance, cross-process helper coverage, or a release-runner performance claim.
+Runtime tests cover cross-session anchor rejection, scene background-click
+rejection, closed-session rejection and screenshot cleanup. All SDK fixture
+checks include the new observation operation.
+
+The user confirmed the visible fixture moves into Stage Manager's left strip.
+Read-only native diagnostics found `AXMinimized=false`, AX size 960×748, and
+CG/ScreenCaptureKit size 104×134 for the transformed thumbnail. This explains
+why the old test's requirement for standard minimization did not describe the
+observed behavior; it does not prove standard minimization acceptance.
+
+Stage Manager recovery now explicitly activates the authorized app before
+waiting for AX/CG geometry to converge and raising once. Cached AX state must
+revalidate geometry before reporting a non-minimized window as normal. An early
+live cycle exposed transient blank/suspended capture frames after restoration;
+the bounded recovery now passes three consecutive local cycles with
+`scripts/validate_macos_stage_manager.py`. No desktop preference has been changed.
+
+## macOS session revocation during dispatch (2026-11-03)
+
+Runtime-issued session guards now cross the native actor queues and check close
+and expiry immediately before mutation. A deterministic runtime test pauses
+native preflight, closes the session, and verifies no later dispatch. Guard tests
+distinguish rejection before dispatch from cancellation after partial effects.
+
+`scripts/validate_macos_cancellation.py` observed a real button-down during a
+three-second fixture press, closed the session through a separate client, and
+observed release after 23.5 ms on this machine. The SDK reported session
+unavailable with indeterminate mutation status. This single local measurement
+is not a latency guarantee. The script releases its session and retains no
+screenshots. At this checkpoint, user takeover detection, presence and host
+emergency-stop UI remained unimplemented; session close does not undo already
+delivered input. The next section records the subsequent takeover work.
+
+## macOS user takeover (2026-11-03, local validation)
+
+Foreground-enabled sessions now register content-free passive input monitoring
+at admission. Other-origin input latches `user_active`; native queues and ongoing
+holds, drags, text chunks and key-down dispatches recheck the session guard.
+Subsequent actions stay blocked until a new host grant. Own generated events are
+excluded using both their source PID and event marker. Missing monitoring
+permission, disabled taps and monitor loss fail closed.
+
+The first live foreign-process mouse probe interrupted a three-second hold and
+rejected a subsequent action in the same session. Initial physical-input trials
+did not establish interruption. Native readback found private source filter masks
+of zero for both interval and drag suppression, with a 0.25-second interval.
+The implementation now explicitly permits all physical input classes and sets
+the suppression interval to zero; a native unit test reads back that policy.
+Further trials were stopped before dispatch by actual mouse input during setup;
+the user then clarified that audio cues had been muted.
+
+With audible countdown and the corrected source, the user moved the physical
+mouse during a ten-second fixture hold. The probe passed: the action returned
+`user_active` / `indeterminate`, the button released, and a subsequent window
+action returned `user_active` / `not_dispatched`. The 6359.5 ms printed duration
+includes spoken cues and human response time and is not cancellation latency.
+This validates one local physical-mouse scenario, not keyboard/secure-input
+coverage, all device types, Nexus UI integration or full platform acceptance.
+
+Own-input regression then passed Command+A followed by text replacement in the
+fixture, with AX readback confirming the expected value and no false takeover.
+This exposed and fixed a modifier-release planning issue: CoreGraphics creates
+`FlagsChanged` for both modifier press and release, so chord dispatch now tracks
+the intended down/up state explicitly. The reproducible entry point is
+`scripts/validate_macos_input_isolation.py`; the interruption entry point is
+`scripts/validate_macos_takeover.py` (`--manual` for physical input with voice cues).
+Final `make check` passed, including SDK error fixtures, guard-latch/preflight
+tests and native physical-input suppression-policy readback.
+
+
+## 2026-11-03 real Chrome window identity regression
+
+A bounded real-app check found that Chrome's profile picker exposes different
+CG and AX titles for the same native window number and geometry. The published
+rc.1 binary rejected its observation. The corrected driver accepted that exact
+window, returned a screenshot and all 33 AX nodes, and rejected it while its
+Stage Manager geometry was transformed until an explicit authorized focus.
+A subsequent old/new comparison against the same foreground window reproduced
+the rc.1 rejection and corrected observation success. No profile was selected
+and no browser text was entered. Contents and screenshots were not logged.
+
+The optional AX-to-CG system bridge retains a strict title/geometry fallback
+when unavailable. Regression tests cover mismatched native IDs, conflicting
+fallback titles, and missing/transformed geometry. This is one browser window
+on one Mac, not general browser-task or production acceptance.

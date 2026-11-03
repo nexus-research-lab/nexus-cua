@@ -7,7 +7,7 @@ import (
 
 func TestMarshalPressPointUsesClosedWireVariant(t *testing.T) {
 	payload, err := marshalAction(PressPoint{
-		Point: ScreenshotPoint{X: 12, Y: 34}, Button: PointerRight, DurationMS: 750,
+		Point: NormalizedPoint{X: 12, Y: 34}, Button: PointerRight, DurationMS: 750,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -19,7 +19,7 @@ func TestMarshalPressPointUsesClosedWireVariant(t *testing.T) {
 
 func TestMarshalBackgroundClickUsesClosedDelivery(t *testing.T) {
 	payload, err := marshalAction(ClickPoint{
-		Point:    ScreenshotPoint{X: 12, Y: 34},
+		Point:    NormalizedPoint{X: 12, Y: 34},
 		Button:   PointerLeft,
 		Count:    1,
 		Delivery: DeliveryPreferenceBackground,
@@ -101,5 +101,16 @@ func TestMarshalSetRangeValueRejectsNonFiniteValue(t *testing.T) {
 	_, err := marshalAction(SetRangeValue{ElementRef: "element-1", Value: math.Inf(1)})
 	if err == nil {
 		t.Fatal("expected non-finite numeric range value to be rejected")
+	}
+}
+
+func TestNormalizedPointAcceptsFractionsAndRejectsNonfinite(t *testing.T) {
+	if _, err := marshalAction(MovePointer{Point: NormalizedPoint{X: 0.25, Y: 999.75}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []float64{math.NaN(), math.Inf(1), -0.1, 1000.1} {
+		if _, err := marshalAction(MovePointer{Point: NormalizedPoint{X: value}}); err == nil {
+			t.Fatal("accepted invalid coordinate")
+		}
 	}
 }

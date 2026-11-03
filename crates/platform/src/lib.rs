@@ -11,6 +11,8 @@ use nexus_cua_runtime::DriverErrorKind;
 use nexus_cua_runtime::{DesktopDriver, DriverError};
 
 mod host_identity;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+mod input_text;
 #[cfg(target_os = "macos")]
 mod macos;
 mod observation;
@@ -53,4 +55,18 @@ pub fn system_driver() -> Result<Arc<dyn DesktopDriver>, DriverError> {
         DriverErrorKind::Unsupported,
         "the native driver is not available in this build",
     ))
+}
+
+/// Runs a host future while servicing bounded native main-thread requests.
+/// Call on the process main thread around the runtime host's async entry point.
+/// macOS input hit testing requires this dispatcher; other platforms pass through.
+pub async fn with_native_main_thread<F: std::future::Future>(future: F) -> F::Output {
+    #[cfg(target_os = "macos")]
+    {
+        macos::main_thread::run(future).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        future.await
+    }
 }

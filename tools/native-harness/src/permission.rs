@@ -140,6 +140,7 @@ async fn denied(
             .await?;
             let outcome = client
                 .send_outcome(Command::PerformAction(PerformActionInput {
+                    observe_after: None,
                     session_id: target.session_id.clone(),
                     window_ref: target.window.window_ref.clone(),
                     observation_id: observation.observation_id,
@@ -255,6 +256,7 @@ async fn revoke_verify(client: &mut Client, args: &RevocationArgs) -> Result<(),
         PermissionKind::InputControl => {
             client
                 .send_outcome(Command::PerformAction(PerformActionInput {
+                    observe_after: None,
                     session_id: state.session_id.clone(),
                     window_ref: state.window_ref.clone(),
                     observation_id: state.observation_id,
@@ -319,6 +321,7 @@ async fn protected(cli: &Cli, client: &mut Client) -> Result<(), Box<dyn Error>>
                 expect_error(
                     client
                         .send_outcome(Command::PerformAction(PerformActionInput {
+                            observe_after: None,
                             session_id: target.session_id.clone(),
                             window_ref: target.window.window_ref.clone(),
                             observation_id: observation.observation_id,

@@ -11,6 +11,211 @@ use zeroize::Zeroize;
 
 use crate::DriverError;
 
+/// Revocable, finite authority checked again on the native dispatch actor.
+/// This is an internal runtime-issued guard, never a public caller credential.
+#[derive(Clone)]
+pub struct DriverActionGuard {
+    pub(crate) interruption: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    pub(crate) closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) expires_at: std::time::Instant,
+    pub(crate) dispatch: std::sync::Arc<crate::activity::DispatchLease>,
+    pub(crate) observed_at: Option<std::time::Instant>,
+}
+
+impl DriverActionGuard {
+    pub(crate) fn new(
+        interruption: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        expires_at: std::time::Instant,
+        activity: std::sync::Arc<std::sync::Mutex<crate::activity::InputActivity>>,
+    ) -> Self {
+        Self {
+            interruption,
+            closed,
+            expires_at,
+            observed_at: None,
+            dispatch: std::sync::Arc::new(crate::activity::DispatchLease {
+                activity,
+                dispatched: std::sync::atomic::AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Records outside input without retaining its content. Between dispatches
+    /// this only delays the next action and invalidates older observations.
+    /// During native dispatch it latches takeover and stops partial actions.
+    pub fn record_user_input(&self) {
+        self.record_user_input_state(false);
+    }
+
+    /// Records outside input and whether its keys, modifiers or buttons remain
+    /// held. A held input is never treated as idle merely because events stop.
+    ///
+    /// # Panics
+    /// Panics if internal activity bookkeeping was poisoned by another panic.
+    pub fn record_user_input_state(&self, input_held: bool) {
+        let mut activity = self
+            .dispatch
+            .activity
+            .lock()
+            .expect("activity state contains no native objects");
+        activity.last_input = Some(std::time::Instant::now());
+        activity.input_held = input_held;
+        if activity.active_dispatches != 0 {
+            self.user_took_over();
+        }
+    }
+
+    pub(crate) async fn wait_until_idle(&self) -> Result<(), DriverError> {
+        self.wait_for_idle(
+            crate::activity::INPUT_QUIET_PERIOD,
+            crate::activity::INPUT_WAIT_LIMIT,
+        )
+        .await
+    }
+
+    pub(crate) fn check_observation(&self) -> Result<(), DriverError> {
+        self.dispatch
+            .activity
+            .lock()
+            .expect("activity state contains no native objects")
+            .check_observation(self.observed_at)
+    }
+
+    async fn wait_for_idle(
+        &self,
+        quiet_period: std::time::Duration,
+        limit: std::time::Duration,
+    ) -> Result<(), DriverError> {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            self.check()?;
+            let remaining = self
+                .dispatch
+                .activity
+                .lock()
+                .expect("activity state contains no native objects")
+                .remaining_quiet(quiet_period);
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(DriverError::new(
+                    crate::DriverErrorKind::Busy,
+                    "user input is still active; wait for idle and obtain a fresh observation",
+                )
+                .retryable("wait_for_idle_then_observe")
+                .mutation_not_dispatched());
+            }
+            tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25))).await;
+        }
+    }
+
+    /// Latches user takeover for this session, including later actions.
+    pub fn user_took_over(&self) {
+        let _ = self.interruption.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    /// Stops session mutations when the native activity monitor loses coverage.
+    pub fn activity_monitor_failed(&self) {
+        let _ = self.interruption.compare_exchange(
+            0,
+            2,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    /// Fails before a new dispatch when its session was closed or expired.
+    ///
+    /// # Errors
+    /// Returns session unavailable with the action's dispatch status when revoked.
+    pub fn check(&self) -> Result<(), DriverError> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire)
+            || std::time::Instant::now() >= self.expires_at
+        {
+            let error = DriverError::new(
+                crate::DriverErrorKind::SessionUnavailable,
+                "action authority was closed or expired",
+            );
+            return Err(if self.was_dispatched() {
+                error.mutation_indeterminate()
+            } else {
+                error.mutation_not_dispatched()
+            });
+        }
+        let interruption = self.interruption.load(std::sync::atomic::Ordering::Acquire);
+        if interruption != 0 {
+            let mut error = if interruption == 1 {
+                DriverError::new(
+                    crate::DriverErrorKind::UserActive,
+                    "user input took over this session; host authorization is required to resume",
+                )
+            } else {
+                DriverError::new(
+                    crate::DriverErrorKind::Platform,
+                    "user activity monitoring lost coverage; this session cannot resume",
+                )
+            };
+            error.recovery_action = Some("request_new_bounded_session".to_owned());
+            return Err(if self.was_dispatched() {
+                error.mutation_indeterminate()
+            } else {
+                error.mutation_not_dispatched()
+            });
+        }
+        Ok(())
+    }
+
+    /// Checks authority immediately before a native mutation attempt. Later
+    /// cancellation is indeterminate because part of the action may have happened.
+    ///
+    /// # Errors
+    /// Returns revoked authority, takeover, recent activity or stale observation.
+    ///
+    /// # Panics
+    /// Panics if internal activity bookkeeping was poisoned by another panic.
+    pub fn begin_dispatch(&self) -> Result<(), DriverError> {
+        let mut activity = self
+            .dispatch
+            .activity
+            .lock()
+            .expect("activity state contains no native objects");
+        self.check()?;
+        if !self.was_dispatched() {
+            activity.check_observation(self.observed_at)?;
+            if !activity
+                .remaining_quiet(crate::activity::INPUT_QUIET_PERIOD)
+                .is_zero()
+            {
+                return Err(DriverError::new(
+                    crate::DriverErrorKind::Busy,
+                    "user input resumed before dispatch; wait for idle and observe again",
+                )
+                .retryable("wait_for_idle_then_observe")
+                .mutation_not_dispatched());
+            }
+            activity.active_dispatches += 1;
+            self.dispatch
+                .dispatched
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// Whether any part of this action has reached a native dispatch boundary.
+    pub fn was_dispatched(&self) -> bool {
+        self.dispatch
+            .dispatched
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 /// Internal application identity owned by a platform driver.
 #[derive(Clone, Debug)]
 pub struct DriverApplication {
@@ -87,8 +292,8 @@ pub struct DriverWindow {
     pub title: String,
     /// Logical top-left screen bounds.
     pub screen_bounds: ScreenRect,
-    /// Whether the window is minimized.
-    pub minimized: bool,
+    /// Best-effort state; state-query failures must not remove discovered windows.
+    pub state: nexus_cua_protocol::WindowState,
     /// Whether the window is visible on a display.
     pub visible: bool,
     /// Whether the window owns foreground input.
@@ -298,10 +503,10 @@ pub enum DriverAction {
         /// Normalized key names forming one chord or key sequence.
         keys: Vec<String>,
     },
-    /// Scroll either a semantic element or the foreground surface.
+    /// Scroll the foreground surface at the explicit target point.
     Scroll {
-        /// Optional guarded semantic scroll target.
-        element_key: Option<String>,
+        /// Resolved target point in logical screen coordinates.
+        point: ScreenPoint,
         /// Horizontal logical scroll delta.
         delta_x: f64,
         /// Vertical logical scroll delta.
@@ -415,6 +620,81 @@ pub struct DriverClipboardWriteOutput {
 /// Replaceable platform implementation beneath the authorization runtime.
 #[async_trait]
 pub trait DesktopDriver: Send + Sync {
+    /// Fixes the model capture size before sessions are admitted. Drivers that
+    /// cannot resize natively rely on the bounded artifact encoder fallback.
+    ///
+    /// # Errors
+    /// Returns an error if the driver cannot apply the configured image limit.
+    fn configure_max_image_edge(&self, _max_image_edge: u32) -> Result<(), DriverError> {
+        Ok(())
+    }
+
+    /// Registers a bounded runtime session for native capture resource ownership.
+    ///
+    /// # Errors
+    /// Returns an error if the native capture ownership budget is exhausted.
+    fn session_started(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+    ) -> Result<(), DriverError> {
+        Ok(())
+    }
+
+    /// Registers native session resources and optional user-takeover protection.
+    ///
+    /// # Errors
+    /// Returns an error if native resources or required monitoring are unavailable.
+    fn session_started_guarded(
+        &self,
+        session_id: &nexus_cua_protocol::SessionId,
+        _guard: DriverActionGuard,
+        _allow_foreground: bool,
+    ) -> Result<(), DriverError> {
+        self.session_started(session_id)
+    }
+
+    /// Revokes capture ownership immediately; native resources are released on their actor.
+    fn session_closed(&self, _session_id: &nexus_cua_protocol::SessionId) {}
+
+    /// Performs bounded read-only settling before a requested post-action observation.
+    ///
+    /// # Errors
+    /// Returns a native read failure without changing the action's recorded outcome.
+    async fn settle_window(
+        &self,
+        _window: &DriverWindow,
+        _application_scene: bool,
+    ) -> Result<(), DriverError> {
+        Ok(())
+    }
+
+    /// Observes a target while binding retained capture resources to its authority lifetime.
+    async fn observe_window_scoped(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+        window: &DriverWindow,
+        include_screenshot: bool,
+        accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        self.observe_window(window, include_screenshot, accessibility)
+            .await
+    }
+
+    /// Captures only the authorized application on the anchor display.
+    /// Drivers without scene isolation must reject rather than expose the desktop.
+    async fn observe_application_scene_scoped(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+        _window: &DriverWindow,
+        _include_screenshot: bool,
+        _accessibility: AccessibilityMode,
+    ) -> Result<DriverObservation, DriverError> {
+        Err(DriverError::new(
+            crate::DriverErrorKind::Unsupported,
+            "application scene capture is unavailable",
+        ))
+    }
+
     /// Returns immutable capability metadata.
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError>;
 
@@ -444,10 +724,10 @@ pub trait DesktopDriver: Send + Sync {
         .mutation_not_dispatched())
     }
 
-    /// Lists top-level windows, optionally for one driver application key.
+    /// Enumerates once, returning only windows owned by the authorized application keys.
     async fn list_windows(
         &self,
-        application_key: Option<&str>,
+        application_keys: &[String],
     ) -> Result<Vec<DriverWindow>, DriverError>;
 
     /// Lists physical displays available to the current interactive desktop.
@@ -507,6 +787,21 @@ pub trait DesktopDriver: Send + Sync {
         fingerprint: &str,
     ) -> Result<bool, DriverError>;
 
+    /// Executes with finite revocable authority. Native drivers must check this
+    /// guard on their dispatch actor and between bounded input chunks.
+    async fn perform_action_scoped(
+        &self,
+        window: &DriverWindow,
+        action: DriverAction,
+        allow_foreground: bool,
+        restore_foreground: bool,
+        guard: DriverActionGuard,
+    ) -> Result<DriverActionOutput, DriverError> {
+        guard.check()?;
+        self.perform_action(window, action, allow_foreground, restore_foreground)
+            .await
+    }
+
     /// Executes one already-authorized action.
     ///
     /// `allow_foreground` is a hard upper bound. Implementations must return
@@ -547,5 +842,178 @@ mod tests {
         let pixels = returned.lock().unwrap().take().unwrap();
         assert!(pixels.is_empty());
         assert!(pixels.capacity() >= 16);
+    }
+}
+
+#[cfg(test)]
+mod action_guard_tests {
+    use super::DriverActionGuard;
+    use nexus_cua_protocol::MutationStatus;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::{Duration, Instant};
+
+    fn fresh_guard() -> DriverActionGuard {
+        DriverActionGuard::new(
+            Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Instant::now() + Duration::from_secs(60),
+            Arc::default(),
+        )
+    }
+
+    #[test]
+    fn takeover_latches_across_actions_without_claiming_rollback() {
+        let guard = fresh_guard();
+        let next = DriverActionGuard::new(
+            Arc::clone(&guard.interruption),
+            Arc::clone(&guard.closed),
+            guard.expires_at,
+            Arc::clone(&guard.dispatch.activity),
+        );
+        guard.begin_dispatch().unwrap();
+        guard.user_took_over();
+        let partial = guard.check().unwrap_err();
+        assert_eq!(partial.kind, crate::DriverErrorKind::UserActive);
+        assert_eq!(partial.mutation_status, MutationStatus::Indeterminate);
+        let queued = next.begin_dispatch().unwrap_err();
+        assert_eq!(queued.kind, crate::DriverErrorKind::UserActive);
+        assert_eq!(queued.mutation_status, MutationStatus::NotDispatched);
+        assert!(!queued.retryable);
+        assert!(fresh_guard().begin_dispatch().is_ok());
+    }
+
+    #[test]
+    fn monitor_failure_stops_input_without_inventing_user_activity() {
+        let guard = fresh_guard();
+        guard.activity_monitor_failed();
+        guard.user_took_over();
+        let failure = guard.begin_dispatch().unwrap_err();
+        assert_eq!(failure.kind, crate::DriverErrorKind::Platform);
+        assert_eq!(failure.mutation_status, MutationStatus::NotDispatched);
+        assert!(!failure.retryable);
+    }
+
+    #[test]
+    fn revocation_distinguishes_queued_actions_from_partial_dispatch() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let guard = DriverActionGuard::new(
+            Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            Arc::clone(&closed),
+            Instant::now() + Duration::from_secs(60),
+            Arc::default(),
+        );
+        let queued = guard.clone();
+        closed.store(true, Ordering::Release);
+        assert_eq!(
+            queued.begin_dispatch().unwrap_err().mutation_status,
+            MutationStatus::NotDispatched
+        );
+        closed.store(false, Ordering::Release);
+        guard.begin_dispatch().unwrap();
+        closed.store(true, Ordering::Release);
+        assert_eq!(
+            queued.check().unwrap_err().mutation_status,
+            MutationStatus::Indeterminate
+        );
+    }
+
+    #[test]
+    fn expired_authority_cannot_start_native_dispatch() {
+        let guard = DriverActionGuard::new(
+            Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Instant::now(),
+            Arc::default(),
+        );
+        assert_eq!(
+            guard.begin_dispatch().unwrap_err().mutation_status,
+            MutationStatus::NotDispatched
+        );
+        assert!(!guard.was_dispatched());
+    }
+
+    #[tokio::test]
+    async fn between_action_input_waits_without_revoking_authority() {
+        let mut guard = fresh_guard();
+        guard.observed_at = Some(Instant::now());
+        guard.record_user_input();
+        assert!(guard.check().is_ok());
+        guard
+            .wait_for_idle(Duration::from_millis(5), Duration::from_secs(1))
+            .await
+            .unwrap();
+        let error = guard.begin_dispatch().unwrap_err();
+        assert_eq!(error.kind, crate::DriverErrorKind::StaleObservation);
+        assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+        // Model must observe again after the actual quiet period, not reuse
+        // pre-input coordinates or silently replay a partially executed action.
+        guard.dispatch.activity.lock().unwrap().last_input =
+            Some(Instant::now().checked_sub(Duration::from_secs(3)).unwrap());
+        guard.observed_at = Some(Instant::now());
+        assert!(guard.begin_dispatch().is_ok());
+        guard.record_user_input();
+        assert_eq!(
+            guard.check().unwrap_err().kind,
+            crate::DriverErrorKind::UserActive
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_wait_is_bounded_and_revocable() {
+        let guard = fresh_guard();
+        guard.record_user_input();
+        let error = guard
+            .wait_for_idle(Duration::from_secs(2), Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, crate::DriverErrorKind::Busy);
+        assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+        assert!(guard.check().is_ok());
+        guard.closed.store(true, Ordering::Release);
+        assert_eq!(
+            guard.wait_until_idle().await.unwrap_err().kind,
+            crate::DriverErrorKind::SessionUnavailable
+        );
+    }
+
+    #[test]
+    fn held_user_input_never_becomes_idle_just_from_elapsed_time() {
+        let guard = fresh_guard();
+        guard.record_user_input_state(true);
+        guard.dispatch.activity.lock().unwrap().last_input =
+            Some(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
+        assert_eq!(
+            guard.begin_dispatch().unwrap_err().kind,
+            crate::DriverErrorKind::Busy
+        );
+        assert!(guard.check().is_ok());
+    }
+
+    #[test]
+    fn native_actor_clones_keep_takeover_coverage_until_dispatch_finishes() {
+        let monitor = fresh_guard();
+        let action = DriverActionGuard::new(
+            Arc::clone(&monitor.interruption),
+            Arc::clone(&monitor.closed),
+            monitor.expires_at,
+            Arc::clone(&monitor.dispatch.activity),
+        );
+        let actor_job = action.clone();
+        action.begin_dispatch().unwrap();
+        drop(action);
+        assert_eq!(
+            monitor.dispatch.activity.lock().unwrap().active_dispatches,
+            1
+        );
+        drop(actor_job);
+        assert_eq!(
+            monitor.dispatch.activity.lock().unwrap().active_dispatches,
+            0
+        );
+        monitor.record_user_input();
+        assert!(monitor.check().is_ok());
     }
 }

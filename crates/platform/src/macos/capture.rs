@@ -1,9 +1,10 @@
 //! Serialized `CoreGraphics` discovery and `ScreenCaptureKit` exact-window capture actor.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::mem::{MaybeUninit, size_of};
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -27,8 +28,10 @@ use core_graphics::window::{
     kCGWindowOwnerName, kCGWindowOwnerPID,
 };
 use foreign_types::ForeignType;
-use nexus_cua_protocol::{ForegroundRestorationStatus, ScreenRect};
-use nexus_cua_runtime::{DriverError, DriverErrorKind, RgbaImage};
+use nexus_cua_protocol::{ApplicationProvenance, ForegroundRestorationStatus, ScreenRect};
+use nexus_cua_runtime::{
+    DriverActionGuard, DriverApplication, DriverError, DriverErrorKind, RgbaImage,
+};
 use objc2::AnyThread;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2_app_kit::{
@@ -54,6 +57,7 @@ const FOREGROUND_RESTORE_TIMEOUT: Duration = Duration::from_millis(250);
 pub(super) struct NativeWindow {
     pub(super) key: String,
     pub(super) pid: i32,
+    pub(super) window_number: u32,
     pub(super) application_key: String,
     pub(super) application_id: String,
     pub(super) bundle_id: Option<String>,
@@ -80,23 +84,93 @@ pub(super) struct ForegroundOwner {
 
 #[derive(Clone)]
 pub(super) struct CaptureActor {
+    guard: Option<DriverActionGuard>,
     sender: SyncSender<CaptureCommand>,
+    live_sessions: Arc<Mutex<HashSet<String>>>,
+    max_image_edge: Arc<AtomicU32>,
 }
 
 impl CaptureActor {
     pub(super) fn spawn() -> Self {
         let (sender, receiver) = sync_channel(COMMAND_CAPACITY);
         let (recycle_sender, recycle_receiver) = sync_channel(RECYCLE_CAPACITY);
+        let live_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let actor_sessions = Arc::clone(&live_sessions);
+        let max_image_edge = Arc::new(AtomicU32::new(0));
+        let actor_image_edge = Arc::clone(&max_image_edge);
         thread::Builder::new()
             .name("nexus-cua-macos-capture".to_owned())
-            .spawn(move || actor_loop(&receiver, &recycle_receiver, &recycle_sender))
+            .spawn(move || {
+                actor_loop(
+                    &receiver,
+                    &recycle_receiver,
+                    &recycle_sender,
+                    &actor_sessions,
+                    &actor_image_edge,
+                );
+            })
             .expect("create CoreGraphics capture actor thread");
-        Self { sender }
+        Self {
+            guard: None,
+            sender,
+            live_sessions,
+            max_image_edge,
+        }
+    }
+
+    pub(super) fn guarded(&self, guard: DriverActionGuard) -> Self {
+        Self {
+            guard: Some(guard),
+            ..self.clone()
+        }
+    }
+
+    pub(super) fn configure_max_image_edge(&self, edge: u32) -> Result<(), DriverError> {
+        match self
+            .max_image_edge
+            .compare_exchange(0, edge, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => Ok(()),
+            Err(current) if current == edge => Ok(()),
+            Err(_) => Err(native_failure(
+                "capture size is immutable for this driver instance",
+            )),
+        }
+    }
+
+    pub(super) fn session_started(&self, id: String) -> Result<(), DriverError> {
+        let mut sessions = self
+            .live_sessions
+            .lock()
+            .map_err(|_| native_failure("capture session registry is unavailable"))?;
+        if sessions.len() >= 64 {
+            return Err(DriverError::new(
+                DriverErrorKind::Busy,
+                "capture session capacity exhausted",
+            ));
+        }
+        sessions.insert(id);
+        Ok(())
+    }
+
+    pub(super) fn session_closed(&self, id: &str) {
+        if let Ok(mut sessions) = self.live_sessions.lock() {
+            sessions.remove(id);
+        }
+        // A full queue already guarantees a wake-up; revocation is read before
+        // each queued command. Closing a session must never block its caller.
+        let _ = self.sender.try_send(CaptureCommand::Prune);
     }
 
     pub(super) async fn list_windows(&self) -> Result<Vec<NativeWindow>, DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(CaptureCommand::ListWindows { reply })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn list_applications(&self) -> Result<Vec<DriverApplication>, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::ListApplications { reply })?;
         receiver.await.map_err(actor_stopped)?
     }
 
@@ -120,13 +194,32 @@ impl CaptureActor {
         receiver.await.map_err(actor_stopped)?
     }
 
-    pub(super) async fn capture(
+    pub(super) async fn capture_signature(
         &self,
         target_key: String,
         expected_bounds: ScreenRect,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(CaptureCommand::Capture {
+            session_id: None,
+            target_key,
+            expected_bounds,
+            signature_only: true,
+            reply,
+        })?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
+    pub(super) async fn capture_scoped(
+        &self,
+        session_id: Option<String>,
+        target_key: String,
+        expected_bounds: ScreenRect,
+    ) -> Result<(RgbaImage, ScreenRect), DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(CaptureCommand::Capture {
+            signature_only: false,
+            session_id,
             target_key,
             expected_bounds,
             reply,
@@ -149,6 +242,7 @@ impl CaptureActor {
     ) -> Result<(), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(CaptureCommand::TerminateApplication {
+            guard: self.guard.clone(),
             application_key,
             reply,
         })
@@ -169,6 +263,7 @@ impl CaptureActor {
     ) -> Result<ForegroundRestorationStatus, DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.admit(CaptureCommand::RestoreForegroundOwner {
+            guard: self.guard.clone(),
             owner,
             expected_target_generation,
             reply,
@@ -205,6 +300,10 @@ impl CaptureActor {
 }
 
 enum CaptureCommand {
+    Prune,
+    ListApplications {
+        reply: oneshot::Sender<Result<Vec<DriverApplication>, DriverError>>,
+    },
     ListWindows {
         reply: oneshot::Sender<Result<Vec<NativeWindow>, DriverError>>,
     },
@@ -212,6 +311,8 @@ enum CaptureCommand {
         reply: oneshot::Sender<Result<Vec<NativeDisplay>, DriverError>>,
     },
     Capture {
+        signature_only: bool,
+        session_id: Option<String>,
         target_key: String,
         expected_bounds: ScreenRect,
         reply: oneshot::Sender<Result<(RgbaImage, ScreenRect), DriverError>>,
@@ -226,6 +327,7 @@ enum CaptureCommand {
         reply: oneshot::Sender<Result<NativeWindow, DriverError>>,
     },
     TerminateApplication {
+        guard: Option<DriverActionGuard>,
         application_key: String,
         reply: oneshot::Sender<Result<(), DriverError>>,
     },
@@ -233,6 +335,7 @@ enum CaptureCommand {
         reply: oneshot::Sender<Result<Option<ForegroundOwner>, DriverError>>,
     },
     RestoreForegroundOwner {
+        guard: Option<DriverActionGuard>,
         owner: ForegroundOwner,
         expected_target_generation: String,
         reply: oneshot::Sender<Result<ForegroundRestorationStatus, DriverError>>,
@@ -245,21 +348,29 @@ enum CaptureCommand {
     },
 }
 
+// Keep native command dispatch together on its owning actor.
+#[allow(clippy::too_many_lines)]
 fn actor_loop(
     receiver: &Receiver<CaptureCommand>,
     recycle_receiver: &Receiver<Vec<u8>>,
     recycle_sender: &SyncSender<Vec<u8>>,
+    live_sessions: &Mutex<HashSet<String>>,
+    configured_edge: &AtomicU32,
 ) {
     let mut recycled = VecDeque::with_capacity(RECYCLE_CAPACITY);
     let mut applications = ApplicationCache::default();
     let mut capture_filter = None;
-    while let Ok(command) = receiver.recv() {
-        while let Ok(pixels) = recycle_receiver.try_recv() {
-            if recycled.len() < RECYCLE_CAPACITY {
-                recycled.push_back(pixels);
-            }
-        }
+    let mut streams: Vec<WarmStream> = Vec::new();
+    while let Some(command) = next_capture_command(receiver, &mut streams, live_sessions) {
+        let edge = configured_edge.load(Ordering::Acquire);
+        let max_image_edge = if edge == 0 { 1568 } else { edge };
+        let recycle_space = RECYCLE_CAPACITY - recycled.len();
+        recycled.extend(recycle_receiver.try_iter().take(recycle_space));
         autoreleasepool(|_| match command {
+            CaptureCommand::Prune => {}
+            CaptureCommand::ListApplications { reply } => {
+                let _ = reply.send(load_applications(&mut applications));
+            }
             CaptureCommand::ListWindows { reply } => {
                 let _ = reply.send(load_windows(&mut applications));
             }
@@ -267,17 +378,38 @@ fn actor_loop(
                 let _ = reply.send(load_displays());
             }
             CaptureCommand::Capture {
+                signature_only,
+                session_id,
                 target_key,
                 expected_bounds,
                 reply,
             } => {
-                let _ = reply.send(capture_target(
-                    &target_key,
-                    expected_bounds,
-                    &mut capture_filter,
-                    recycled.pop_front(),
-                    recycle_sender.clone(),
-                ));
+                let result = if session_id.is_some()
+                    || streams.iter().any(|stream| stream.target_key == target_key)
+                {
+                    stream_capture(
+                        &mut streams,
+                        live_sessions,
+                        session_id.as_deref(),
+                        &target_key,
+                        expected_bounds,
+                        recycle_sender,
+                        FrameRead {
+                            max_image_edge,
+                            signature_only,
+                        },
+                    )
+                } else {
+                    capture_target(
+                        &target_key,
+                        expected_bounds,
+                        &mut capture_filter,
+                        recycled.pop_front(),
+                        recycle_sender.clone(),
+                        max_image_edge,
+                    )
+                };
+                let _ = reply.send(result);
             }
             CaptureCommand::CaptureDisplay {
                 target_key,
@@ -289,22 +421,29 @@ fn actor_loop(
                     expected_bounds,
                     recycled.pop_front(),
                     recycle_sender.clone(),
+                    max_image_edge,
                 ));
             }
             CaptureCommand::ResolveWindow { target_key, reply } => {
                 let _ = reply.send(resolve_target(&target_key, &mut applications));
             }
             CaptureCommand::TerminateApplication {
+                guard,
                 application_key,
                 reply,
             } => {
                 capture_filter = None;
-                let _ = reply.send(terminate_application(&application_key, &mut applications));
+                let _ = reply.send(terminate_application(
+                    &application_key,
+                    &mut applications,
+                    guard.as_ref(),
+                ));
             }
             CaptureCommand::ForegroundOwner { reply } => {
                 let _ = reply.send(Ok(foreground_owner()));
             }
             CaptureCommand::RestoreForegroundOwner {
+                guard,
                 owner,
                 expected_target_generation,
                 reply,
@@ -312,6 +451,7 @@ fn actor_loop(
                 let _ = reply.send(Ok(restore_foreground_owner(
                     &owner,
                     &expected_target_generation,
+                    guard.as_ref(),
                 )));
             }
             CaptureCommand::LaunchApplication {
@@ -332,6 +472,150 @@ fn actor_loop(
     }
 }
 
+fn next_capture_command(
+    receiver: &Receiver<CaptureCommand>,
+    streams: &mut Vec<WarmStream>,
+    live_sessions: &Mutex<HashSet<String>>,
+) -> Option<CaptureCommand> {
+    loop {
+        prune_streams(streams, live_sessions);
+        let expiry = streams
+            .iter()
+            .map(|stream| stream.last_used + STREAM_IDLE)
+            .min();
+        match receive_command(receiver, expiry) {
+            Ok(command) => return Some(command),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
+const STREAM_IDLE: Duration = Duration::from_secs(30);
+
+fn receive_command<T>(
+    receiver: &Receiver<T>,
+    expiry: Option<Instant>,
+) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+    match expiry {
+        Some(deadline) => receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+        None => receiver
+            .recv()
+            .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+    }
+}
+
+struct WarmStream {
+    target_key: String,
+    width: f64,
+    height: f64,
+    owners: HashSet<String>,
+    last_used: Instant,
+    stream: super::stream::CaptureStream,
+}
+
+fn prune_streams(streams: &mut Vec<WarmStream>, live_sessions: &Mutex<HashSet<String>>) {
+    let active = live_sessions
+        .lock()
+        .map(|sessions| sessions.clone())
+        .unwrap_or_default();
+    for stream in &mut *streams {
+        stream.owners.retain(|id| active.contains(id));
+    }
+    streams.retain(|stream| !stream.owners.is_empty() && stream.last_used.elapsed() < STREAM_IDLE);
+}
+
+#[derive(Clone, Copy)]
+struct FrameRead {
+    max_image_edge: u32,
+    signature_only: bool,
+}
+
+fn stream_capture(
+    streams: &mut Vec<WarmStream>,
+    live_sessions: &Mutex<HashSet<String>>,
+    session_id: Option<&str>,
+    target_key: &str,
+    bounds: ScreenRect,
+    recycle_sender: &SyncSender<Vec<u8>>,
+    read: FrameRead,
+) -> Result<(RgbaImage, ScreenRect), DriverError> {
+    let authorized = || {
+        session_id.is_none_or(|id| {
+            live_sessions
+                .lock()
+                .is_ok_and(|sessions| sessions.contains(id))
+        })
+    };
+    if !authorized() {
+        return Err(target_unavailable());
+    }
+    let mut owners = HashSet::new();
+    if let Some(index) = streams
+        .iter()
+        .position(|stream| stream.target_key == target_key)
+        && (streams[index].width.to_bits() != bounds.width.to_bits()
+            || streams[index].height.to_bits() != bounds.height.to_bits()
+            || streams[index].stream.is_stopped())
+    {
+        owners = streams.remove(index).owners;
+    }
+    if !streams.iter().any(|stream| stream.target_key == target_key) {
+        if streams.len() >= 2 {
+            let oldest = streams
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, stream)| stream.last_used)
+                .map_or(0, |(index, _)| index);
+            streams.remove(oldest);
+        }
+        let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
+        let scale = f64::from(unsafe { filter.filter.pointPixelScale() }).max(1.0);
+        let (width, height) = capture_size(bounds, scale, read.max_image_edge)?;
+        let stream = super::stream::CaptureStream::start(&filter.filter, width, height)?;
+        streams.push(WarmStream {
+            target_key: target_key.to_owned(),
+            width: bounds.width,
+            height: bounds.height,
+            owners,
+            last_used: Instant::now(),
+            stream,
+        });
+    }
+    let stream = streams
+        .iter_mut()
+        .find(|stream| stream.target_key == target_key)
+        .expect("stream inserted above");
+    if let Some(id) = session_id {
+        stream.owners.insert(id.to_owned());
+    }
+    stream.last_used = Instant::now();
+    let image = match stream
+        .stream
+        .snapshot(session_id.is_none(), read.signature_only)
+    {
+        Ok(Some(image)) => image,
+        Ok(None) => {
+            let filter = load_capture_filter(target_key, target_window_id(target_key)?)?;
+            capture_with_filter(
+                &filter.filter,
+                bounds,
+                None,
+                recycle_sender.clone(),
+                read.max_image_edge,
+            )?
+        }
+        Err(error) => {
+            streams.retain(|stream| stream.target_key != target_key);
+            return Err(error);
+        }
+    };
+    if !authorized() {
+        return Err(target_unavailable());
+    }
+    Ok((image, bounds))
+}
+
 fn foreground_owner() -> Option<ForegroundOwner> {
     let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
     let pid = application.processIdentifier();
@@ -341,6 +625,7 @@ fn foreground_owner() -> Option<ForegroundOwner> {
 fn restore_foreground_owner(
     owner: &ForegroundOwner,
     expected_target_generation: &str,
+    guard: Option<&DriverActionGuard>,
 ) -> ForegroundRestorationStatus {
     if owner.generation == expected_target_generation {
         return ForegroundRestorationStatus::NotNeeded;
@@ -361,6 +646,9 @@ fn restore_foreground_owner(
     };
     if application.isTerminated() {
         return ForegroundRestorationStatus::TargetUnavailable;
+    }
+    if guard.is_some_and(|guard| guard.begin_dispatch().is_err()) {
+        return ForegroundRestorationStatus::SkippedOwnerChanged;
     }
     if !application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows) {
         return ForegroundRestorationStatus::Failed;
@@ -446,6 +734,7 @@ fn launch_application(
 fn terminate_application(
     application_key: &str,
     applications: &mut ApplicationCache,
+    guard: Option<&DriverActionGuard>,
 ) -> Result<(), DriverError> {
     {
         let application = applications.entries.get(application_key).ok_or_else(|| {
@@ -476,6 +765,9 @@ fn terminate_application(
             )
             .mutation_not_dispatched());
         }
+        if let Some(guard) = guard {
+            guard.begin_dispatch()?;
+        }
         if !running.terminate() {
             return Err(DriverError::new(
                 DriverErrorKind::Platform,
@@ -501,6 +793,50 @@ fn terminate_application(
     applications.entries.remove(application_key);
     applications.order.retain(|key| key != application_key);
     Ok(())
+}
+
+// Ownership is checked under input serialization. AppKit performs its actual
+// mouse-down hit test on the main thread; CG metadata resolves that one window.
+// Rectangle ordering alone wrongly treats Dock/Stage Manager pass-through
+// surfaces as full-screen occluders.
+pub(super) fn validate_pointer_owner(
+    pid: i32,
+    point: nexus_cua_protocol::ScreenPoint,
+) -> Result<(), DriverError> {
+    let mut below = 0;
+    for _ in 0..16 {
+        let number = super::main_thread::window_at(point, below)?;
+        let Ok(window_id) = u32::try_from(number) else {
+            break;
+        };
+        if window_id == 0 {
+            break;
+        }
+        let owner = window::copy_window_info(window::kCGWindowListOptionIncludingWindow, window_id)
+            .and_then(|dictionaries| {
+                let pointer = *dictionaries.get(0)? as CFTypeRef;
+                if pointer.is_null() {
+                    return None;
+                }
+                let value = unsafe { CFType::wrap_under_get_rule(pointer) };
+                let dictionary = value.downcast::<CFDictionary>()?;
+                i32::try_from(dictionary_i64(&dictionary, unsafe { kCGWindowOwnerPID })?).ok()
+            });
+        if owner == Some(pid) {
+            return Ok(());
+        }
+        if owner.and_then(|owner| u32::try_from(owner).ok()) == Some(std::process::id()) {
+            below = number;
+            continue;
+        }
+        break;
+    }
+    Err(DriverError::new(
+        DriverErrorKind::TargetUnavailable,
+        "pointer point is not owned by the authorized application",
+    )
+    .retryable("observe_window")
+    .mutation_not_dispatched())
 }
 
 fn load_windows(applications: &mut ApplicationCache) -> Result<Vec<NativeWindow>, DriverError> {
@@ -565,6 +901,7 @@ fn capture_display(
     expected_bounds: ScreenRect,
     recycled: Option<Vec<u8>>,
     recycle_sender: SyncSender<Vec<u8>>,
+    max_image_edge: u32,
 ) -> Result<(RgbaImage, ScreenRect), DriverError> {
     let display_id = target_key
         .strip_prefix("sc-display:")
@@ -607,8 +944,49 @@ fn capture_display(
         )
         .retryable("list_displays_again"));
     }
-    capture_with_filter(&filter, expected_bounds, recycled, recycle_sender)
-        .map(|image| (image, expected_bounds))
+    capture_with_filter(
+        &filter,
+        expected_bounds,
+        recycled,
+        recycle_sender,
+        max_image_edge,
+    )
+    .map(|image| (image, expected_bounds))
+}
+
+fn load_applications(cache: &mut ApplicationCache) -> Result<Vec<DriverApplication>, DriverError> {
+    let running = super::main_thread::running_applications()?;
+    let mut applications = Vec::new();
+    for (pid, foreground) in running {
+        if applications.len() >= APPLICATION_CACHE_CAPACITY {
+            return Err(DriverError::new(
+                DriverErrorKind::Busy,
+                "regular application discovery exceeded its bound",
+            ));
+        }
+        let Some(descriptor) = cache.resolve(pid, format!("process {pid}")) else {
+            continue;
+        };
+        applications.push(DriverApplication {
+            key: descriptor.generation.clone(),
+            process_generation: descriptor.generation.clone(),
+            identity: format!(
+                "bundle:{}:executable:{}",
+                descriptor.bundle_id.as_deref().unwrap_or(""),
+                descriptor.executable_path.as_deref().unwrap_or("")
+            ),
+            name: descriptor.name.clone(),
+            application_id: descriptor.application_id.clone(),
+            foreground,
+            provenance: ApplicationProvenance::Macos {
+                bundle_id: descriptor.bundle_id.clone(),
+                executable_path: descriptor.executable_path.clone(),
+                signing_team_id: None,
+                designated_requirement: None,
+            },
+        });
+    }
+    Ok(applications)
 }
 
 fn load_shareable_content(context: &str) -> Result<Retained<SCShareableContent>, DriverError> {
@@ -684,6 +1062,7 @@ fn native_window(
     Some(NativeWindow {
         key: format!("sc:{}:{id}", application.generation),
         pid,
+        window_number: id,
         application_key: application.generation.clone(),
         application_id: application.application_id.clone(),
         bundle_id: application.bundle_id.clone(),
@@ -707,6 +1086,7 @@ fn capture_target(
     cached_filter: &mut Option<CaptureFilter>,
     recycled: Option<Vec<u8>>,
     recycle_sender: SyncSender<Vec<u8>>,
+    max_image_edge: u32,
 ) -> Result<(RgbaImage, ScreenRect), DriverError> {
     let window_id = target_window_id(target_key)?;
     if cached_filter
@@ -723,6 +1103,7 @@ fn capture_target(
         expected_bounds,
         recycled,
         recycle_sender,
+        max_image_edge,
     );
     if result.is_err() {
         *cached_filter = None;
@@ -731,6 +1112,40 @@ fn capture_target(
 }
 
 fn load_capture_filter(target_key: &str, window_id: u32) -> Result<CaptureFilter, DriverError> {
+    if let Some(scene) = target_key.strip_prefix("scene:") {
+        let display_id = scene
+            .split(':')
+            .next()
+            .and_then(|id| id.parse::<u32>().ok())
+            .ok_or_else(target_unavailable)?;
+        let content = load_shareable_content("application scene discovery")?;
+        // SAFETY: All native objects stay on the capture actor. The filter
+        // includes only the current anchor's owning application, never other
+        // applications, desktop windows, or authentication helpers.
+        let filter = unsafe {
+            let windows = content.windows();
+            let anchor = windows
+                .iter()
+                .find(|window| window.windowID() == window_id)
+                .ok_or_else(target_unavailable)?;
+            let application = anchor.owningApplication().ok_or_else(target_unavailable)?;
+            let displays = content.displays();
+            let display = displays
+                .iter()
+                .find(|display| display.displayID() == display_id)
+                .ok_or_else(target_unavailable)?;
+            SCContentFilter::initWithDisplay_includingApplications_exceptingWindows(
+                SCContentFilter::alloc(),
+                &display,
+                &NSArray::from_slice(&[&*application]),
+                &NSArray::<SCWindow>::new(),
+            )
+        };
+        return Ok(CaptureFilter {
+            target_key: target_key.to_owned(),
+            filter,
+        });
+    }
     let (sender, receiver) = sync_channel(1);
     let completion = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
@@ -782,14 +1197,14 @@ fn capture_with_filter(
     expected_bounds: ScreenRect,
     recycled: Option<Vec<u8>>,
     recycle_sender: SyncSender<Vec<u8>>,
+    max_image_edge: u32,
 ) -> Result<RgbaImage, DriverError> {
     // SAFETY: The filter and configuration remain retained until the
     // completion fires. Pixel copying happens entirely on the native capture
     // queue before the Rust-owned image crosses back to the actor.
     unsafe {
         let scale = f64::from(filter.pointPixelScale()).max(1.0);
-        let width = capture_dimension(expected_bounds.width * scale)?;
-        let height = capture_dimension(expected_bounds.height * scale)?;
+        let (width, height) = capture_size(expected_bounds, scale, max_image_edge)?;
         let configuration = SCStreamConfiguration::new();
         configuration.setWidth(width);
         configuration.setHeight(height);
@@ -928,7 +1343,7 @@ fn dictionary_value(dictionary: &CFDictionary, key: CFStringRef) -> Option<CFTyp
     (found != 0 && !value.is_null()).then(|| unsafe { CFType::wrap_under_get_rule(value.cast()) })
 }
 
-fn dictionary_i64(dictionary: &CFDictionary, key: CFStringRef) -> Option<i64> {
+pub(super) fn dictionary_i64(dictionary: &CFDictionary, key: CFStringRef) -> Option<i64> {
     dictionary_value(dictionary, key)?
         .downcast::<CFNumber>()?
         .to_i64()
@@ -1003,7 +1418,7 @@ fn copy_image(
     ))
 }
 
-fn application_generation(pid: i32) -> Option<String> {
+pub(super) fn application_generation(pid: i32) -> Option<String> {
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     let info_size = i32::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
     // SAFETY: `info` points to a writable `proc_bsdinfo` buffer of the exact
@@ -1026,6 +1441,18 @@ fn application_generation(pid: i32) -> Option<String> {
         "pid:{pid}:start:{:016x}:{:08x}",
         info.pbi_start_tvsec, info.pbi_start_tvusec
     ))
+}
+
+fn capture_size(bounds: ScreenRect, scale: f64, edge: u32) -> Result<(usize, usize), DriverError> {
+    let size = nexus_cua_protocol::PixelSize {
+        width: u32::try_from(capture_dimension(bounds.width * scale)?)
+            .map_err(|_| image_too_large())?,
+        height: u32::try_from(capture_dimension(bounds.height * scale)?)
+            .map_err(|_| image_too_large())?,
+    }
+    .fit_long_edge(edge)
+    .ok_or_else(image_too_large)?;
+    Ok((size.width as usize, size.height as usize))
 }
 
 fn capture_dimension(value: f64) -> Result<usize, DriverError> {
@@ -1136,5 +1563,57 @@ mod tests {
         let copied = copy_image(&image, None, recycle_sender).unwrap();
 
         assert_eq!(copied.pixels, top_red_bottom_blue);
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[test]
+    fn empty_actor_waits_for_close_notification_or_disconnection() {
+        let (sender, receiver) = sync_channel(1);
+        sender
+            .try_send(CaptureCommand::Prune)
+            .unwrap_or_else(|_| panic!("queue empty"));
+        assert!(matches!(
+            receive_command(&receiver, None),
+            Ok(CaptureCommand::Prune)
+        ));
+        drop(sender);
+        assert!(matches!(
+            receive_command(&receiver, None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn only_stream_expiry_produces_a_timeout() {
+        let (_sender, receiver) = sync_channel::<()>(1);
+        assert!(matches!(
+            receive_command(&receiver, Some(Instant::now())),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+    }
+
+    #[test]
+    fn revocation_survives_a_full_notification_queue() {
+        let (sender, receiver) = sync_channel(1);
+        sender
+            .try_send(CaptureCommand::Prune)
+            .unwrap_or_else(|_| panic!("queue empty"));
+        let live_sessions = Arc::new(Mutex::new(HashSet::from(["session".to_owned()])));
+        let actor = CaptureActor {
+            guard: None,
+            sender,
+            live_sessions: Arc::clone(&live_sessions),
+            max_image_edge: Arc::new(AtomicU32::new(0)),
+        };
+        actor.session_closed("session");
+        assert!(live_sessions.lock().unwrap().is_empty());
+        assert!(matches!(
+            receive_command(&receiver, None),
+            Ok(CaptureCommand::Prune)
+        ));
     }
 }

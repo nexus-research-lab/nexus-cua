@@ -1,4 +1,5 @@
 [
+  { "code": "user_active", "message": "fixture", "retryable": false, "recovery_action": "request_new_bounded_session", "mutation_status": "indeterminate" },
   { "code": "protocol_mismatch", "message": "fixture", "retryable": false, "recovery_action": "negotiate_protocol_version", "mutation_status": "not_applicable" },
   { "code": "unauthorized", "message": "fixture", "retryable": false, "recovery_action": null, "mutation_status": "not_applicable" },
   { "code": "invalid_request", "message": "fixture", "retryable": false, "recovery_action": "fix_request", "mutation_status": "not_applicable" },

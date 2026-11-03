@@ -35,6 +35,9 @@ use crate::validation::{validate_action, validate_clipboard_text, validate_manif
 const MAX_CONFIGURED_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_CLIPBOARD_CHANGE_MARKER_BYTES: usize = 256;
 
+/// Default guarded observation lifetime shared by service and adapters.
+pub const DEFAULT_MAX_OBSERVATION_AGE_SECONDS: u64 = 120;
+
 /// Runtime limits selected by the embedding host.
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
@@ -62,6 +65,8 @@ pub struct RuntimeConfig {
     pub max_elements_per_observation: usize,
     /// Maximum physical displays projected into one session.
     pub max_displays_per_session: usize,
+    /// Maximum model image long edge, applied at native capture where supported.
+    pub max_image_edge: u32,
     /// Maximum decoded screenshot pixels.
     pub max_image_pixels: u64,
     /// Maximum screenshot files retained for one live session.
@@ -81,7 +86,7 @@ impl RuntimeConfig {
             artifact_root: artifact_root.into(),
             max_session_ttl: StdDuration::from_secs(60 * 60),
             discovery_ttl: StdDuration::from_secs(30),
-            max_observation_age: StdDuration::from_secs(30),
+            max_observation_age: StdDuration::from_secs(DEFAULT_MAX_OBSERVATION_AGE_SECONDS),
             max_observations_per_session: 32,
             max_active_sessions: 64,
             max_discovered_applications: 256,
@@ -90,6 +95,7 @@ impl RuntimeConfig {
             max_launch_discovery_records: 2_048,
             max_elements_per_observation: 2_000,
             max_displays_per_session: 16,
+            max_image_edge: 1568,
             max_image_pixels: 100_000_000,
             max_artifacts_per_session: 32,
             max_artifact_workers: 2,
@@ -163,6 +169,7 @@ impl Runtime {
             || config.max_discovered_launchable_applications > config.max_launch_discovery_records
             || config.max_elements_per_observation == 0
             || config.max_displays_per_session == 0
+            || !(1..=4096).contains(&config.max_image_edge)
             || config.max_image_pixels == 0
             || config.max_artifacts_per_session == 0
             || config.max_artifact_workers == 0
@@ -176,10 +183,14 @@ impl Runtime {
                 None,
             ));
         }
+        driver
+            .configure_max_image_edge(config.max_image_edge)
+            .map_err(CuaError::from)?;
         let artifacts = Arc::new(ArtifactStore::new(
             &config.artifact_root,
             config.max_image_pixels,
             config.max_artifacts_per_session,
+            config.max_image_edge,
         )?);
         let artifact_workers = Arc::new(Semaphore::new(config.max_artifact_workers));
         Ok(Self {
@@ -303,12 +314,14 @@ impl Runtime {
         self.config.policy.authorize(&command)?;
         self.ensure_scheduler()?;
         match command {
-            Command::GetCapabilities => self
-                .driver
-                .capabilities()
-                .await
-                .map(CommandResult::Capabilities)
-                .map_err(Into::into),
+            Command::GetCapabilities => {
+                let mut capabilities = self.driver.capabilities().await?;
+                capabilities.observe_after = true;
+                capabilities.action_limits = nexus_cua_protocol::ActionLimits::default();
+                capabilities.action_limits.max_session_ttl_seconds =
+                    u32::try_from(self.config.max_session_ttl.as_secs()).unwrap_or(u32::MAX);
+                Ok(CommandResult::Capabilities(Box::new(capabilities)))
+            }
             Command::GetPermissionStatus => self
                 .driver
                 .permission_status()
@@ -334,7 +347,8 @@ impl Runtime {
             Command::ListApps(input) => self.list_apps(input).await,
             Command::ListWindows(input) => self.list_windows(input).await,
             Command::ListDisplays(input) => self.list_displays(input).await,
-            Command::ObserveWindow(input) => self.observe_window(input).await,
+            Command::ObserveWindow(input) => self.observe_window(input, false).await,
+            Command::ObserveApplicationScene(input) => self.observe_window(input, true).await,
             Command::ObserveDisplay(input) => self.observe_display(input).await,
             Command::ReadClipboard(input) => self.read_clipboard(input).await,
             Command::WriteClipboard(input) => self.write_clipboard(input).await.map_err(|error| {
@@ -749,6 +763,10 @@ impl Runtime {
             )
         })?;
         let session = Arc::new(Session {
+            activity: Arc::default(),
+            interruption: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            driver: Arc::clone(&self.driver),
+            closed: Arc::new(AtomicBool::new(true)),
             id: session_id.clone(),
             manifest: input.manifest,
             allowed_applications,
@@ -764,6 +782,14 @@ impl Runtime {
                 Some("close_unused_session"),
             ));
         }
+        session.closed.store(false, Ordering::Release);
+        self.driver
+            .session_started_guarded(
+                &session_id,
+                session.action_guard(),
+                session.manifest.allow_foreground_input,
+            )
+            .map_err(CuaError::from)?;
         sessions.insert(session_id.clone(), session);
         drop(sessions);
         self.signal_reschedule()?;
@@ -776,9 +802,7 @@ impl Runtime {
 
     async fn close_session(&self, input: SessionInput) -> Result<CommandResult, CuaError> {
         let removed = self.sessions.write().await.remove(&input.session_id);
-        if removed.is_none() {
-            return Err(session_unavailable());
-        }
+        removed.ok_or_else(session_unavailable)?.close();
         self.artifacts.remove_session(&input.session_id);
         self.signal_reschedule()?;
         info!(session_id = %input.session_id, "computer-use session closed");
@@ -932,9 +956,21 @@ impl Runtime {
         } else {
             None
         };
+        // Pass the complete authorized scope to one native enumeration. Optional
+        // AX enrichment must not query unrelated applications.
+        let application_keys: Vec<_> = session
+            .allowed_applications
+            .iter()
+            .filter(|application| {
+                application_key
+                    .as_ref()
+                    .is_none_or(|key| key == &application.key)
+            })
+            .map(|application| application.key.clone())
+            .collect();
         let windows = self
             .driver
-            .list_windows(application_key.as_deref())
+            .list_windows(&application_keys)
             .await
             .map_err(CuaError::from)?;
         let mut state = session.state.lock().await;
@@ -950,7 +986,7 @@ impl Runtime {
                 app_ref,
                 title: window.title,
                 screen_bounds: window.screen_bounds,
-                minimized: window.minimized,
+                state: window.state,
                 visible: window.visible,
                 foreground: window.foreground,
             });
@@ -1023,6 +1059,10 @@ impl Runtime {
         let screenshot = self
             .write_screenshot(session.id.clone(), image, screen_bounds)
             .await?;
+        if session.closed.load(Ordering::Acquire) || session.expires_at <= Instant::now() {
+            self.artifacts.remove_session(&session.id);
+            return Err(session_unavailable());
+        }
         let captured_at = OffsetDateTime::now_utc().format(&Rfc3339).map_err(|_| {
             public_error(
                 ErrorCode::Internal,
@@ -1048,6 +1088,7 @@ impl Runtime {
     async fn observe_window(
         &self,
         input: nexus_cua_protocol::ObserveWindowInput,
+        application_scene: bool,
     ) -> Result<CommandResult, CuaError> {
         let session = self.session(&input.session_id).await?;
         let window = {
@@ -1061,9 +1102,19 @@ impl Runtime {
         if !session.allows_application(&window.application) {
             return Err(capability_denied());
         }
+        let capture_started_at = std::time::Instant::now();
         let mut observation = self
-            .observe_driver_window(&window, input.include_screenshot, input.accessibility)
+            .observe_driver_window(
+                &session.id,
+                &window,
+                input.include_screenshot,
+                input.accessibility,
+                application_scene,
+            )
             .await?;
+        if session.closed.load(Ordering::Acquire) || session.expires_at <= Instant::now() {
+            return Err(session_unavailable());
+        }
         if observation.window_key != window.key {
             return Err(public_error(
                 ErrorCode::Internal,
@@ -1090,6 +1141,10 @@ impl Runtime {
                 ));
             }
         };
+        if session.closed.load(Ordering::Acquire) || session.expires_at <= Instant::now() {
+            self.artifacts.remove_session(&session.id);
+            return Err(session_unavailable());
+        }
         let captured_at = OffsetDateTime::now_utc().format(&Rfc3339).map_err(|_| {
             public_error(
                 ErrorCode::Internal,
@@ -1102,12 +1157,14 @@ impl Runtime {
         let mut state = session.state.lock().await;
         state.invalidate_window_observations(&input.window_ref);
         state.trim_observations(self.config.max_observations_per_session);
-        let (record, elements) = project_observation(
+        let (mut record, elements) = project_observation(
             &observation,
             &input.window_ref,
             screenshot.as_ref().map(|artifact| artifact.mapping),
             self.config.max_elements_per_observation,
         );
+        record.application_scene = application_scene;
+        record.created_at = capture_started_at;
         let observation_id = record.id.clone();
         let elements_complete = observation.elements_complete
             && observation.elements.len() <= self.config.max_elements_per_observation;
@@ -1136,23 +1193,31 @@ impl Runtime {
 
     async fn observe_driver_window(
         &self,
+        session_id: &SessionId,
         window: &DriverWindow,
         include_screenshot: bool,
         accessibility: nexus_cua_protocol::AccessibilityMode,
+        application_scene: bool,
     ) -> Result<DriverObservation, CuaError> {
-        let first = self
-            .driver
-            .observe_window(window, include_screenshot, accessibility)
-            .await;
-        if matches!(
-            &first,
-            Err(error) if error.kind == DriverErrorKind::StaleObservation
-        ) {
-            return self
-                .driver
-                .observe_window(window, include_screenshot, accessibility)
-                .await
-                .map_err(Into::into);
+        let observe = || async {
+            if application_scene {
+                self.driver
+                    .observe_application_scene_scoped(
+                        session_id,
+                        window,
+                        include_screenshot,
+                        accessibility,
+                    )
+                    .await
+            } else {
+                self.driver
+                    .observe_window_scoped(session_id, window, include_screenshot, accessibility)
+                    .await
+            }
+        };
+        let first = observe().await;
+        if matches!(&first, Err(error) if error.kind == DriverErrorKind::StaleObservation) {
+            return observe().await.map_err(Into::into);
         }
         first.map_err(Into::into)
     }
@@ -1194,23 +1259,73 @@ impl Runtime {
         &self,
         input: nexus_cua_protocol::PerformActionInput,
     ) -> Result<CommandResult, CuaError> {
+        let after = input.observe_after.as_ref().map(|options| {
+            let observation = nexus_cua_protocol::ObserveWindowInput {
+                session_id: input.session_id.clone(),
+                window_ref: input.window_ref.clone(),
+                include_screenshot: options.include_screenshot,
+                accessibility: options.accessibility,
+            };
+            if options.application_scene {
+                Command::ObserveApplicationScene(observation)
+            } else {
+                Command::ObserveWindow(observation)
+            }
+        });
+        if let Some(command) = &after {
+            self.config.policy.authorize(command).map_err(|error| {
+                error.with_mutation_status(nexus_cua_protocol::MutationStatus::NotDispatched)
+            })?;
+        }
+        let result = self.perform_action_only(input).await?;
+        let CommandResult::ActionPerformed(mut output) = result else {
+            return Ok(result);
+        };
+        if let Some(command) = after {
+            let (input, scene) = match command {
+                Command::ObserveWindow(input) => (input, false),
+                Command::ObserveApplicationScene(input) => (input, true),
+                _ => unreachable!("post-action read is a window observation"),
+            };
+            match self.observe_after_action(input, scene).await {
+                Ok(CommandResult::WindowObserved(observation)) => {
+                    output.observation = Some(observation);
+                }
+                Err(error) => output.observation_error = Some(error),
+                _ => unreachable!("window observation result"),
+            }
+        }
+        Ok(CommandResult::ActionPerformed(output))
+    }
+
+    async fn observe_after_action(
+        &self,
+        input: nexus_cua_protocol::ObserveWindowInput,
+        scene: bool,
+    ) -> Result<CommandResult, CuaError> {
+        if input.include_screenshot {
+            let session = self.session(&input.session_id).await?;
+            let window = session
+                .state
+                .lock()
+                .await
+                .windows
+                .get(&input.window_ref)
+                .cloned()
+                .ok_or_else(reference_not_found)?;
+            self.driver.settle_window(&window, scene).await?;
+        }
+        self.observe_window(input, scene).await
+    }
+
+    async fn perform_action_only(
+        &self,
+        input: nexus_cua_protocol::PerformActionInput,
+    ) -> Result<CommandResult, CuaError> {
         let session = self.session(&input.session_id).await?;
-        if session.manifest.mode != PermissionMode::Bounded
-            || !session
-                .manifest
-                .allowed_actions
-                .contains(&input.action.kind())
-        {
-            return Err(capability_denied());
-        }
-        if input.action.requires_foreground() && !session.manifest.allow_foreground_input {
-            return Err(public_error(
-                ErrorCode::ForegroundRequired,
-                "action requires foreground input not granted by this session",
-                false,
-                Some("request_foreground_authorization"),
-            ));
-        }
+        validate_action_authority(&session, &input.action)?;
+        let mut guard = session.action_guard();
+        guard.wait_until_idle().await?;
         let _foreground_lane = if input.action.requires_foreground() {
             Some(self.foreground_lane.try_lock().map_err(|_| {
                 public_error(
@@ -1247,20 +1362,28 @@ impl Runtime {
                 return Err(stale_observation());
             }
             validate_action(&input.action, observation.screenshot_mapping)?;
+            guard.observed_at = Some(observation.created_at);
+            guard.check_observation()?;
             let driver_action = resolve_action(&input.action, observation)?;
             observation.status = ObservationStatus::InFlight;
             (window, observation.fingerprint.clone(), driver_action)
         };
 
-        if !self
+        let verification = self
             .driver
             .observation_is_current(&window, &fingerprint)
             .await
-            .map_err(CuaError::from)?
-        {
+            .and_then(|current| {
+                guard.check()?;
+                guard.check_observation()?;
+                Ok(current)
+            });
+        if !matches!(verification, Ok(true)) {
             self.invalidate_observation(&session, &input.observation_id)
                 .await;
-            return Err(stale_observation());
+            return Err(verification
+                .err()
+                .map_or_else(stale_observation, CuaError::from));
         }
 
         let terminates_application =
@@ -1270,11 +1393,12 @@ impl Runtime {
             driver_action.supports_foreground_restoration();
         let result = self
             .driver
-            .perform_action(
+            .perform_action_scoped(
                 &window,
                 driver_action,
                 session.manifest.allow_foreground_input,
                 session.manifest.restore_foreground_after_input,
+                guard,
             )
             .await;
         self.invalidate_after_action_attempt(
@@ -1325,6 +1449,7 @@ impl Runtime {
             return Err(session_unavailable());
         };
         if session.expires_at <= Instant::now() {
+            session.close();
             sessions.remove(session_id);
             drop(sessions);
             self.artifacts.remove_session(session_id);
@@ -1490,6 +1615,8 @@ fn project_action_output(
         "computer-use action dispatched"
     );
     Ok(CommandResult::ActionPerformed(ActionOutput {
+        observation: None,
+        observation_error: None,
         delivery_mode: result.delivery_mode,
         dispatched: true,
         effect_status: result.effect_status,
@@ -1632,7 +1759,9 @@ async fn reap_due(
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for session_id in &expired {
-            sessions.remove(session_id);
+            if let Some(session) = sessions.remove(session_id) {
+                session.close();
+            }
         }
         expired
     };
@@ -1719,6 +1848,27 @@ fn reference_not_found() -> CuaError {
         false,
         Some("refresh_references"),
     )
+}
+
+fn validate_action_authority(
+    session: &Session,
+    action: &nexus_cua_protocol::Action,
+) -> Result<(), CuaError> {
+    session.action_guard().check().map_err(CuaError::from)?;
+    if session.manifest.mode != PermissionMode::Bounded
+        || !session.manifest.allowed_actions.contains(&action.kind())
+    {
+        return Err(capability_denied());
+    }
+    if action.requires_foreground() && !session.manifest.allow_foreground_input {
+        return Err(public_error(
+            ErrorCode::ForegroundRequired,
+            "action requires foreground input not granted by this session",
+            false,
+            Some("request_foreground_authorization"),
+        ));
+    }
+    Ok(())
 }
 
 fn capability_denied() -> CuaError {

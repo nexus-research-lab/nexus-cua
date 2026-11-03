@@ -1,11 +1,15 @@
 //! Authorized session state and public-reference projection.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 use nexus_cua_protocol::{
     AccessibilityElement, Action, AppRef, CapabilityManifest, ClipboardRef, CuaError, DisplayRef,
-    ElementRef, ErrorCode, ObservationId, ScreenPoint, ScreenshotMapping, ScreenshotPoint,
+    ElementRef, ErrorCode, NormalizedPoint, ObservationId, ScreenPoint, ScreenshotMapping,
     SessionId, WindowRef,
 };
 use tokio::sync::Mutex;
@@ -18,6 +22,10 @@ use crate::driver::{
 use crate::error::public_error;
 
 pub(crate) struct Session {
+    pub(crate) activity: Arc<std::sync::Mutex<crate::activity::InputActivity>>,
+    pub(crate) interruption: Arc<std::sync::atomic::AtomicU8>,
+    pub(crate) driver: Arc<dyn crate::DesktopDriver>,
+    pub(crate) closed: Arc<AtomicBool>,
     pub(crate) id: SessionId,
     pub(crate) manifest: CapabilityManifest,
     pub(crate) allowed_applications: Vec<DriverApplication>,
@@ -26,10 +34,30 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    pub(crate) fn action_guard(&self) -> crate::driver::DriverActionGuard {
+        crate::driver::DriverActionGuard::new(
+            Arc::clone(&self.interruption),
+            Arc::clone(&self.closed),
+            self.expires_at.into_std(),
+            Arc::clone(&self.activity),
+        )
+    }
+
+    pub(crate) fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            self.driver.session_closed(&self.id);
+        }
+    }
     pub(crate) fn allows_application(&self, application: &DriverApplication) -> bool {
         self.allowed_applications
             .iter()
             .any(|allowed| allowed.matches_generation(application))
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -149,6 +177,7 @@ pub(crate) struct ClipboardRecord {
 }
 
 pub(crate) struct ObservationRecord {
+    pub(crate) application_scene: bool,
     pub(crate) id: ObservationId,
     pub(crate) window_ref: WindowRef,
     pub(crate) screenshot_mapping: Option<ScreenshotMapping>,
@@ -211,6 +240,7 @@ pub(crate) fn project_observation(
     }
     (
         ObservationRecord {
+            application_scene: false,
             id: observation_id,
             window_ref: window_ref.clone(),
             screenshot_mapping,
@@ -223,10 +253,34 @@ pub(crate) fn project_observation(
     )
 }
 
+fn validate_scene_delivery(
+    action: &Action,
+    observation: &ObservationRecord,
+) -> Result<(), CuaError> {
+    if observation.application_scene
+        && matches!(
+            action,
+            Action::ClickPoint {
+                delivery: nexus_cua_protocol::DeliveryPreference::Background,
+                ..
+            }
+        )
+    {
+        return Err(public_error(
+            ErrorCode::Unsupported,
+            "application scene clicks require the foreground route; use an exact-window observation for background delivery",
+            false,
+            Some("observe_window"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_action(
     action: &Action,
     observation: &ObservationRecord,
 ) -> Result<DriverAction, CuaError> {
+    validate_scene_delivery(action, observation)?;
     let element = |element_ref: &ElementRef| {
         observation
             .elements
@@ -295,11 +349,11 @@ pub(crate) fn resolve_action(
         Action::TypeText { text } => DriverAction::TypeText { text: text.clone() },
         Action::PressKeys { keys } => DriverAction::PressKeys { keys: keys.clone() },
         Action::Scroll {
-            element_ref,
+            point,
             delta_x,
             delta_y,
         } => DriverAction::Scroll {
-            element_key: element_ref.as_ref().map(element_key).transpose()?,
+            point: resolve_screenshot_point(*point, observation)?,
             delta_x: *delta_x,
             delta_y: *delta_y,
         },
@@ -347,12 +401,16 @@ fn resolve_range_value(
 }
 
 fn resolve_screenshot_point(
-    point: ScreenshotPoint,
+    point: NormalizedPoint,
     observation: &ObservationRecord,
 ) -> Result<ScreenPoint, CuaError> {
     observation
         .screenshot_mapping
-        .and_then(|mapping| mapping.to_screen(point))
+        .and_then(|mapping| {
+            point
+                .to_pixel(mapping.pixel_size)
+                .and_then(|pixel| mapping.to_screen(pixel))
+        })
         .ok_or_else(|| {
             public_error(
                 ErrorCode::InvalidRequest,

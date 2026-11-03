@@ -39,6 +39,7 @@ fn request_fixtures_cover_every_command() {
         "launch_application",
         "observe_display",
         "observe_window",
+        "observe_application_scene",
         "open_session",
         "perform_action",
         "read_clipboard",
@@ -93,6 +94,7 @@ fn error_fixtures_cover_every_stable_code() {
         "deadline_exceeded",
         "driver_failure",
         "foreground_required",
+        "user_active",
         "internal",
         "invalid_request",
         "permission_required",
@@ -143,6 +145,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::ListWindows(_) => "list_windows",
         Command::ListDisplays(_) => "list_displays",
         Command::ObserveWindow(_) => "observe_window",
+        Command::ObserveApplicationScene(_) => "observe_application_scene",
         Command::ObserveDisplay(_) => "observe_display",
         Command::ReadClipboard(_) => "read_clipboard",
         Command::WriteClipboard(_) => "write_clipboard",
@@ -172,4 +175,18 @@ fn result_name(result: &CommandResult) -> &'static str {
         CommandResult::MutationReconciled(_) => "mutation_reconciled",
         CommandResult::StateVerified(_) => "state_verified",
     }
+}
+
+#[test]
+fn scroll_rejects_removed_semantic_target_even_when_null() {
+    let invalid = include_str!(
+        "../../../fixtures/compatibility/nexus.cua.v1/invalid/scroll-element-ref.json"
+    );
+    assert!(serde_json::from_str::<RequestEnvelope>(invalid).is_err());
+    let mut valid: serde_json::Value = serde_json::from_str(invalid).unwrap();
+    valid["command"]["input"]["action"]
+        .as_object_mut()
+        .unwrap()
+        .remove("element_ref");
+    assert!(serde_json::from_value::<RequestEnvelope>(valid).is_ok());
 }

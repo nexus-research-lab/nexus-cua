@@ -153,6 +153,9 @@ pub(crate) struct WindowObserveArgs {
     /// Include the bounded transient PNG content block.
     #[arg(long, default_value_t = false)]
     include_screenshot: bool,
+    /// Capture only the authorized application's scene on the anchor display.
+    #[arg(long)]
+    application_scene: bool,
     /// Bounded semantic-tree detail.
     #[arg(long, value_enum, default_value_t = AccessibilityArg::Interactive)]
     accessibility: AccessibilityArg,
@@ -316,6 +319,7 @@ pub(crate) async fn run_window(args: WindowArgs) -> Result<(), AgentError> {
                 json!({
                     "window_ref": args.window_ref,
                     "include_screenshot": args.include_screenshot,
+                    "application_scene": args.application_scene,
                     "accessibility": args.accessibility.name(),
                 }),
             )

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    /// User input took over the authorized session; automatic resumption is forbidden.
+    UserActive,
     /// The request used a different protocol version.
     ProtocolMismatch,
     /// Transport token is missing or invalid.

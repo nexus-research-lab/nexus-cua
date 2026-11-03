@@ -25,7 +25,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -230,14 +230,28 @@ impl CaptureState {
         target: CaptureTarget,
         screen_bounds: ScreenRect,
     ) -> Result<(RgbaImage, ScreenRect), DriverError> {
-        if let CaptureTarget::Display(raw_monitor) = target
-            && monitor_bounds(raw_monitor)? != screen_bounds
+        let target = if let CaptureTarget::Display(raw_monitor) = target {
+            // Resolve from the current topology on this actor immediately before
+            // using the monitor. Never substitute a different display silently.
+            CaptureTarget::Display(resolve_monitor(
+                raw_monitor,
+                screen_bounds,
+                &super::discovery::list_displays()?,
+            )?)
+        } else {
+            target
+        };
+        let current_generation = self.mutation_generation.load(Ordering::Acquire);
+        // WGC can stop delivering frames when pixels remain unchanged (for
+        // example a pointer move with cursor capture disabled). After a mutation,
+        // an old queued frame cannot prove freshness either. Start a fresh
+        // session once for this generation instead of waiting for dirty pixels.
+        if self
+            .pipelines
+            .get(target_key)
+            .is_some_and(|pipeline| pipeline.latest_generation != current_generation)
         {
-            return Err(DriverError::new(
-                DriverErrorKind::StaleObservation,
-                "Windows display topology changed before capture",
-            )
-            .retryable("list_displays_again"));
+            self.pipelines.remove(target_key);
         }
         self.ensure_pipeline(target_key, target)?;
         let pipeline = self
@@ -263,7 +277,6 @@ impl CaptureState {
             pipeline.latest_image = None;
         }
         pipeline.last_used = Instant::now();
-        let current_generation = self.mutation_generation.load(Ordering::Acquire);
         let cache_is_current =
             pipeline.latest_image.is_some() && pipeline.latest_generation == current_generation;
         let wait = if cache_is_current {
@@ -372,7 +385,37 @@ impl Drop for CapturePipeline {
     }
 }
 
+fn resolve_monitor(
+    raw_monitor: isize,
+    bounds: ScreenRect,
+    displays: &[super::discovery::NativeDisplay],
+) -> Result<isize, DriverError> {
+    let display = displays
+        .iter()
+        .find(|display| display.raw_monitor == raw_monitor)
+        .ok_or_else(target_unavailable)?;
+    if display.screen_bounds != bounds {
+        return Err(DriverError::new(
+            DriverErrorKind::StaleObservation,
+            format!(
+                "Windows display topology changed before capture ({})",
+                display.device_name
+            ),
+        )
+        .retryable("list_displays_again"));
+    }
+    Ok(display.raw_monitor)
+}
+
 fn capture_item(target: CaptureTarget) -> Result<GraphicsCaptureItem, DriverError> {
+    if !GraphicsCaptureSession::IsSupported()
+        .map_err(|_| capture_failure("could not query WGC support"))?
+    {
+        return Err(DriverError::new(
+            DriverErrorKind::Unsupported,
+            "Windows Graphics Capture is not supported in this session",
+        ));
+    }
     let interop: IGraphicsCaptureItemInterop = factory::<GraphicsCaptureItem, _>()
         .map_err(|_| capture_failure("WGC activation factory is unavailable"))?;
     // SAFETY: The interop methods consume only copied native handles and
@@ -382,27 +425,17 @@ fn capture_item(target: CaptureTarget) -> Result<GraphicsCaptureItem, DriverErro
             CaptureTarget::Window(raw_hwnd) => interop.CreateForWindow(hwnd(raw_hwnd)),
             CaptureTarget::Display(raw_monitor) => interop.CreateForMonitor(hmonitor(raw_monitor)),
         }
-        .map_err(|_| target_unavailable())
+        .map_err(|error| {
+            DriverError::new(
+                DriverErrorKind::TargetUnavailable,
+                format!(
+                    "WGC target creation failed (HRESULT {:#010x})",
+                    error.code().0
+                ),
+            )
+            .retryable("list_windows")
+        })
     }
-}
-
-fn monitor_bounds(raw_monitor: isize) -> Result<ScreenRect, DriverError> {
-    let mut info = MONITORINFO {
-        cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or(u32::MAX),
-        ..Default::default()
-    };
-    // SAFETY: GetMonitorInfoW copies fixed-size data for the revalidated
-    // monitor handle into the initialized structure.
-    if !unsafe { GetMonitorInfoW(hmonitor(raw_monitor), &raw mut info) }.as_bool() {
-        return Err(target_unavailable());
-    }
-    let bounds = info.rcMonitor;
-    Ok(ScreenRect {
-        x: f64::from(bounds.left),
-        y: f64::from(bounds.top),
-        width: f64::from(bounds.right.saturating_sub(bounds.left)),
-        height: f64::from(bounds.bottom.saturating_sub(bounds.top)),
-    })
 }
 
 fn newest_frame(
@@ -412,7 +445,11 @@ fn newest_frame(
     let deadline = Instant::now() + wait;
     loop {
         let mut newest = None;
-        while let Ok(frame) = pool.TryGetNextFrame() {
+        // The pool owns two buffers; do not chase an actively producing stream.
+        for _ in 0..2 {
+            let Ok(frame) = pool.TryGetNextFrame() else {
+                break;
+            };
             if let Some(previous) = newest.replace(frame) {
                 let _ = previous.Close();
             }

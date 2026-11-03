@@ -188,8 +188,8 @@
               "const": "click_point"
             },
             "point": {
-              "description": "Integer coordinate in the guarded screenshot artifact.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "description": "Normalized 0..1000 coordinate in the guarded screenshot.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -219,8 +219,8 @@
               "const": "press_point"
             },
             "point": {
-              "description": "Integer coordinate in the guarded screenshot artifact.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "description": "Normalized 0..1000 coordinate in the guarded screenshot.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -357,8 +357,8 @@
               "const": "move_pointer"
             },
             "point": {
-              "description": "Integer coordinate in the guarded screenshot artifact.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "description": "Normalized 0..1000 coordinate in the guarded screenshot.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -410,7 +410,7 @@
           ]
         },
         {
-          "description": "Scrolls by physical pixel deltas.",
+          "description": "Scrolls by logical pixel deltas.",
           "type": "object",
           "properties": {
             "delta_x": {
@@ -423,25 +423,19 @@
               "type": "number",
               "format": "double"
             },
-            "element_ref": {
-              "description": "Optional semantic target.",
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ElementRef"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
             "kind": {
               "type": "string",
               "const": "scroll"
+            },
+            "point": {
+              "description": "Required normalized target point; dispatch verifies native hit-test ownership.",
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
           "required": [
             "kind",
+            "point",
             "delta_x",
             "delta_y"
           ]
@@ -458,7 +452,7 @@
             },
             "from": {
               "description": "Starting point.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "$ref": "#/$defs/NormalizedPoint"
             },
             "kind": {
               "type": "string",
@@ -466,7 +460,7 @@
             },
             "to": {
               "description": "Ending point.",
-              "$ref": "#/$defs/ScreenshotPoint"
+              "$ref": "#/$defs/NormalizedPoint"
             }
           },
           "additionalProperties": false,
@@ -513,7 +507,7 @@
           "const": "invoke_element"
         },
         {
-          "description": "Click at a physical pixel coordinate.",
+          "description": "Click at a normalized coordinate.",
           "type": "string",
           "const": "click_point"
         },
@@ -568,7 +562,7 @@
           "const": "scroll"
         },
         {
-          "description": "Drag between two physical pixel coordinates.",
+          "description": "Drag between two normalized coordinates.",
           "type": "string",
           "const": "drag"
         }
@@ -834,6 +828,24 @@
           ]
         },
         {
+          "description": "Observe the authorized application's scene on the anchor window's display.\nThe returned window observation retains the anchor guard; its screenshot\nmapping covers the display and never grants authority to other applications.",
+          "type": "object",
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/ObserveWindowInput"
+            },
+            "operation": {
+              "type": "string",
+              "const": "observe_application_scene"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "input"
+          ]
+        },
+        {
           "description": "Capture one exact physical display for desktop overview.",
           "type": "object",
           "properties": {
@@ -1048,9 +1060,58 @@
         "session_id"
       ]
     },
+    "NormalizedPoint": {
+      "description": "A top-left-origin point normalized to the inclusive range 0..1000.\nThis coordinate space is independent of captured or model-resized image dimensions.",
+      "type": "object",
+      "properties": {
+        "x": {
+          "description": "Finite horizontal coordinate in the inclusive range 0..1000.",
+          "type": "number",
+          "format": "double",
+          "maximum": 1000,
+          "minimum": 0
+        },
+        "y": {
+          "description": "Finite vertical coordinate in the inclusive range 0..1000.",
+          "type": "number",
+          "format": "double",
+          "maximum": 1000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ]
+    },
     "ObservationId": {
       "description": "Identity for one immutable window or display observation.",
       "type": "string"
+    },
+    "ObserveAfterOptions": {
+      "description": "Bounded post-action observation of the same authorized target.",
+      "type": "object",
+      "properties": {
+        "accessibility": {
+          "description": "Accessibility detail requested for the resulting state.",
+          "$ref": "#/$defs/AccessibilityMode"
+        },
+        "application_scene": {
+          "description": "Include same-process menus and popups on the anchor display.",
+          "type": "boolean",
+          "default": false
+        },
+        "include_screenshot": {
+          "description": "Include an image using the configured capture size limit.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "include_screenshot",
+        "accessibility"
+      ]
     },
     "ObserveDisplayInput": {
       "description": "Input for capturing one exact physical display.",
@@ -1125,6 +1186,17 @@
         "observation_id": {
           "description": "Fresh observation guarding the action.",
           "$ref": "#/$defs/ObservationId"
+        },
+        "observe_after": {
+          "description": "Optional fresh observation returned with the action result.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObserveAfterOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "session_id": {
           "description": "Runtime-issued session identity.",
@@ -1248,29 +1320,6 @@
         "y",
         "width",
         "height"
-      ]
-    },
-    "ScreenshotPoint": {
-      "description": "An integer pixel coordinate in the exact screenshot artifact.",
-      "type": "object",
-      "properties": {
-        "x": {
-          "description": "Zero-based horizontal pixel coordinate.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "y": {
-          "description": "Zero-based vertical pixel coordinate.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "x",
-        "y"
       ]
     },
     "SensitiveText": {

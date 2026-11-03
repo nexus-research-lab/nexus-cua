@@ -11,10 +11,10 @@ use nexus_cua_protocol::{
     AccessibilityMode, Action, ActionKind, ApplicationLifecycleOperation, AuthorizationToken,
     CapabilityManifest, CaptureMode, Command, CommandResult, CuaError, DeliveryMode,
     DiscoverApplicationsOutput, DiscoverLaunchableApplicationsOutput, ErrorCode,
-    LaunchApplicationInput, ListWindowsInput, MutationStatus, ObserveDisplayInput,
+    LaunchApplicationInput, ListWindowsInput, MutationStatus, NormalizedPoint, ObserveDisplayInput,
     OpenSessionInput, PROTOCOL_VERSION, PerformActionInput, PermissionMode, Platform,
-    PointerButton, RequestEnvelope, RequestId, ResponseOutcome, ScreenRect, ScreenshotPoint,
-    SensitiveText, SessionInput, WindowObservation, WindowSummary,
+    PointerButton, RequestEnvelope, RequestId, ResponseOutcome, ScreenRect, SensitiveText,
+    SessionInput, WindowObservation, WindowSummary,
 };
 use nexus_cua_transport::LocalEndpoint;
 use serde_json::{Value, json};
@@ -66,7 +66,12 @@ enum HarnessCommand {
         /// Fail unless every required scenario is automated and passed.
         #[arg(long)]
         enforce: bool,
+        /// Diagnose the window path independently; never counts as full acceptance.
+        #[arg(long, conflicts_with = "enforce")]
+        window_only: bool,
     },
+    /// Diagnose occlusion and minimization using semantic actions only.
+    DesktopConditions,
     /// Prove installed discovery, cold launch, session admission, and termination.
     Lifecycle,
     /// Measure warm end-to-end latency distributions against absolute budgets.
@@ -90,6 +95,7 @@ struct Client {
     authorization: AuthorizationToken,
     max_frame_bytes: usize,
     sequence: u64,
+    phase: &'static str,
 }
 
 impl Client {
@@ -112,6 +118,7 @@ impl Client {
             authorization: AuthorizationToken::new(token),
             max_frame_bytes: cli.max_frame_bytes,
             sequence: 0,
+            phase: "setup",
         })
     }
 
@@ -119,8 +126,13 @@ impl Client {
         match self.send_outcome(command).await? {
             Ok(result) => Ok(result),
             Err(error) => Err(format!(
-                "runtime error {:?}/{:?}: {} ({:?})",
-                error.code, error.mutation_status, error.message, error.recovery_action
+                "phase={} request={} runtime error {:?}/{:?}: {} ({:?})",
+                self.phase,
+                self.sequence,
+                error.code,
+                error.mutation_status,
+                error.message,
+                error.recovery_action
             )
             .into()),
         }
@@ -177,7 +189,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         HarnessCommand::Inspect { no_screenshot } => {
             inspect(&cli, &mut client, !*no_screenshot).await
         }
-        HarnessCommand::Validate { enforce } => validate(&cli, &mut client, *enforce).await,
+        HarnessCommand::Validate {
+            enforce,
+            window_only,
+        } => validate(&cli, &mut client, *enforce, *window_only).await,
+        HarnessCommand::DesktopConditions => {
+            let capabilities = match client.send(Command::GetCapabilities).await? {
+                CommandResult::Capabilities(value) => value,
+                other => return Err(unexpected("capabilities", &other)),
+            };
+            validate_desktop_conditions(&cli, &mut client, &capabilities).await?;
+            println!("{{\"desktop_conditions\":\"passed\",\"status\":\"partial\"}}");
+            Ok(())
+        }
         HarnessCommand::Lifecycle => validate_lifecycle(&cli, &mut client).await,
         HarnessCommand::Benchmark(args) => performance::benchmark(&cli, &mut client, args).await,
         HarnessCommand::Soak(args) => performance::soak(&cli, &mut client, args).await,
@@ -312,7 +336,12 @@ async fn validate_lifecycle(cli: &Cli, client: &mut Client) -> Result<(), Box<dy
     Ok(())
 }
 
-async fn validate(cli: &Cli, client: &mut Client, enforce: bool) -> Result<(), Box<dyn Error>> {
+async fn validate(
+    cli: &Cli,
+    client: &mut Client,
+    enforce: bool,
+    window_only: bool,
+) -> Result<(), Box<dyn Error>> {
     let capabilities = match client.send(Command::GetCapabilities).await? {
         CommandResult::Capabilities(value) => value,
         other => return Err(unexpected("capabilities", &other)),
@@ -326,7 +355,11 @@ async fn validate(cli: &Cli, client: &mut Client, enforce: bool) -> Result<(), B
         other => return Err(unexpected("application discovery", &other)),
     };
     let application = select_application(&discovered, &cli.application_match)?;
-    let display_capture = capabilities.capture_modes.contains(&CaptureMode::Display);
+    let display_capture =
+        !window_only && capabilities.capture_modes.contains(&CaptureMode::Display);
+    if !window_only && !display_capture {
+        return Err("driver does not advertise separately authorized display capture".into());
+    }
     let session = match client
         .send(Command::OpenSession(OpenSessionInput {
             manifest: CapabilityManifest {
@@ -393,12 +426,16 @@ async fn validate_session(
     platform: Platform,
     display_capture: bool,
 ) -> Result<(Value, Vec<String>), Box<dyn Error>> {
-    if !display_capture {
-        return Err("driver does not advertise separately authorized display capture".into());
-    }
-    let display_artifact = validate_display_overview(client, session_id).await?;
-    let windows = list_windows(client, session_id).await?;
+    let display_artifact = if display_capture {
+        Some(validate_display_overview(client, session_id).await?)
+    } else {
+        None
+    };
+    let windows = list_windows(client, session_id)
+        .await
+        .map_err(|error| format!("initial window discovery: {error}"))?;
     let window = select_window(windows, &cli.window_title_prefix)?;
+    client.phase = "initial observation";
     let reconciled = reconcile_observation(client, session_id, &window).await?;
     validate_initial_observation(&window, &reconciled)?;
     let baseline = observe(client, session_id, &window, true, AccessibilityMode::Full).await?;
@@ -427,6 +464,7 @@ async fn validate_session(
         .as_ref()
         .map(|artifact| artifact.path.clone());
 
+    client.phase = "semantic actions";
     let increment = find_actionable(&initial, "Increment Counter", "invoke")?;
     perform(
         client,
@@ -441,6 +479,7 @@ async fn validate_session(
     .await?;
     let stale_retry = client
         .send_outcome(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: initial.observation_id.clone(),
@@ -495,6 +534,7 @@ async fn validate_session(
     }
     let outside = client
         .send_outcome(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: after_text.observation_id.clone(),
@@ -608,6 +648,7 @@ async fn validate_session(
         ActionKind::MovePointer,
     )
     .await?;
+    client.phase = "pointer move";
     let after_move = observe(client, session_id, &window, true, AccessibilityMode::Full).await?;
     require_state(&after_move, &["counter=1"])?;
     let increment_point = element_screenshot_point(&after_move, "Increment Counter")?;
@@ -735,30 +776,29 @@ async fn validate_session(
     .await?;
     let after_type = observe(client, session_id, &window, true, AccessibilityMode::Full).await?;
 
-    let scroll_point = element_screenshot_point(&after_type, "Fixture Scroll Region")?;
     perform(
         client,
         session_id,
         &window,
         &after_type,
         Action::MovePointer {
-            point: scroll_point,
+            point: NormalizedPoint { x: 10.0, y: 10.0 },
             duration_ms: 60,
         },
         ActionKind::MovePointer,
     )
     .await?;
-    let before_scroll =
-        observe(client, session_id, &window, false, AccessibilityMode::Full).await?;
+    let before_scroll = observe(client, session_id, &window, true, AccessibilityMode::Full).await?;
+    let scroll_point = element_screenshot_point(&before_scroll, "Fixture Scroll Region")?;
     perform(
         client,
         session_id,
         &window,
         &before_scroll,
         Action::Scroll {
-            element_ref: None,
+            point: scroll_point,
             delta_x: 0.0,
-            delta_y: -180.0,
+            delta_y: 180.0,
         },
         ActionKind::Scroll,
     )
@@ -782,6 +822,7 @@ async fn validate_session(
     let after_drag = observe(client, session_id, &window, false, AccessibilityMode::Full).await?;
     require_state(&after_drag, &["dropped=true"])?;
 
+    client.phase = "geometry change";
     let geometry = find_actionable(&after_drag, "Change Fixture Geometry", "invoke")?;
     perform(
         client,
@@ -801,9 +842,13 @@ async fn validate_session(
         window.screen_bounds,
     )
     .await?;
+    client.phase = "display transition";
     let (display_window, display_conditions) =
-        validate_display_transition(client, session_id, &moved_window).await?;
+        validate_display_transition(client, session_id, &moved_window)
+            .await
+            .map_err(|error| format!("display transition: {error}"))?;
 
+    client.phase = "window replacement";
     let before_replace = observe(
         client,
         session_id,
@@ -842,13 +887,13 @@ async fn validate_session(
     Ok((
         json!({
             "fixture_contract": "nexus.cua.fixture.v1",
-            "status": if topology_complete { "passed" } else { "partial" },
+            "status": if topology_complete && display_capture { "passed" } else { "partial" },
             "platform": platform,
             "architecture": std::env::consts::ARCH,
             "scenario_groups": {
                 "discovery_and_identity": "passed",
                 "observation": "passed",
-                "display_overview": "passed",
+                "display_overview": if display_capture { "passed" } else { "skipped" },
                 "secure_redaction": "passed",
                 "semantic_mutation": "passed",
                 "foreground_mutation": "passed",
@@ -864,7 +909,8 @@ async fn validate_session(
             "element_count": initial.elements.len(),
             "screenshot_bytes": initial.screenshot.as_ref().map(|value| value.byte_length),
         }),
-        std::iter::once(display_artifact)
+        display_artifact
+            .into_iter()
             .chain(window_artifact)
             .collect(),
     ))
@@ -950,7 +996,9 @@ async fn validate_display_transition(
             }),
         ));
     };
-    let after_move = observe(client, session_id, &moved, true, AccessibilityMode::Full).await?;
+    let after_move = observe(client, session_id, &moved, true, AccessibilityMode::Full)
+        .await
+        .map_err(|error| format!("observe after display move: {error}"))?;
     let after_scale = screenshot_scale(&after_move)?;
     let point = element_screenshot_point(&after_move, "Increment Counter")?;
     perform(
@@ -1036,41 +1084,34 @@ async fn reconcile_observation(
         include_screenshot: true,
         accessibility: AccessibilityMode::Full,
     });
-    match client
-        .send_outcome_with(request_id.clone(), 1, command.clone())
-        .await?
-    {
-        Err(error) if error.code == ErrorCode::DeadlineExceeded => {}
-        Err(error) => {
-            return Err(format!(
-                "short reconciliation request returned {:?}, expected deadline_exceeded",
-                error.code
-            )
-            .into());
+    // Native scheduling cannot guarantee that a 1 ms request times out. Verify
+    // the observable replay contract instead; deterministic transport tests
+    // cover admission/deadline races without desktop timing assumptions.
+    let first = client
+        .send_outcome_with(request_id.clone(), 30_000, command.clone())
+        .await?;
+    let Ok(CommandResult::WindowObserved(first)) = first else {
+        return Err(match first {
+            Err(error) => format!(
+                "initial observation failed: {:?}: {}",
+                error.code, error.message
+            ),
+            Ok(_) => "initial observation returned unexpected result kind".to_owned(),
         }
-        Ok(_) => return Err("1 ms observation unexpectedly completed before its deadline".into()),
-    }
+        .into());
+    };
     match client
         .send_outcome_with(request_id, 30_000, command)
         .await?
     {
-        Ok(CommandResult::WindowObserved(value)) => Ok(*value),
-        Ok(other) => Err(unexpected("reconciled observation", &other)),
-        // Reconciliation promises the terminal result of the admitted request,
-        // not that the operation itself must succeed. A provider can be
-        // transiently unavailable while the 1 ms probe is in flight; receiving
-        // that stable terminal error still proves the ledger contract. Use a
-        // new request for the fixture correctness path after reconciliation.
-        Err(error)
-            if matches!(
-                error.code,
-                ErrorCode::TargetUnavailable | ErrorCode::TargetUnresponsive
-            ) && error.mutation_status == MutationStatus::NotApplicable =>
+        Ok(CommandResult::WindowObserved(value))
+            if value.observation_id == first.observation_id =>
         {
-            observe(client, session_id, window, true, AccessibilityMode::Full).await
+            Ok(*value)
         }
+        Ok(_) => Err("same-request observation did not preserve its result identity".into()),
         Err(error) => Err(format!(
-            "same-request reconciliation returned {:?}: {}",
+            "same-request observation failed: {:?}: {}",
             error.code, error.message
         )
         .into()),
@@ -1147,7 +1188,7 @@ async fn validate_session_expiry(cli: &Cli, client: &mut Client) -> Result<(), B
 async fn validate_desktop_conditions(
     cli: &Cli,
     client: &mut Client,
-    capabilities: &nexus_cua_protocol::DriverCapabilities,
+    _capabilities: &nexus_cua_protocol::DriverCapabilities,
 ) -> Result<(), Box<dyn Error>> {
     let discovered = match client.send(Command::DiscoverApplications).await? {
         CommandResult::ApplicationsDiscovered(value) => value,
@@ -1159,8 +1200,8 @@ async fn validate_desktop_conditions(
             manifest: CapabilityManifest {
                 mode: PermissionMode::Bounded,
                 application_refs: vec![application.discovery_ref.clone()],
-                allowed_actions: capabilities.actions.clone(),
-                allow_foreground_input: true,
+                allowed_actions: vec![ActionKind::InvokeElement],
+                allow_foreground_input: false,
                 restore_foreground_after_input: false,
                 allow_display_capture: false,
                 allow_clipboard_read: false,
@@ -1278,7 +1319,7 @@ async fn validate_desktop_session(
         .await?
         .into_iter()
         .find(|candidate| candidate.window_ref == window.window_ref)
-        .is_some_and(|candidate| candidate.minimized);
+        .is_some_and(|candidate| candidate.state == nexus_cua_protocol::WindowState::Minimized);
     if !still_minimized {
         return Err("minimized observation restored or lost the target implicitly".into());
     }
@@ -1292,16 +1333,22 @@ async fn wait_for_minimized(
 ) -> Result<(), Box<dyn Error>> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        if list_windows(client, session_id)
-            .await?
-            .into_iter()
-            .find(|candidate| candidate.window_ref == window.window_ref)
-            .is_some_and(|candidate| candidate.minimized)
+        let windows = list_windows(client, session_id).await?;
+        let current = windows
+            .iter()
+            .find(|candidate| candidate.window_ref == window.window_ref);
+        if current
+            .is_some_and(|candidate| candidate.state == nexus_cua_protocol::WindowState::Minimized)
         {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err("fixture window did not report minimized=true".into());
+            return Err(format!(
+                "fixture window did not report minimized state (state={:?}, listed={})",
+                current.map(|window| window.state),
+                windows.len()
+            )
+            .into());
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -1465,6 +1512,7 @@ async fn perform(
     };
     let result = client
         .send(Command::PerformAction(PerformActionInput {
+            observe_after: None,
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: observation.observation_id.clone(),
@@ -1660,7 +1708,7 @@ async fn wait_for_window_unavailable(
 fn element_screenshot_point(
     observation: &WindowObservation,
     name: &str,
-) -> Result<ScreenshotPoint, Box<dyn Error>> {
+) -> Result<NormalizedPoint, Box<dyn Error>> {
     let bounds = find_named(observation, name)?
         .screen_bounds
         .ok_or_else(|| format!("element {name:?} has no screen bounds"))?;
@@ -1675,7 +1723,7 @@ fn element_screenshot_point(
 fn screen_rect_center_to_screenshot(
     element: ScreenRect,
     mapping: nexus_cua_protocol::ScreenshotMapping,
-) -> Option<ScreenshotPoint> {
+) -> Option<NormalizedPoint> {
     let screen = mapping.screen_bounds;
     let left = element.x.max(screen.x);
     let top = element.y.max(screen.y);
@@ -1690,18 +1738,13 @@ fn screen_rect_center_to_screenshot(
     {
         return None;
     }
-    let x = (((left + right) * 0.5 - screen.x) * f64::from(mapping.pixel_size.width)
-        / screen.width)
+    let x = (((left + right) * 0.5 - screen.x) * 1000.0 / screen.width)
         .floor()
-        .clamp(0.0, f64::from(mapping.pixel_size.width - 1));
-    let y = (((top + bottom) * 0.5 - screen.y) * f64::from(mapping.pixel_size.height)
-        / screen.height)
+        .clamp(0.0, 1000.0);
+    let y = (((top + bottom) * 0.5 - screen.y) * 1000.0 / screen.height)
         .floor()
-        .clamp(0.0, f64::from(mapping.pixel_size.height - 1));
-    Some(ScreenshotPoint {
-        x: x as u32,
-        y: y as u32,
-    })
+        .clamp(0.0, 1000.0);
+    Some(NormalizedPoint { x, y })
 }
 
 fn select_window(
@@ -1721,7 +1764,7 @@ async fn observe(
     include_screenshot: bool,
     accessibility: AccessibilityMode,
 ) -> Result<WindowObservation, Box<dyn Error>> {
-    const MAX_ATTEMPTS: usize = 40;
+    const MAX_ATTEMPTS: usize = 3;
 
     for attempt in 0..MAX_ATTEMPTS {
         let outcome = client
@@ -1743,7 +1786,6 @@ async fn observe(
                     && matches!(
                         error.code,
                         ErrorCode::Busy
-                            | ErrorCode::DriverFailure
                             | ErrorCode::TargetUnavailable
                             | ErrorCode::TargetUnresponsive
                     ) =>
@@ -1752,8 +1794,13 @@ async fn observe(
             }
             Err(error) => {
                 return Err(format!(
-                    "runtime error {:?}/{:?}: {} ({:?})",
-                    error.code, error.mutation_status, error.message, error.recovery_action
+                    "phase={} request={} runtime error {:?}/{:?}: {} ({:?})",
+                    client.phase,
+                    client.sequence,
+                    error.code,
+                    error.mutation_status,
+                    error.message,
+                    error.recovery_action
                 )
                 .into());
             }
@@ -1784,7 +1831,13 @@ fn find_actionable<'a>(
         .find(|element| {
             element.name == name && element.actions.iter().any(|candidate| candidate == action)
         })
-        .ok_or_else(|| format!("element {name:?} does not expose action {action:?}").into())
+        .ok_or_else(|| {
+            format!(
+                "fixture element {name:?} does not expose action {action:?} (same_name={}, nodes={}, complete={}, truncation={:?})",
+                observation.elements.iter().filter(|element| element.name == name).count(),
+                observation.elements.len(), observation.elements_complete, observation.elements_truncation,
+            ).into()
+        })
 }
 
 fn require_state(
@@ -1798,7 +1851,7 @@ fn require_state(
         .ok_or("observation is missing Fixture State")?;
     for fragment in fragments {
         if !state.name.contains(fragment) {
-            return Err(format!("fixture state is missing {fragment:?}: {}", state.name).into());
+            return Err(format!("fixture state is missing expected marker {fragment:?}").into());
         }
     }
     Ok(())
