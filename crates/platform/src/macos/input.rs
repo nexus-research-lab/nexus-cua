@@ -10,6 +10,7 @@ use core_graphics::event::{
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
+use foreign_types::ForeignType;
 use nexus_cua_protocol::{PointerButton, ScreenPoint, SensitiveText};
 use nexus_cua_runtime::{DriverActionGuard, DriverError, DriverErrorKind};
 use tokio::sync::oneshot;
@@ -17,6 +18,26 @@ use zeroize::Zeroizing;
 
 const COMMAND_CAPACITY: usize = 32;
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
+unsafe extern "C" {
+    fn CGEventSourceSetLocalEventsSuppressionInterval(source: *mut std::ffi::c_void, seconds: f64);
+    fn CGEventSourceSetLocalEventsFilterDuringSuppressionState(
+        source: *mut std::ffi::c_void,
+        filter: u32,
+        state: u32,
+    );
+}
+
+fn permit_physical_input(source: &CGEventSource) {
+    // Public CoreGraphics API: permit mouse | keyboard | system events in
+    // both the post-event interval and synthetic drag suppression states.
+    // The private source is live and owned by this serialized input actor.
+    unsafe {
+        CGEventSourceSetLocalEventsSuppressionInterval(source.as_ptr().cast(), 0.0);
+        CGEventSourceSetLocalEventsFilterDuringSuppressionState(source.as_ptr().cast(), 7, 0);
+        CGEventSourceSetLocalEventsFilterDuringSuppressionState(source.as_ptr().cast(), 7, 1);
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct InputActor {
@@ -135,8 +156,9 @@ struct InputState {
 
 impl InputState {
     fn new() -> Result<Self, DriverError> {
-        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-            .map_err(|()| input_failure("failed to create HID CGEvent source"))?;
+        let source = CGEventSource::new(CGEventSourceStateID::Private)
+            .map_err(|()| input_failure("failed to create private CGEvent source"))?;
+        permit_physical_input(&source);
         Ok(Self {
             source,
             guard: None,
@@ -213,7 +235,7 @@ impl InputState {
         for (down, up) in events {
             self.post(&down, None)?;
             thread::sleep(Duration::from_millis(10));
-            up.post(CGEventTapLocation::HID);
+            Self::post_cleanup(&up, None);
             thread::sleep(Duration::from_millis(10));
         }
         Ok(())
@@ -234,7 +256,7 @@ impl InputState {
             let up = self.mouse_event(up_type, point, native_button)?;
             up.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, i64::from(click));
             self.post(&down, Some(pid))?;
-            up.post_to_pid(pid);
+            Self::post_cleanup(&up, Some(pid));
         }
         Ok(())
     }
@@ -258,7 +280,7 @@ impl InputState {
         {
             up.set_location(current.location());
         }
-        up.post(CGEventTapLocation::HID);
+        Self::post_cleanup(&up, None);
         result
     }
 
@@ -301,7 +323,7 @@ impl InputState {
             CGEvent::new(self.source.clone()).map_or(from, |event| event.location())
         };
         up.set_location(release_at);
-        up.post(CGEventTapLocation::HID);
+        Self::post_cleanup(&up, None);
         result
     }
 
@@ -341,7 +363,7 @@ impl InputState {
             // PID routing prevents a concurrent focus change from leaking
             // keyboard content into an unrelated foreground application.
             self.post(&down, Some(pid))?;
-            up.post_to_pid(pid);
+            Self::post_cleanup(&up, Some(pid));
             thread::sleep(Duration::from_millis(5));
         }
         Ok(())
@@ -392,24 +414,46 @@ impl InputState {
         let mut active_flags = CGEventFlags::empty();
         for (keycode, flag) in &modifiers {
             active_flags |= *flag;
-            events.push(self.keyboard_event(*keycode, true, active_flags)?);
+            events.push((
+                self.keyboard_event(*keycode, true, active_flags)?,
+                *keycode,
+                true,
+            ));
         }
         for keycode in primary {
-            events.push(self.keyboard_event(keycode, true, flags)?);
-            events.push(self.keyboard_event(keycode, false, flags)?);
+            events.push((self.keyboard_event(keycode, true, flags)?, keycode, true));
+            events.push((self.keyboard_event(keycode, false, flags)?, keycode, false));
         }
         for (keycode, flag) in modifiers.into_iter().rev() {
             active_flags.remove(flag);
-            events.push(self.keyboard_event(keycode, false, active_flags)?);
+            events.push((
+                self.keyboard_event(keycode, false, active_flags)?,
+                keycode,
+                false,
+            ));
         }
-        self.check_authority()?;
-        if let Some(guard) = &self.guard {
-            guard.begin_dispatch()?;
+        self.dispatch_chord(pid, &events)
+    }
+
+    fn dispatch_chord(&self, pid: i32, events: &[(CGEvent, u16, bool)]) -> Result<(), DriverError> {
+        let mut held = std::collections::BTreeSet::new();
+        let mut interrupted = None;
+        for (event, key, down) in events {
+            // Modifier events may be FlagsChanged for both press and release.
+            if *down {
+                if interrupted.is_none() {
+                    match self.post(event, Some(pid)) {
+                        Ok(()) => {
+                            held.insert(*key);
+                        }
+                        Err(error) => interrupted = Some(error),
+                    }
+                }
+            } else if held.remove(key) {
+                Self::post_cleanup(event, Some(pid));
+            }
         }
-        for event in events {
-            event.post_to_pid(pid);
-        }
-        Ok(())
+        interrupted.map_or_else(|| self.check_authority(), Err)
     }
 
     fn keyboard_event(
@@ -456,11 +500,16 @@ impl InputState {
         if let Some(guard) = &self.guard {
             guard.begin_dispatch()?;
         }
+        Self::post_cleanup(event, pid);
+        Ok(())
+    }
+
+    fn post_cleanup(event: &CGEvent, pid: Option<i32>) {
+        super::activity::mark(event);
         match pid {
             Some(pid) => event.post_to_pid(pid),
             None => event.post(CGEventTapLocation::HID),
         }
-        Ok(())
     }
 
     fn wait_while_authorized(&self, duration: Duration) -> Result<(), DriverError> {
@@ -569,6 +618,32 @@ fn actor_stopped<T>(_error: T) -> DriverError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_source_keeps_physical_input_enabled_during_holds() {
+        unsafe extern "C" {
+            fn CGEventSourceGetLocalEventsSuppressionInterval(source: *mut std::ffi::c_void)
+            -> f64;
+            fn CGEventSourceGetLocalEventsFilterDuringSuppressionState(
+                source: *mut std::ffi::c_void,
+                state: u32,
+            ) -> u32;
+        }
+        let state = InputState::new().expect("create private source");
+        let source = state.source.as_ptr().cast();
+        // Read back the native source's effective policy, without posting events.
+        unsafe {
+            assert!(CGEventSourceGetLocalEventsSuppressionInterval(source).abs() < f64::EPSILON);
+            assert_eq!(
+                CGEventSourceGetLocalEventsFilterDuringSuppressionState(source, 0),
+                7
+            );
+            assert_eq!(
+                CGEventSourceGetLocalEventsFilterDuringSuppressionState(source, 1),
+                7
+            );
+        }
+    }
 
     #[test]
     fn delete_and_backspace_have_opposite_directions() {

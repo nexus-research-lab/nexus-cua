@@ -340,3 +340,19 @@ MCP `observe_window` selects this operation with `application_scene=true`;
 CLI `window observe` uses `--application-scene`. Go, Python and TypeScript expose
 `ObserveApplicationScene`, `observe_application_scene`, and
 `observeApplicationScene`, respectively.
+
+## User takeover
+
+`user_active` means outside input took over a foreground-enabled macOS session.
+The error is not automatically retryable: later actions on that session remain
+rejected, even with a fresh observation. The host must obtain explicit renewed
+user intent before issuing a new grant. An action interrupted after native
+dispatch reports `indeterminate`; one rejected before dispatch reports
+`not_dispatched`. Reconciliation uses the original request ID without replay.
+
+macOS `input_control=granted` requires event synthesis and Input Monitoring
+permission. A foreground-enabled session fails admission with
+`permission_required` / `grant_input_monitoring_permission` when passive
+takeover detection cannot be authorized. No permission prompt is raised by a
+read operation. Monitoring failure stops affected session actions with a
+non-retryable `driver_failure`; it is not reported as observed user input.

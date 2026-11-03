@@ -301,13 +301,33 @@ native queues return `busy` before their actor executes the command.
 Explicit session close and session expiry revoke macOS action authority across
 native queues. Actors recheck the runtime-issued guard before native mutations;
 held pointer actions check between bounded input steps and release synthetic
-buttons on interruption. A bounded keyboard chord already started completes
-its key releases. Closing a session acknowledges revocation, not completion of
+buttons on interruption. Keyboard chords check before every key-down and release
+only keys already pressed when interrupted. Closing a session acknowledges revocation, not completion of
 all native cleanup, and cannot retract an event already posted to the OS.
 Rejection before native dispatch is `session_unavailable` / `not_dispatched`;
 revocation after any dispatch is `session_unavailable` / `indeterminate`.
-Caller timeout alone does not revoke authority. This mechanism does not yet
-provide physical-user takeover detection or a host emergency-stop UI.
+Caller timeout alone does not revoke authority. A host emergency-stop UI remains
+separate from this mechanism.
+
+macOS foreground-enabled sessions install a passive session-level event tap at
+admission. Native objects stay on its dedicated CF run-loop actor. The tap reads
+only event type and origin metadata, never text, key codes, pointer coordinates,
+or accessibility content. Runtime-generated events carry a marker and source PID;
+all other mouse, key, modifier and scroll events latch user takeover. Other
+automation is conservatively treated as outside input too. The input source
+explicitly permits physical input during both post-event suppression and drags.
+
+Takeover returns `user_active` and forbids further actions in that session:
+`not_dispatched` before dispatch, `indeterminate` after any native dispatch.
+Read-only observations remain available for reconciliation. There is no timed
+auto-resume; a host must issue fresh authority following explicit user intent.
+The monitor has a 32-command queue and 256-session ceiling, retains no event
+history, and polls inactive guards at 25 ms intervals while sessions are active. It
+blocks without polling and removes the tap when no protected sessions remain.
+Missing Input Monitoring permission rejects foreground session admission;
+disabled taps or actor failure latch a non-retryable driver failure. Secure-input
+fields may suppress keyboard events at the OS boundary and are not a supported
+takeover-validation surface. Already delivered OS events cannot be recalled.
 
 Every public failure names its mutation disposition. Runtime and driver
 preflight failures are `not_dispatched`; a failure returned after admission to

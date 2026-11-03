@@ -1299,6 +1299,11 @@
       "description": "Stable machine-readable failure category.",
       "oneOf": [
         {
+          "description": "User input took over the authorized session; automatic resumption is forbidden.",
+          "type": "string",
+          "const": "user_active"
+        },
+        {
           "description": "The request used a different protocol version.",
           "type": "string",
           "const": "protocol_mismatch"

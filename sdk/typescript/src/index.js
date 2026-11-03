@@ -11,7 +11,7 @@ const ERROR_CODES = new Set([
   "deadline_exceeded", "session_unavailable", "stale_discovery",
   "capability_denied", "reference_not_found", "stale_observation",
   "stale_clipboard",
-  "permission_required", "unsupported", "foreground_required",
+  "permission_required", "unsupported", "foreground_required", "user_active",
   "target_unavailable", "target_unresponsive", "driver_failure", "internal",
 ]);
 const MUTATION_STATUSES = new Set([

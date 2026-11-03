@@ -5,6 +5,12 @@ file.
 
 ## [Unreleased]
 
+- Stop macOS foreground-enabled session actions on outside mouse or keyboard
+  input. Passive monitoring ignores marked runtime events, latches `user_active`
+  until a new host grant, releases held synthetic inputs, and fails closed if
+  monitoring is unavailable. Explicitly permit physical input during synthetic
+  holds and drags; foreground sessions now require Input Monitoring permission.
+
 - Recheck macOS session authority on native dispatch actors and interrupt held
   pointer actions on session close or expiry, releasing synthetic buttons and
   reporting partial effects as indeterminate.

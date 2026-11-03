@@ -22,6 +22,7 @@ use crate::driver::{
 use crate::error::public_error;
 
 pub(crate) struct Session {
+    pub(crate) interruption: Arc<std::sync::atomic::AtomicU8>,
     pub(crate) driver: Arc<dyn crate::DesktopDriver>,
     pub(crate) closed: Arc<AtomicBool>,
     pub(crate) id: SessionId,
@@ -34,6 +35,7 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn action_guard(&self) -> crate::driver::DriverActionGuard {
         crate::driver::DriverActionGuard {
+            interruption: Arc::clone(&self.interruption),
             closed: Arc::clone(&self.closed),
             expires_at: self.expires_at.into_std(),
             dispatched: Arc::new(AtomicBool::new(false)),

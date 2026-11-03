@@ -216,6 +216,7 @@ const (
 	ErrorPermissionRequired ErrorCode = "permission_required"
 	ErrorUnsupported        ErrorCode = "unsupported"
 	ErrorForegroundRequired ErrorCode = "foreground_required"
+	ErrorUserActive         ErrorCode = "user_active"
 	ErrorTargetUnavailable  ErrorCode = "target_unavailable"
 	ErrorTargetUnresponsive ErrorCode = "target_unresponsive"
 	ErrorDriverFailure      ErrorCode = "driver_failure"

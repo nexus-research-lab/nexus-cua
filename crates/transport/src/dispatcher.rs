@@ -612,6 +612,7 @@ fn response_status(response: &ResponseEnvelope) -> (&'static str, &'static str) 
 
 fn error_code_name(code: ErrorCode) -> &'static str {
     match code {
+        ErrorCode::UserActive => "user_active",
         ErrorCode::ProtocolMismatch => "protocol_mismatch",
         ErrorCode::Unauthorized => "unauthorized",
         ErrorCode::InvalidRequest => "invalid_request",

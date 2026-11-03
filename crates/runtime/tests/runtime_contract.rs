@@ -26,6 +26,7 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 struct MockDriver {
+    session_guard: std::sync::Mutex<Option<nexus_cua_runtime::DriverActionGuard>>,
     window_enumerations: AtomicUsize,
     last_window_scope: Mutex<Vec<String>>,
     session_starts: AtomicUsize,
@@ -52,6 +53,7 @@ struct ActionGate {
 impl MockDriver {
     fn new() -> Self {
         Self {
+            session_guard: std::sync::Mutex::new(None),
             window_enumerations: AtomicUsize::new(0),
             last_window_scope: Mutex::new(Vec::new()),
             session_starts: AtomicUsize::new(0),
@@ -72,6 +74,7 @@ impl MockDriver {
 
     fn stale_once() -> Self {
         Self {
+            session_guard: std::sync::Mutex::new(None),
             window_enumerations: AtomicUsize::new(0),
             last_window_scope: Mutex::new(Vec::new()),
             session_starts: AtomicUsize::new(0),
@@ -190,6 +193,17 @@ impl MockDriver {
 
 #[async_trait]
 impl DesktopDriver for MockDriver {
+    fn session_started_guarded(
+        &self,
+        id: &nexus_cua_protocol::SessionId,
+        guard: nexus_cua_runtime::DriverActionGuard,
+        _allow_foreground: bool,
+    ) -> Result<(), DriverError> {
+        self.session_started(id)?;
+        *self.session_guard.lock().unwrap() = Some(guard);
+        Ok(())
+    }
+
     fn session_started(&self, _id: &nexus_cua_protocol::SessionId) -> Result<(), DriverError> {
         self.session_starts.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -2241,5 +2255,46 @@ async fn close_during_native_preflight_prevents_the_later_dispatch() {
     assert_eq!(error.code, ErrorCode::SessionUnavailable);
     assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
     assert_eq!(*driver.revision.lock().await, 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn user_takeover_during_preflight_rejects_dispatch_and_later_actions() {
+    let root = artifact_root();
+    let gate = Arc::new(ActionGate::default());
+    let driver = Arc::new(MockDriver {
+        verification_gate: Some(Arc::clone(&gate)),
+        ..MockDriver::new()
+    });
+    let runtime =
+        Arc::new(Runtime::new(driver.clone(), RuntimeConfig::new(&root)).expect("runtime"));
+    let input = fixture_invoke_input(&runtime).await;
+    let later = input.clone();
+    let task_runtime = Arc::clone(&runtime);
+    let task =
+        tokio::spawn(async move { task_runtime.execute(Command::PerformAction(input)).await });
+    gate.entered.notified().await;
+    driver
+        .session_guard
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .user_took_over();
+    gate.release.notify_one();
+    let error = task
+        .await
+        .expect("join")
+        .expect_err("takeover must reject native dispatch");
+    assert_eq!(error.code, ErrorCode::UserActive);
+    assert_eq!(error.mutation_status, MutationStatus::NotDispatched);
+    let later_error = runtime
+        .execute(Command::PerformAction(later))
+        .await
+        .expect_err("takeover must remain latched");
+    assert_eq!(later_error.code, ErrorCode::UserActive);
+    assert!(!later_error.retryable);
+    assert_eq!(*driver.revision.lock().await, 1);
+    runtime.shutdown().await;
     let _ = std::fs::remove_dir_all(root);
 }

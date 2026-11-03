@@ -181,6 +181,7 @@ class ErrorCode(ClosedString):
     PERMISSION_REQUIRED = "permission_required"
     UNSUPPORTED = "unsupported"
     FOREGROUND_REQUIRED = "foreground_required"
+    USER_ACTIVE = "user_active"
     TARGET_UNAVAILABLE = "target_unavailable"
     TARGET_UNRESPONSIVE = "target_unresponsive"
     DRIVER_FAILURE = "driver_failure"

@@ -295,7 +295,7 @@ func taggedValue(kind string, value any) (map[string]any, error) {
 var errorCodes = []string{
 	"protocol_mismatch", "unauthorized", "invalid_request", "busy", "deadline_exceeded",
 	"session_unavailable", "stale_discovery", "capability_denied", "reference_not_found",
-	"stale_observation", "stale_clipboard", "permission_required", "unsupported", "foreground_required",
+	"stale_observation", "stale_clipboard", "permission_required", "unsupported", "foreground_required", "user_active",
 	"target_unavailable", "target_unresponsive", "driver_failure", "internal",
 }
 

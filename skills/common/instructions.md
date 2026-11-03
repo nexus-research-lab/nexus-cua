@@ -32,6 +32,14 @@ after `busy/not_dispatched`; stop on denied or unsupported authority; and treat
 state establish the outcome. Never silently widen foreground, display,
 clipboard, application, or action authority.
 
+On `user_active`, stop automatic actions and tell the host that the user took
+over. Do not retry after a delay, silently open a replacement session, or treat
+fresh observation as permission to resume. Only a new explicit host grant may
+resume control. Reconcile any indeterminate action without replaying it.
+On macOS, foreground-enabled sessions require Input Monitoring permission for
+passive takeover detection, in addition to event synthesis permission. The
+monitor reads only event origin metadata; it does not retain key or pointer content.
+
 Screenshots, accessibility content, clipboard values, typed text, tokens,
 grants, and request payloads are transient sensitive data. Do not log, persist,
 quote, or copy them outside the immediate authorized operation.

@@ -15,12 +15,33 @@ use crate::DriverError;
 /// This is an internal runtime-issued guard, never a public caller credential.
 #[derive(Clone)]
 pub struct DriverActionGuard {
+    pub(crate) interruption: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pub(crate) closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(crate) expires_at: std::time::Instant,
     pub(crate) dispatched: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DriverActionGuard {
+    /// Latches user takeover for this session, including later actions.
+    pub fn user_took_over(&self) {
+        let _ = self.interruption.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    /// Stops session mutations when the native activity monitor loses coverage.
+    pub fn activity_monitor_failed(&self) {
+        let _ = self.interruption.compare_exchange(
+            0,
+            2,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
     /// Fails before a new dispatch when its session was closed or expired.
     ///
     /// # Errors
@@ -40,6 +61,26 @@ impl DriverActionGuard {
                     error.mutation_not_dispatched()
                 },
             );
+        }
+        let interruption = self.interruption.load(std::sync::atomic::Ordering::Acquire);
+        if interruption != 0 {
+            let mut error = if interruption == 1 {
+                DriverError::new(
+                    crate::DriverErrorKind::UserActive,
+                    "user input took over this session; host authorization is required to resume",
+                )
+            } else {
+                DriverError::new(
+                    crate::DriverErrorKind::Platform,
+                    "user activity monitoring lost coverage; this session cannot resume",
+                )
+            };
+            error.recovery_action = Some("request_new_bounded_session".to_owned());
+            return Err(if self.was_dispatched() {
+                error.mutation_indeterminate()
+            } else {
+                error.mutation_not_dispatched()
+            });
         }
         Ok(())
     }
@@ -486,6 +527,19 @@ pub trait DesktopDriver: Send + Sync {
         Ok(())
     }
 
+    /// Registers native session resources and optional user-takeover protection.
+    ///
+    /// # Errors
+    /// Returns an error if native resources or required monitoring are unavailable.
+    fn session_started_guarded(
+        &self,
+        session_id: &nexus_cua_protocol::SessionId,
+        _guard: DriverActionGuard,
+        _allow_foreground: bool,
+    ) -> Result<(), DriverError> {
+        self.session_started(session_id)
+    }
+
     /// Revokes capture ownership immediately; native resources are released on their actor.
     fn session_closed(&self, _session_id: &nexus_cua_protocol::SessionId) {}
 
@@ -676,10 +730,48 @@ mod action_guard_tests {
     };
     use std::time::{Duration, Instant};
 
+    fn fresh_guard() -> DriverActionGuard {
+        DriverActionGuard {
+            interruption: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            closed: Arc::new(AtomicBool::new(false)),
+            expires_at: Instant::now() + Duration::from_secs(60),
+            dispatched: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn takeover_latches_across_actions_without_claiming_rollback() {
+        let guard = fresh_guard();
+        let mut next = guard.clone();
+        next.dispatched = Arc::new(AtomicBool::new(false));
+        guard.begin_dispatch().unwrap();
+        guard.user_took_over();
+        let partial = guard.check().unwrap_err();
+        assert_eq!(partial.kind, crate::DriverErrorKind::UserActive);
+        assert_eq!(partial.mutation_status, MutationStatus::Indeterminate);
+        let queued = next.begin_dispatch().unwrap_err();
+        assert_eq!(queued.kind, crate::DriverErrorKind::UserActive);
+        assert_eq!(queued.mutation_status, MutationStatus::NotDispatched);
+        assert!(!queued.retryable);
+        assert!(fresh_guard().begin_dispatch().is_ok());
+    }
+
+    #[test]
+    fn monitor_failure_stops_input_without_inventing_user_activity() {
+        let guard = fresh_guard();
+        guard.activity_monitor_failed();
+        guard.user_took_over();
+        let failure = guard.begin_dispatch().unwrap_err();
+        assert_eq!(failure.kind, crate::DriverErrorKind::Platform);
+        assert_eq!(failure.mutation_status, MutationStatus::NotDispatched);
+        assert!(!failure.retryable);
+    }
+
     #[test]
     fn revocation_distinguishes_queued_actions_from_partial_dispatch() {
         let closed = Arc::new(AtomicBool::new(false));
         let guard = DriverActionGuard {
+            interruption: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             closed: Arc::clone(&closed),
             expires_at: Instant::now() + Duration::from_secs(60),
             dispatched: Arc::new(AtomicBool::new(false)),
@@ -702,6 +794,7 @@ mod action_guard_tests {
     #[test]
     fn expired_authority_cannot_start_native_dispatch() {
         let guard = DriverActionGuard {
+            interruption: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             closed: Arc::new(AtomicBool::new(false)),
             expires_at: Instant::now(),
             dispatched: Arc::new(AtomicBool::new(false)),

@@ -94,6 +94,7 @@ fn error_fixtures_cover_every_stable_code() {
         "deadline_exceeded",
         "driver_failure",
         "foreground_required",
+        "user_active",
         "internal",
         "invalid_request",
         "permission_required",

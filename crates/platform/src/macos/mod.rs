@@ -1,5 +1,6 @@
 //! macOS `ScreenCaptureKit`, `AXUIElement`, and `CGEvent` driver.
 
+mod activity;
 mod capture;
 mod clipboard;
 mod input;
@@ -42,6 +43,7 @@ use crate::observation::{contains_rect, fingerprint, fingerprints_match};
 
 /// macOS native driver. Platform actors are initialized lazily on first use.
 pub struct MacosDriver {
+    activity: activity::ActivityActor,
     action_guard: Option<DriverActionGuard>,
     capture: CaptureActor,
     semantic: SemanticActor,
@@ -58,6 +60,7 @@ impl MacosDriver {
     pub fn new() -> Result<Self, DriverError> {
         initialize_appkit()?;
         Ok(Self {
+            activity: activity::ActivityActor::spawn()?,
             action_guard: None,
             capture: CaptureActor::spawn(),
             semantic: SemanticActor::spawn(),
@@ -277,6 +280,19 @@ impl DesktopDriver for MacosDriver {
         self.capture.session_closed(session_id.as_str());
     }
 
+    fn session_started_guarded(
+        &self,
+        session_id: &nexus_cua_protocol::SessionId,
+        guard: DriverActionGuard,
+        allow_foreground: bool,
+    ) -> Result<(), DriverError> {
+        self.session_started(session_id)?;
+        if allow_foreground {
+            self.activity.register(&guard)?;
+        }
+        Ok(())
+    }
+
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
             action_limits: nexus_cua_protocol::ActionLimits::default(),
@@ -334,7 +350,9 @@ impl DesktopDriver for MacosDriver {
             } else {
                 PermissionState::Denied
             },
-            input_control: if CGPreflightPostEventAccess() {
+            input_control: if CGPreflightPostEventAccess()
+                && objc2_core_graphics::CGPreflightListenEventAccess()
+            {
                 PermissionState::Granted
             } else {
                 PermissionState::Denied
@@ -667,6 +685,7 @@ impl DesktopDriver for MacosDriver {
     ) -> Result<DriverActionOutput, DriverError> {
         guard.check()?;
         let scoped = Self {
+            activity: self.activity.clone(),
             capture: self.capture.guarded(guard.clone()),
             semantic: self.semantic.guarded(guard.clone()),
             input: self.input.guarded(guard.clone()),

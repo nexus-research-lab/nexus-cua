@@ -762,6 +762,7 @@ impl Runtime {
             )
         })?;
         let session = Arc::new(Session {
+            interruption: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             driver: Arc::clone(&self.driver),
             closed: Arc::new(AtomicBool::new(true)),
             id: session_id.clone(),
@@ -779,10 +780,14 @@ impl Runtime {
                 Some("close_unused_session"),
             ));
         }
-        self.driver
-            .session_started(&session_id)
-            .map_err(CuaError::from)?;
         session.closed.store(false, Ordering::Release);
+        self.driver
+            .session_started_guarded(
+                &session_id,
+                session.action_guard(),
+                session.manifest.allow_foreground_input,
+            )
+            .map_err(CuaError::from)?;
         sessions.insert(session_id.clone(), session);
         drop(sessions);
         self.signal_reschedule()?;
@@ -1251,22 +1256,7 @@ impl Runtime {
         input: nexus_cua_protocol::PerformActionInput,
     ) -> Result<CommandResult, CuaError> {
         let session = self.session(&input.session_id).await?;
-        if session.manifest.mode != PermissionMode::Bounded
-            || !session
-                .manifest
-                .allowed_actions
-                .contains(&input.action.kind())
-        {
-            return Err(capability_denied());
-        }
-        if input.action.requires_foreground() && !session.manifest.allow_foreground_input {
-            return Err(public_error(
-                ErrorCode::ForegroundRequired,
-                "action requires foreground input not granted by this session",
-                false,
-                Some("request_foreground_authorization"),
-            ));
-        }
+        validate_action_authority(&session, &input.action)?;
         let _foreground_lane = if input.action.requires_foreground() {
             Some(self.foreground_lane.try_lock().map_err(|_| {
                 public_error(
@@ -1780,6 +1770,27 @@ fn reference_not_found() -> CuaError {
         false,
         Some("refresh_references"),
     )
+}
+
+fn validate_action_authority(
+    session: &Session,
+    action: &nexus_cua_protocol::Action,
+) -> Result<(), CuaError> {
+    session.action_guard().check().map_err(CuaError::from)?;
+    if session.manifest.mode != PermissionMode::Bounded
+        || !session.manifest.allowed_actions.contains(&action.kind())
+    {
+        return Err(capability_denied());
+    }
+    if action.requires_foreground() && !session.manifest.allow_foreground_input {
+        return Err(public_error(
+            ErrorCode::ForegroundRequired,
+            "action requires foreground input not granted by this session",
+            false,
+            Some("request_foreground_authorization"),
+        ));
+    }
+    Ok(())
 }
 
 fn capability_denied() -> CuaError {

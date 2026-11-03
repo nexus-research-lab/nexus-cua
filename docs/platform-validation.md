@@ -578,5 +578,42 @@ three-second fixture press, closed the session through a separate client, and
 observed release after 23.5 ms on this machine. The SDK reported session
 unavailable with indeterminate mutation status. This single local measurement
 is not a latency guarantee. The script releases its session and retains no
-screenshots. User takeover detection, presence and host emergency-stop UI remain
-unimplemented; session close does not undo already delivered input.
+screenshots. At this checkpoint, user takeover detection, presence and host
+emergency-stop UI remained unimplemented; session close does not undo already
+delivered input. The next section records the subsequent takeover work.
+
+## macOS user takeover (2026-11-03, local validation)
+
+Foreground-enabled sessions now register content-free passive input monitoring
+at admission. Other-origin input latches `user_active`; native queues and ongoing
+holds, drags, text chunks and key-down dispatches recheck the session guard.
+Subsequent actions stay blocked until a new host grant. Own generated events are
+excluded using both their source PID and event marker. Missing monitoring
+permission, disabled taps and monitor loss fail closed.
+
+The first live foreign-process mouse probe interrupted a three-second hold and
+rejected a subsequent action in the same session. Initial physical-input trials
+did not establish interruption. Native readback found private source filter masks
+of zero for both interval and drag suppression, with a 0.25-second interval.
+The implementation now explicitly permits all physical input classes and sets
+the suppression interval to zero; a native unit test reads back that policy.
+Further trials were stopped before dispatch by actual mouse input during setup;
+the user then clarified that audio cues had been muted.
+
+With audible countdown and the corrected source, the user moved the physical
+mouse during a ten-second fixture hold. The probe passed: the action returned
+`user_active` / `indeterminate`, the button released, and a subsequent window
+action returned `user_active` / `not_dispatched`. The 6359.5 ms printed duration
+includes spoken cues and human response time and is not cancellation latency.
+This validates one local physical-mouse scenario, not keyboard/secure-input
+coverage, all device types, Nexus UI integration or full platform acceptance.
+
+Own-input regression then passed Command+A followed by text replacement in the
+fixture, with AX readback confirming the expected value and no false takeover.
+This exposed and fixed a modifier-release planning issue: CoreGraphics creates
+`FlagsChanged` for both modifier press and release, so chord dispatch now tracks
+the intended down/up state explicitly. The reproducible entry point is
+`scripts/validate_macos_input_isolation.py`; the interruption entry point is
+`scripts/validate_macos_takeover.py` (`--manual` for physical input with voice cues).
+Final `make check` passed, including SDK error fixtures, guard-latch/preflight
+tests and native physical-input suppression-policy readback.
