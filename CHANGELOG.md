@@ -7,6 +7,9 @@ file.
 
 ### Changed
 
+- Build macOS x86_64 release archives on Intel runners, with an artifact-only
+  mode for supplementing an existing pinned release.
+
 - Add Windows x64 release badges, platform download links and PowerShell
   checksum/diagnostic instructions to both READMEs; update the Python quickstart
   to reference the macOS and Windows v0.2.0 release.
