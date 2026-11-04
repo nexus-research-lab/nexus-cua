@@ -11,6 +11,10 @@ file.
   quickstart, integration choices, current platform status, and a Nexus-family
   CUA product icon.
 
+- Organize the macOS native fixture into a two-column test bench with grouped
+  controls, separated pointer targets, and a full-width live state panel.
+  Preserve accessibility identities and allow short windows to scroll.
+
 ## [0.2.0-rc.4] - 2026-11-03
 
 macOS Apple Silicon testing prerelease; no change to the wire contract.

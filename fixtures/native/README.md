@@ -94,6 +94,15 @@ driver capability, display topology, or protected target into a pass.
 Fixture build products and reports belong under ignored `target/` directories.
 No generated binary is committed.
 
+## macOS test bench layout
+
+The macOS app groups controls, pointer/scroll targets, window lifecycle actions,
+and provider diagnostics into two columns, with a full-width live state panel.
+Shorter windows scroll the document; pointer targets share the available width
+without overlapping. Compact visible button captions retain the contract's
+original accessibility titles and identifiers. This app is a development test
+bench, not the runtime's settings or agent connection UI.
+
 ## Failure and permission probes
 
 Set `NEXUS_CUA_FIXTURE_FAULT_ARM_MS` and

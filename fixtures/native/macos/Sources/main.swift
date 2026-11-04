@@ -174,16 +174,18 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     }
 
     private func buildContent() -> NSView {
-        let root = NSView()
+        let root = FlippedView()
         root.setAccessibilityLabel(applicationName)
 
-        let title = label(applicationName)
-        title.font = .systemFont(ofSize: 24, weight: .semibold)
+        let title = label("Computer Use Lab")
+        title.font = .systemFont(ofSize: 26, weight: .semibold)
+        let subtitle = label("Native interaction test bench · macOS")
+        subtitle.textColor = .secondaryLabelColor
 
         let increment = button("Increment Counter", action: #selector(incrementCounter))
         let replace = button("Replace Fixture Window", action: #selector(replaceWindow))
         let geometry = button("Change Fixture Geometry", action: #selector(changeGeometry))
-        let actionRow = row([increment, replace, geometry])
+        let actionRow = row([replace, geometry])
         let minimize = button("Minimize Fixture Window", action: #selector(minimizeWindow))
         let occluder = button("Toggle Fixture Occluder", action: #selector(toggleOccluder))
         let nextDisplay = button("Move Fixture To Next Display", action: #selector(moveToNextDisplay))
@@ -201,7 +203,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         menuChoice.setAccessibilityLabel("Fixture Popup Menu")
         menuChoice.target = self
         menuChoice.action = #selector(selectPopup(_:))
-        let displayRow = row([nextDisplay, menuChoice])
+        let displayRow = row([nextDisplay])
         let faultRow = row([hangBeforeMutation, hangDuringInvoke])
 
         let textCaption = label("Fixture Text")
@@ -232,7 +234,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         rangeSlider.allowsTickMarkValuesOnly = false
         rangeSlider.identifier = NSUserInterfaceItemIdentifier("fixture.range")
         rangeSlider.setAccessibilityLabel("Fixture Range")
-        rangeSlider.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        rangeSlider.widthAnchor.constraint(equalToConstant: 200).isActive = true
         let rangeRow = row([rangeCaption, rangeSlider])
 
         let toggle = NSButton(
@@ -259,7 +261,9 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         let listScroll = NSScrollView()
         listScroll.documentView = tableView
         listScroll.hasVerticalScroller = true
-        listScroll.borderType = .bezelBorder
+        listScroll.borderType = .noBorder
+        tableView.rowHeight = 25
+        tableView.usesAlternatingRowBackgroundColors = true
         listScroll.heightAnchor.constraint(equalToConstant: 90).isActive = true
 
         let disclosure = DisclosureButton(
@@ -277,7 +281,7 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         advancedLabel = label("Advanced option is visible")
         advancedLabel.isHidden = true
 
-        let markerStack = NSStackView()
+        let markerStack = FlippedStackView()
         markerStack.orientation = .vertical
         markerStack.alignment = .leading
         markerStack.spacing = 8
@@ -287,9 +291,11 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             markerStack.addArrangedSubview(marker)
         }
         let scroll = NSScrollView()
+        // Give the document an explicit extent so the last marker requires scrolling.
+        markerStack.frame = NSRect(x: 0, y: 0, width: 300, height: 500)
         scroll.documentView = markerStack
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
         scroll.identifier = NSUserInterfaceItemIdentifier("fixture.scroll")
         scroll.setAccessibilityLabel("Fixture Scroll Region")
         scroll.heightAnchor.constraint(equalToConstant: 112).isActive = true
@@ -326,58 +332,94 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             dragRow.heightAnchor.constraint(equalToConstant: 56),
             dragToken.leadingAnchor.constraint(equalTo: dragRow.leadingAnchor),
             dragToken.centerYAnchor.constraint(equalTo: dragRow.centerYAnchor),
-            dragToken.widthAnchor.constraint(equalToConstant: 120),
+            dragToken.widthAnchor.constraint(equalTo: pressTarget.widthAnchor),
             dragToken.heightAnchor.constraint(equalToConstant: 40),
-            pressTarget.centerXAnchor.constraint(equalTo: dragRow.centerXAnchor),
+            pressTarget.leadingAnchor.constraint(equalTo: dragToken.trailingAnchor, constant: 12),
             pressTarget.centerYAnchor.constraint(equalTo: dragRow.centerYAnchor),
-            pressTarget.widthAnchor.constraint(equalToConstant: 80),
+            pressTarget.widthAnchor.constraint(equalTo: dropZone.widthAnchor),
             pressTarget.heightAnchor.constraint(equalToConstant: 40),
             dropZone.trailingAnchor.constraint(equalTo: dragRow.trailingAnchor),
             dropZone.centerYAnchor.constraint(equalTo: dragRow.centerYAnchor),
-            dropZone.widthAnchor.constraint(equalToConstant: 180),
+            dropZone.leadingAnchor.constraint(equalTo: pressTarget.trailingAnchor, constant: 12),
             dropZone.heightAnchor.constraint(equalToConstant: 48),
         ])
 
         stateLabel = label("")
         stateLabel.identifier = NSUserInterfaceItemIdentifier("fixture.state")
-        stateLabel.maximumNumberOfLines = 2
+        stateLabel.maximumNumberOfLines = 3
         stateLabel.lineBreakMode = .byWordWrapping
         // State text changes during every probe. It must wrap inside the fixture,
         // not resize the window and invalidate an unrelated observation guard.
-        stateLabel.preferredMaxLayoutWidth = 340
+        stateLabel.preferredMaxLayoutWidth = 820
+        stateLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        stateLabel.textColor = .secondaryLabelColor
         stateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let left = columnView([
-            title,
-            actionRow,
-            desktopRow,
-            displayRow,
-            faultRow,
-            textRow,
-            secureRow,
-            rangeRow,
-            toggle,
-            listCaption,
-            listScroll,
-            disclosure,
-            advancedLabel,
+        let inputs = panel("01   Controls", views: [
+            increment, textRow, secureRow, rangeRow, toggle,
+            row([listCaption, menuChoice]), listScroll,
+            row([disclosure, label("Advanced options")]), advancedLabel,
         ])
-        let right = columnView([scroll, dragRow, stateLabel])
-        left.translatesAutoresizingMaskIntoConstraints = false
-        right.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(left)
-        root.addSubview(right)
+        let gestures = panel("02   Pointer & scroll", views: [scroll, dragRow])
+        let windows = panel("03   Window lifecycle", views: [actionRow, desktopRow, displayRow])
+        let faults = panel("04   Provider diagnostics", views: [faultRow])
+        let left = columnView([inputs])
+        let right = columnView([gestures, windows, faults])
+        let header = columnView([title, subtitle])
+        header.spacing = 4
+        let state = panel("Live state", views: [stateLabel])
+        for view in [header, left, right, state] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
         NSLayoutConstraint.activate([
-            left.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
-            left.topAnchor.constraint(equalTo: root.topAnchor, constant: 24),
-            left.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -24),
-            left.widthAnchor.constraint(equalToConstant: 500),
-            right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: 24),
-            right.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
-            right.topAnchor.constraint(equalTo: root.topAnchor, constant: 88),
-            right.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -24),
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
+            header.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
+            header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            left.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            left.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 20),
+            right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: 16),
+            right.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            right.topAnchor.constraint(equalTo: left.topAnchor),
+            left.widthAnchor.constraint(equalTo: right.widthAnchor),
+            state.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            state.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            state.topAnchor.constraint(equalTo: right.bottomAnchor, constant: 16),
+            state.topAnchor.constraint(greaterThanOrEqualTo: left.bottomAnchor, constant: 16),
+            state.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
         ])
-        return root
+        // Short capture profiles retain every control through a scrollable document.
+        let viewport = NSScrollView()
+        viewport.hasVerticalScroller = true
+        viewport.autohidesScrollers = true
+        viewport.drawsBackground = false
+        root.translatesAutoresizingMaskIntoConstraints = false
+        viewport.documentView = root
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: viewport.contentView.leadingAnchor),
+            root.topAnchor.constraint(equalTo: viewport.contentView.topAnchor),
+            root.widthAnchor.constraint(equalTo: viewport.contentView.widthAnchor),
+        ])
+        return viewport
+    }
+
+    private func panel(_ heading: String, views: [NSView]) -> NSView {
+        let box = PanelView()
+        let caption = label(heading)
+        caption.font = .systemFont(ofSize: 12, weight: .semibold)
+        caption.textColor = .secondaryLabelColor
+        let stack = columnView([caption] + views)
+        stack.spacing = 10
+        let content = box
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+        ])
+        return box
     }
 
     private func label(_ value: String) -> NSTextField {
@@ -393,6 +435,15 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
             "fixture.\(title.lowercased().replacingOccurrences(of: " ", with: "_"))"
         )
         button.setAccessibilityLabel(title)
+        let captions = [
+            "Replace Fixture Window": "Replace window",
+            "Change Fixture Geometry": "Change geometry",
+            "Minimize Fixture Window": "Minimize window",
+            "Toggle Fixture Occluder": "Toggle occluder",
+            "Move Fixture To Next Display": "Move to next display",
+        ]
+        button.title = captions[title] ?? title
+        button.setAccessibilityTitle(title)
         return button
     }
 
@@ -409,10 +460,10 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
+        stack.spacing = 14
         stack.distribution = .fill
         for view in views {
-            view.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor).isActive = true
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         return stack
     }
@@ -536,6 +587,25 @@ final class FixtureController: NSObject, NSApplicationDelegate, NSTextFieldDeleg
     @objc private func hangDuringInvoke() {
         Thread.sleep(forTimeInterval: faultHangDuration)
     }
+}
+
+private final class PanelView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.controlBackgroundColor.setFill()
+        let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
+        outline.fill()
+        NSColor.separatorColor.setStroke()
+        outline.lineWidth = 0.5
+        outline.stroke()
+    }
+}
+
+private final class FlippedStackView: NSStackView {
+    override var isFlipped: Bool { true }
+}
+
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 private final class DisclosureButton: NSButton {
