@@ -14,10 +14,10 @@ axum.workspace = true
 base64.workspace = true
 clap.workspace = true
 hex.workspace = true
-nexus-cua-platform = { version = "0.2.0-rc.4", path = "../platform" }
-nexus-cua-protocol = { version = "0.2.0-rc.4", path = "../protocol" }
-nexus-cua-runtime = { version = "0.2.0-rc.4", path = "../runtime" }
-nexus-cua-transport = { version = "0.2.0-rc.4", path = "../transport" }
+nexus-cua-platform = { version = "0.2.0-rc.5", path = "../platform" }
+nexus-cua-protocol = { version = "0.2.0-rc.5", path = "../protocol" }
+nexus-cua-runtime = { version = "0.2.0-rc.5", path = "../runtime" }
+nexus-cua-transport = { version = "0.2.0-rc.5", path = "../transport" }
 png.workspace = true
 rmcp.workspace = true
 schemars.workspace = true

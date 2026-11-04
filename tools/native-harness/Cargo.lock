@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-native-harness"
-version = "0.2.0-rc.4"
+version = "0.2.0-rc.5"
 dependencies = [
  "clap",
  "libc",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-protocol"
-version = "0.2.0-rc.4"
+version = "0.2.0-rc.5"
 dependencies = [
  "schemars",
  "serde",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-runtime"
-version = "0.2.0-rc.4"
+version = "0.2.0-rc.5"
 dependencies = [
  "async-trait",
  "fs2",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cua-transport"
-version = "0.2.0-rc.4"
+version = "0.2.0-rc.5"
 dependencies = [
  "nexus-cua-protocol",
  "nexus-cua-runtime",

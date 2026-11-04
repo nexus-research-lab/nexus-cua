@@ -10,8 +10,8 @@ description = "Native desktop drivers for Nexus Computer Use Runtime"
 [dependencies]
 async-trait.workspace = true
 hex.workspace = true
-nexus-cua-protocol = { version = "0.2.0-rc.4", path = "../protocol" }
-nexus-cua-runtime = { version = "0.2.0-rc.4", path = "../runtime" }
+nexus-cua-protocol = { version = "0.2.0-rc.5", path = "../protocol" }
+nexus-cua-runtime = { version = "0.2.0-rc.5", path = "../runtime" }
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

@@ -5,6 +5,10 @@ file.
 
 ## [Unreleased]
 
+## [0.2.0-rc.5] - 2026-11-03
+
+Windows x64 and macOS Apple Silicon testing prerelease.
+
 ### Changed
 
 - Rewrite the public README with English and Chinese entry points, a source
