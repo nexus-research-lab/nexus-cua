@@ -12,7 +12,7 @@
 
 [![CI](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6559F3.svg)](LICENSE)
-[![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
+[![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2B%20Intel-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
 [![Windows release](https://img.shields.io/badge/Windows-x64-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
 
 [快速开始](#快速开始) · [接入方式](#接入方式) · [文档](#文档) · [发布版本](https://github.com/nexus-research-lab/nexus-cua/releases)
@@ -25,7 +25,7 @@ Nexus CUA 为智能体应用提供统一的原生桌面接口：窗口截图、�
 
 **Nexus Computer Use Runtime** 为 [Nexus](https://github.com/nexus-research-lab/nexus) 生态构建，也支持独立宿主接入。智能体负责模型与推理循环，宿主负责授权，Nexus CUA 负责检查并执行桌面操作。运行时本身不内置模型服务。
 
-> **早期正式版。** 当前已发布 macOS Apple Silicon 与 Windows x64 的 v0.2.0，尚未完成的平台验收见下文。[下载](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
+> **早期正式版。** 当前已发布 macOS Apple Silicon / Intel 与 Windows x64 的 v0.2.0，尚未完成的平台验收见下文。[下载](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
 
 ## 为什么选择 Nexus CUA？
 
@@ -41,6 +41,7 @@ Nexus CUA 为智能体应用提供统一的原生桌面接口：窗口截图、�
 | 平台 | Runtime 安装包 |
 | --- | --- |
 | macOS · Apple Silicon | [nexuscua-0.2.0-macos-arm64.tar.gz](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-macos-arm64.tar.gz) |
+| macOS · Intel | [nexuscua-0.2.0-macos-x86_64.tar.gz](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-macos-x86_64.tar.gz) |
 | Windows · x64 | [nexuscua-0.2.0-windows-x86_64.zip](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-windows-x86_64.zip) |
 
 下载后对照 `SHA256SUMS` 校验，再解压。发布页同时提供 manifest、SBOM 和第三方声明。[发布页面](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
@@ -135,6 +136,7 @@ flowchart LR
 | 平台 | 当前状态 |
 | --- | --- |
 | macOS · Apple Silicon | 已发布；已在本地验证原生交互和有限的接入场景 |
+| macOS · Intel | 已发布；构建、源码测试、签名、公证和诊断检查通过；原生交互验收待完成 |
 | Windows · x64 | 已发布；完成原生核心操作、中断、恢复、故障与资源诊断 |
 | Linux | 暂无原生桌面驱动 |
 

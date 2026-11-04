@@ -12,7 +12,7 @@ Observe windows. Act within granted permissions. Verify what changed.
 
 [![CI](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6559F3.svg)](LICENSE)
-[![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
+[![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2B%20Intel-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
 [![Windows release](https://img.shields.io/badge/Windows-x64-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
 
 [Quick start](#quick-start) · [Integrations](#integrations) · [Documentation](#documentation) · [Releases](https://github.com/nexus-research-lab/nexus-cua/releases)
@@ -32,7 +32,7 @@ Your agent supplies the model and reasoning loop; its host grants authority;
 Nexus CUA checks and executes desktop operations. No model provider is built in.
 
 > **Early release.** The current release is
-> [v0.2.0 for macOS Apple Silicon and Windows x64](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0).
+> [v0.2.0 for macOS Apple Silicon/Intel and Windows x64](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0).
 > See [platform status](#platform-status) for open validation work
 > before choosing a deployment target.
 
@@ -63,6 +63,7 @@ Nexus CUA checks and executes desktop operations. No model provider is built in.
 | Platform | Runtime archive |
 | --- | --- |
 | macOS · Apple Silicon | [nexuscua-0.2.0-macos-arm64.tar.gz](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-macos-arm64.tar.gz) |
+| macOS · Intel | [nexuscua-0.2.0-macos-x86_64.tar.gz](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-macos-x86_64.tar.gz) |
 | Windows · x64 | [nexuscua-0.2.0-windows-x86_64.zip](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-windows-x86_64.zip) |
 
 Verify the archive against `SHA256SUMS`, then extract it. Manifests, SBOMs,
@@ -189,6 +190,7 @@ See the [protocol](docs/specs/protocol-v1.md) and
 | Platform | Current status |
 | --- | --- |
 | macOS · Apple Silicon | Released; native interaction and bounded integration scenarios exercised locally |
+| macOS · Intel | Released; build, source tests, signing, notarization and diagnostic smoke passed; interactive native acceptance pending |
 | Windows · x64 | Released; native core, cancellation, recovery, fault and resource diagnostics exercised locally |
 | Linux | No native desktop driver |
 
