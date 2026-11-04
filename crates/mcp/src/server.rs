@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -76,6 +77,8 @@ pub struct NexusCuaMcp {
     mutation_authorization: AuthorizationToken,
     session: Arc<Mutex<Option<ActiveSession>>>,
     operation_lock: Arc<Mutex<()>>,
+    closed: Arc<AtomicBool>,
+    authority_deadline: tokio::time::Instant,
     authority: AuthorityContext,
     max_image_bytes: u64,
     image_mappings: Arc<Mutex<ImageMappingCache>>,
@@ -220,6 +223,8 @@ impl NexusCuaMcp {
         max_image_bytes: u64,
         tool_profile: ToolProfile,
     ) -> Result<Self, BootstrapError> {
+        let authority_deadline =
+            tokio::time::Instant::now() + Duration::from_secs(u64::from(authority.ttl_seconds));
         let (application_refs, missing) =
             authorized_running_applications(&runtime, &authority).await?;
         if !missing.is_empty() {
@@ -259,6 +264,8 @@ impl NexusCuaMcp {
             mutation_authorization,
             session: Arc::new(Mutex::new(session)),
             operation_lock: Arc::new(Mutex::new(())),
+            closed: Arc::new(AtomicBool::new(false)),
+            authority_deadline,
             authority,
             max_image_bytes,
             image_mappings: Arc::new(Mutex::new(ImageMappingCache::default())),
@@ -283,7 +290,9 @@ impl NexusCuaMcp {
 
     /// Closes the runtime session and deletes transient screenshot artifacts.
     pub async fn close(&self) {
-        let _operation = self.operation_lock.lock().await;
+        // Do not wait behind a long-running mutation: closing the runtime
+        // session signals its native cancellation guard immediately.
+        self.closed.store(true, Ordering::Release);
         if let Some(session) = self.session.lock().await.take() {
             let _ = self
                 .runtime
@@ -292,10 +301,46 @@ impl NexusCuaMcp {
                 }))
                 .await;
         }
+        self.image_mappings.lock().await.clear();
+    }
+
+    pub(crate) async fn wait_for_authority_end(&self) {
+        let deadline = self.authority_deadline;
+        if self.authority.provider_metadata().is_none() {
+            tokio::time::sleep_until(deadline).await;
+            self.close().await;
+            return;
+        }
+        loop {
+            if self.closed.load(Ordering::Acquire) || tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(1), self.authority.validate_provider())
+                    .await,
+                Ok(Ok(()))
+            ) {
+                break;
+            }
+            tokio::time::sleep_until(
+                (tokio::time::Instant::now() + Duration::from_millis(250)).min(deadline),
+            )
+            .await;
+        }
+        self.close().await;
+    }
+
+    async fn validate_authority(&self) -> Result<(), crate::AuthorityProviderError> {
+        if self.closed.load(Ordering::Acquire)
+            || tokio::time::Instant::now() >= self.authority_deadline
+        {
+            return Err(crate::AuthorityProviderError::Denied);
+        }
+        self.authority.validate_provider().await
     }
 
     async fn execute(&self, command: Command) -> Result<CommandResult, CallToolResult> {
-        if let Err(error) = self.authority.validate_provider().await {
+        if let Err(error) = self.validate_authority().await {
             return Err(adapter_tool_error(
                 "authority_revoked",
                 &error.to_string(),
@@ -328,7 +373,7 @@ impl NexusCuaMcp {
         request_id: RequestId,
         command: Command,
     ) -> Result<CommandResult, CallToolResult> {
-        if let Err(error) = self.authority.validate_provider().await {
+        if let Err(error) = self.validate_authority().await {
             return Err(adapter_tool_error_for_request(
                 &request_id,
                 "authority_revoked",
@@ -501,7 +546,23 @@ impl NexusCuaMcp {
         let replacement = open_runtime_session(&self.runtime, &self.authority, application_refs)
             .await
             .map_err(bootstrap_tool_error)?;
-        let prior = self.session.lock().await.replace(replacement);
+        let mut session = self.session.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            let _ = self
+                .runtime
+                .execute(Command::CloseSession(SessionInput {
+                    session_id: replacement.session_id,
+                }))
+                .await;
+            return Err(adapter_tool_error(
+                "authority_revoked",
+                "adapter authority has ended",
+                false,
+                Some("stop_adapter_and_reauthorize"),
+            ));
+        }
+        let prior = session.replace(replacement);
+        drop(session);
         self.image_mappings.lock().await.clear();
         if let Some(prior) = prior {
             let _ = self

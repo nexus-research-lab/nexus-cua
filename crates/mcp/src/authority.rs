@@ -422,7 +422,13 @@ impl AuthorityContext {
     /// provider channel is unavailable or no longer valid.
     pub async fn validate_provider(&self) -> Result<(), AuthorityProviderError> {
         match (&self.provider, &self.provider_client) {
-            (Some(metadata), Some(provider)) => provider.validate(metadata).await,
+            (Some(metadata), Some(provider)) => {
+                let now = current_unix_ms().map_err(|_| AuthorityProviderError::Unavailable)?;
+                if now >= metadata.expires_at_unix_ms {
+                    return Err(AuthorityProviderError::Denied);
+                }
+                provider.validate(metadata).await
+            }
             (Some(_), None) => Err(AuthorityProviderError::Unavailable),
             (None, _) => Ok(()),
         }

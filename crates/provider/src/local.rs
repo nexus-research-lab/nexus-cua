@@ -18,7 +18,6 @@ use crate::registration::{HostIdentitySource, RegistrationError, RegistrationSto
 
 const PROVIDER_GRANT_SCHEMA_VERSION: u32 = 1;
 const MAX_ACTIVE_CHALLENGES: usize = 1_024;
-const GRANT_RENEWAL_THRESHOLD_MS: u64 = 5_000;
 
 /// Production source for the exact parent executable that launched the adapter.
 #[derive(Clone, Copy, Debug, Default)]
@@ -200,22 +199,8 @@ impl AuthorityProvider for RegisteredAuthorityProvider {
         if registration_digest(&registration.request)? != expected_digest {
             return Err(AuthorityProviderError::AuthenticationFailed);
         }
-        // Renew only the same admitted challenge, after rechecking the
-        // authenticated registration. The request namespace and runtime/worker
-        // bindings remain unchanged; removal or tampering fails above.
-        let mut active = self
-            .active_challenges
-            .lock()
-            .map_err(|_| AuthorityProviderError::Unavailable)?;
-        let issued = active
-            .values_mut()
-            .find(|value| value.grant.request_namespace == metadata.request_namespace)
-            .ok_or(AuthorityProviderError::Denied)?;
-        if issued.grant.expires_at_unix_ms.saturating_sub(now) <= GRANT_RENEWAL_THRESHOLD_MS {
-            let ttl_ms = u64::from(registration.request.authority.ttl_seconds) * 1_000;
-            issued.grant.issued_at_unix_ms = now;
-            issued.grant.expires_at_unix_ms = now.saturating_add(ttl_ms);
-        }
+        // Validation never extends authority. A fresh host-launched adapter must
+        // acquire a new challenge-bound grant after this finite lease expires.
         Ok(())
     }
 }

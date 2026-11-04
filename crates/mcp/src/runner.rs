@@ -543,10 +543,15 @@ pub async fn serve_stdio(config: McpServeConfig) -> Result<(), McpServeError> {
             .serve(stdio())
             .await
             .map_err(|error| McpServeError::Transport(error.to_string()))?;
-        service
-            .waiting()
-            .await
-            .map_err(|error| McpServeError::Transport(error.to_string()))?;
+        let cancellation = service.cancellation_token();
+        tokio::select! {
+            result = service.waiting() => {
+                result.map_err(|error| McpServeError::Transport(error.to_string()))?;
+            }
+            () = server.wait_for_authority_end() => {
+                cancellation.cancel();
+            }
+        }
         Ok(())
     }
     .await;
@@ -642,8 +647,12 @@ where
     let serve_result = axum::serve(listener, router)
         .with_graceful_shutdown({
             let cancellation = cancellation.clone();
+            let authority_server = server.clone();
             async move {
-                shutdown.await;
+                tokio::select! {
+                    () = shutdown => authority_server.close().await,
+                    () = authority_server.wait_for_authority_end() => {},
+                }
                 cancellation.cancel();
             }
         })
@@ -843,7 +852,7 @@ impl From<nexus_cua_protocol::CuaError> for McpServeError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
     use axum::body::{Body, to_bytes};
@@ -1131,6 +1140,10 @@ mod tests {
     }
 
     async fn transport_server() -> (Arc<Runtime>, NexusCuaMcp, PathBuf) {
+        transport_server_with_ttl(60).await
+    }
+
+    async fn transport_server_with_ttl(ttl_seconds: u32) -> (Arc<Runtime>, NexusCuaMcp, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "nexus-cua-mcp-transport-{}",
             uuid::Uuid::new_v4().simple()
@@ -1154,7 +1167,7 @@ mod tests {
             allow_clipboard_write: false,
             allow_application_launch: false,
             allow_application_launch_activation: false,
-            ttl_seconds: 60,
+            ttl_seconds,
         });
         let server = NexusCuaMcp::bootstrap_with_authority_context(
             Arc::clone(&runtime),
@@ -1556,6 +1569,158 @@ mod tests {
         runtime.shutdown().await;
         let _ = std::fs::remove_dir_all(root);
         tools
+    }
+
+    struct RevocableProvider(AtomicBool);
+
+    #[async_trait::async_trait]
+    impl AuthorityProvider for RevocableProvider {
+        async fn acquire(
+            &self,
+            challenge: AuthorityChallenge,
+        ) -> Result<AuthorityGrant, AuthorityProviderError> {
+            TestProvider.acquire(challenge).await
+        }
+        async fn validate(
+            &self,
+            _: &crate::AuthorityGrantMetadata,
+        ) -> Result<(), AuthorityProviderError> {
+            if self.0.load(Ordering::SeqCst) {
+                Err(AuthorityProviderError::Denied)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_registered_adapter_observes_revocation_without_tool_traffic() {
+        let (runtime, initial, root) = transport_server().await;
+        initial.close().await;
+        let provider = Arc::new(RevocableProvider(AtomicBool::new(false)));
+        let challenge = AuthorityChallenge::new("registration-revocation", "epoch", None).unwrap();
+        let authority = provider
+            .acquire(challenge.clone())
+            .await
+            .unwrap()
+            .resolve(&challenge, current_unix_ms().unwrap())
+            .unwrap()
+            .with_provider(provider.clone());
+        let server = NexusCuaMcp::bootstrap_with_authority_context(
+            Arc::clone(&runtime),
+            authority,
+            DEFAULT_MAX_IMAGE_BYTES,
+            ToolProfile::Full,
+        )
+        .await
+        .unwrap();
+        let monitoring = tokio::spawn({
+            let server = server.clone();
+            async move { server.wait_for_authority_end().await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!monitoring.is_finished());
+        provider.0.store(true, Ordering::SeqCst);
+        timeout(Duration::from_secs(2), monitoring)
+            .await
+            .unwrap()
+            .unwrap();
+        let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn(async move {
+            server
+                .serve(server_transport)
+                .await
+                .unwrap()
+                .waiting()
+                .await
+        });
+        let client = ().serve(client_transport).await.unwrap();
+        let result = client
+            .call_tool(CallToolRequestParams::new("get_status"))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        client.cancel().await.unwrap();
+        serving.await.unwrap().unwrap();
+        runtime.shutdown().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_adapter_expires_and_rejects_further_requests() {
+        let (runtime, server, root) = transport_server_with_ttl(1).await;
+        let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let server = server.clone();
+            async move {
+                server
+                    .serve(server_transport)
+                    .await
+                    .unwrap()
+                    .waiting()
+                    .await
+            }
+        });
+        let client = ().serve(client_transport).await.unwrap();
+        timeout(Duration::from_secs(2), server.wait_for_authority_end())
+            .await
+            .expect("idle authority must expire without a tool call");
+        let result = client
+            .call_tool(CallToolRequestParams::new("get_status"))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            serde_json::to_string(&result)
+                .unwrap()
+                .contains("authority_revoked")
+        );
+        client.cancel().await.unwrap();
+        serving.await.unwrap().unwrap();
+        runtime.shutdown().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn adapter_close_does_not_wait_behind_admitted_mutation() {
+        let (runtime, server, gate, root) = mutation_server().await;
+        let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let server = server.clone();
+            async move {
+                server
+                    .serve(server_transport)
+                    .await
+                    .unwrap()
+                    .waiting()
+                    .await
+            }
+        });
+        let client = ().serve(client_transport).await.unwrap();
+        let (window, observation) = stdio_observation(&client).await;
+        let request = client
+            .send_cancellable_request(
+                client_tool_request(
+                    "press_keys",
+                    press_keys_arguments("development_fixture:close", &window, &observation),
+                ),
+                PeerRequestOptions::with_timeout(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), gate.entered.notified())
+            .await
+            .unwrap();
+        timeout(Duration::from_millis(250), server.close())
+            .await
+            .expect("revocation must not queue behind the action");
+        gate.release.notify_one();
+        let _ = request.await_response().await;
+        assert_eq!(gate.dispatches.load(Ordering::SeqCst), 1);
+        client.cancel().await.unwrap();
+        serving.await.unwrap().unwrap();
+        runtime.shutdown().await;
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

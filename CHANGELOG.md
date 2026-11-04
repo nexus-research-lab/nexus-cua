@@ -15,6 +15,12 @@ file.
   controls, separated pointer targets, and a full-width live state panel.
   Preserve accessibility identities and allow short windows to scroll.
 
+### Fixed
+
+- Enforce the issued MCP authority deadline without silently extending provider
+  state. Close idle stdio/HTTP adapters on expiry or failed provider validation,
+  and cancel sessions without queuing shutdown behind an admitted mutation.
+
 ## [0.2.0-rc.4] - 2026-11-03
 
 macOS Apple Silicon testing prerelease; no change to the wire contract.

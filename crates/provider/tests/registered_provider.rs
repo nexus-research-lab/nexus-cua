@@ -361,3 +361,35 @@ async fn registration_tamper_and_host_mismatch_fail_closed() {
     assert!(store.inspect(&registration_id).is_err());
     std::fs::remove_dir_all(root).expect("remove test root");
 }
+
+#[tokio::test]
+async fn validation_does_not_silently_extend_the_issued_grant() {
+    let root = test_root();
+    let id = format!("registration_{}", Uuid::new_v4().simple());
+    let store = Arc::new(
+        RegistrationStore::with_secret_store(&root, Arc::new(MemorySecrets::default()))
+            .expect("store"),
+    );
+    let mut registration = request(&id, host('a'));
+    registration.authority.ttl_seconds = 2;
+    store.install(registration, 1_000).expect("registration");
+    let provider = RegisteredAuthorityProvider::with_host_identity(
+        Arc::clone(&store),
+        Arc::new(FixedHost(host('a'))),
+    );
+    let challenge = AuthorityChallenge::new(&id, "expiry-test", None).unwrap();
+    let grant = provider.acquire(challenge.clone()).await.unwrap();
+    let context = grant
+        .resolve(&challenge, nexus_cua_mcp::current_unix_ms().unwrap())
+        .unwrap();
+    let metadata = context.provider_metadata().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    provider.validate(metadata).await.expect("grant still live");
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    assert_eq!(
+        provider.validate(metadata).await,
+        Err(AuthorityProviderError::Denied)
+    );
+    store.remove(&id).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

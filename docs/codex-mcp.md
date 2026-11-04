@@ -1,6 +1,7 @@
 # Codex MCP dogfood
 
-Status: source-build development dogfood. No package is published. This guide
+Status: source-build development dogfood. macOS testing prereleases exist, but
+this guide does not establish signed packaged acceptance. This guide
 records the current macOS path; it is not the cross-platform packaged-candidate
 gate in the
 [完整产品与开发 PRD](PRD.zh-CN.md)。
@@ -61,9 +62,12 @@ The source tree now includes a production-shaped Codex stdio integration
 transaction: it authenticates a short-lived plan, requires `--confirm` on a
 real terminal, installs the generated MCP Skill, stores provider secrets in the
 OS-backed store, invokes only supported `codex mcp add/remove` entrypoints, and
-refuses stale or changed state. Streamable HTTP host installation, standalone
-authority/session commands, grant renewal, and complete revocation remain open
-before packaged acceptance.
+refuses stale or changed state. Streamable HTTP host installation and authenticated grant renewal remain open
+before packaged acceptance. CLI authority/service commands are implemented.
+Both MCP transports now monitor the finite grant independently of tool traffic;
+expiry or failed provider validation closes the runtime session and transport.
+Validation never extends the issued grant. A trusted host must explicitly launch
+a fresh adapter for a new bounded grant; this is not seamless session renewal.
 
 This unsigned-file route remains a development-only mechanics exception for
 testing image/tool mechanics with a read-only model shell and the fixed fixture.
@@ -352,3 +356,20 @@ memory for guarded normalized actions and zoom. This keeps screenshot bytes
 off disk even if Codex kills the stdio child instead of disconnecting
 gracefully. A normal disconnect additionally closes the session and clears the
 in-memory cache.
+
+## Local self-integration diagnostic (2026-11-03)
+
+The existing project configuration still selected the removed `nexus_cua` alias,
+legacy `nexus-cua-mcp` binary, prefixed tools and a 0.1.0 unsigned authority file.
+The current agent verified that old connection through actual MCP calls:
+installed discovery, cold launch, exact-window screenshot, one normalized click,
+fresh counter verification, cooperative termination, and empty final listings.
+The fixture first had to be installed in the user's Applications directory.
+This proves the old connection and the fixture layout, not rc.4 acceptance.
+
+The current source removes validation-only silent lease extension and adds
+bounded idle expiry/revocation monitoring to stdio and HTTP. Regression tests
+cover unchanged expiry, idle closure, provider revocation without tool traffic,
+and close while a mutation is admitted. A fresh registered host launch and
+actual agent calls remain necessary to establish current native acceptance.
+Do not use a pseudo-terminal to impersonate human installation confirmation.
