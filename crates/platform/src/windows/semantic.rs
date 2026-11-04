@@ -6,11 +6,12 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::input::begin_dispatch;
 use nexus_cua_protocol::{
-    AccessibilityMode, AccessibilityRangeValue, ObservationTruncation, ScreenRect, SensitiveText,
-    TruncationReason,
+    AccessibilityMode, AccessibilityRangeValue, ObservationTruncation, ScreenPoint, ScreenRect,
+    SensitiveText, TruncationReason,
 };
-use nexus_cua_runtime::{DriverElement, DriverError, DriverErrorKind};
+use nexus_cua_runtime::{DriverActionGuard, DriverElement, DriverError, DriverErrorKind};
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 use windows::Win32::Foundation::{HWND, RECT};
@@ -57,6 +58,7 @@ const MAX_FIELD_BYTES: usize = 512;
 #[derive(Clone)]
 pub(super) struct SemanticActor {
     sender: SyncSender<SemanticCommand>,
+    guard: Option<DriverActionGuard>,
 }
 
 pub(super) struct SemanticSnapshot {
@@ -94,7 +96,17 @@ impl SemanticActor {
         ready_receiver
             .recv()
             .map_err(|_| provider_failure("UI Automation actor stopped during startup"))??;
-        Ok(Self { sender })
+        Ok(Self {
+            sender,
+            guard: None,
+        })
+    }
+
+    pub(super) fn guarded(&self, guard: DriverActionGuard) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            guard: Some(guard),
+        }
     }
 
     pub(super) async fn snapshot(
@@ -107,6 +119,22 @@ impl SemanticActor {
         receiver.await.map_err(actor_stopped)?
     }
 
+    pub(super) async fn invoke_at_point(
+        &self,
+        hwnd: isize,
+        point: ScreenPoint,
+    ) -> Result<bool, DriverError> {
+        let (reply, receiver) = oneshot::channel();
+        self.admit(SemanticCommand::InvokeAtPoint {
+            hwnd,
+            point,
+            guard: self.guard.clone(),
+            reply,
+        })
+        .map_err(DriverError::mutation_not_dispatched)?;
+        receiver.await.map_err(actor_stopped)?
+    }
+
     pub(super) async fn perform(
         &self,
         element_key: String,
@@ -116,6 +144,7 @@ impl SemanticActor {
         self.admit(SemanticCommand::Perform {
             element_key,
             action,
+            guard: self.guard.clone(),
             reply,
         })
         .map_err(DriverError::mutation_not_dispatched)?;
@@ -139,9 +168,16 @@ enum SemanticCommand {
         mode: AccessibilityMode,
         reply: oneshot::Sender<Result<SemanticSnapshot, DriverError>>,
     },
+    InvokeAtPoint {
+        hwnd: isize,
+        point: ScreenPoint,
+        guard: Option<DriverActionGuard>,
+        reply: oneshot::Sender<Result<bool, DriverError>>,
+    },
     Perform {
         element_key: String,
         action: SemanticAction,
+        guard: Option<DriverActionGuard>,
         reply: oneshot::Sender<Result<(), DriverError>>,
     },
 }
@@ -263,12 +299,22 @@ impl SemanticState {
                 SemanticCommand::Snapshot { hwnd, mode, reply } => {
                     let _ = reply.send(self.snapshot(hwnd, mode));
                 }
+                SemanticCommand::InvokeAtPoint {
+                    hwnd,
+                    point,
+                    guard,
+                    reply,
+                } => {
+                    let result = self.invoke_at_point(hwnd, point, guard.as_ref());
+                    let _ = reply.send(result);
+                }
                 SemanticCommand::Perform {
                     element_key,
                     action,
+                    guard,
                     reply,
                 } => {
-                    let _ = reply.send(self.perform(&element_key, action));
+                    let _ = reply.send(self.perform(&element_key, action, guard.as_ref()));
                 }
             }
         }
@@ -384,7 +430,55 @@ impl SemanticState {
         })
     }
 
-    fn perform(&self, element_key: &str, action: SemanticAction) -> Result<(), DriverError> {
+    fn invoke_at_point(
+        &mut self,
+        hwnd: isize,
+        point: ScreenPoint,
+        guard: Option<&DriverActionGuard>,
+    ) -> Result<bool, DriverError> {
+        if let Some(guard) = guard {
+            guard.check()?;
+        }
+        let snapshot = self.snapshot(hwnd, AccessibilityMode::Interactive)?;
+        // Never resolve a global desktop hit: inspect only this exact window's
+        // bounded subtree and invoke the smallest enabled control at the point.
+        let target = snapshot
+            .elements
+            .iter()
+            .filter(|element| {
+                element.enabled
+                    && element.actions.iter().any(|action| action == "invoke")
+                    && element.screen_bounds.is_some_and(|bounds| {
+                        point.x >= bounds.x
+                            && point.y >= bounds.y
+                            && point.x < bounds.x + bounds.width
+                            && point.y < bounds.y + bounds.height
+                    })
+            })
+            .min_by(|left, right| {
+                let area = |element: &DriverElement| {
+                    element
+                        .screen_bounds
+                        .map_or(f64::MAX, |bounds| bounds.width * bounds.height)
+                };
+                area(left).total_cmp(&area(right))
+            });
+        let Some(target) = target else {
+            return Ok(false);
+        };
+        self.perform(&target.key, SemanticAction::Invoke, guard)?;
+        Ok(true)
+    }
+
+    fn perform(
+        &self,
+        element_key: &str,
+        action: SemanticAction,
+        guard: Option<&DriverActionGuard>,
+    ) -> Result<(), DriverError> {
+        if let Some(guard) = guard {
+            guard.check()?;
+        }
         let stored = self
             .snapshots
             .iter()
@@ -403,48 +497,69 @@ impl SemanticState {
             if element_signature(&current_values) != stored.signature {
                 return Err(stale_element().mutation_not_dispatched());
             }
-            match action {
-                SemanticAction::Focus => current.SetFocus().map_err(|error| action_error(&error)),
-                SemanticAction::Invoke => current
-                    .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
-                    .map_err(|_| stale_element().mutation_not_dispatched())?
-                    .Invoke()
-                    .map_err(|error| action_error(&error)),
-                SemanticAction::SetValue(value) => current
-                    .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-                    .map_err(|_| stale_element().mutation_not_dispatched())?
-                    .SetValue(&BSTR::from(value.expose()))
-                    .map_err(|error| action_error(&error)),
-                SemanticAction::SetRangeValue(value) => current
-                    .GetCurrentPatternAs::<IUIAutomationRangeValuePattern>(UIA_RangeValuePatternId)
-                    .map_err(|_| stale_element().mutation_not_dispatched())?
-                    .SetValue(value)
-                    .map_err(|error| action_error(&error)),
-                SemanticAction::Toggle => current
-                    .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
-                    .map_err(|_| stale_element().mutation_not_dispatched())?
-                    .Toggle()
-                    .map_err(|error| action_error(&error)),
-                SemanticAction::Select => current
-                    .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                        UIA_SelectionItemPatternId,
-                    )
-                    .map_err(|_| stale_element().mutation_not_dispatched())?
-                    .Select()
-                    .map_err(|error| action_error(&error)),
+            let result = match action {
+                SemanticAction::Focus => {
+                    begin_dispatch(guard)?;
+                    current.SetFocus()
+                }
+                SemanticAction::Invoke => {
+                    let pattern = current
+                        .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+                        .map_err(|_| stale_element().mutation_not_dispatched())?;
+                    begin_dispatch(guard)?;
+                    pattern.Invoke()
+                }
+                SemanticAction::SetValue(value) => {
+                    let pattern = current
+                        .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                        .map_err(|_| stale_element().mutation_not_dispatched())?;
+                    let value = BSTR::from(value.expose());
+                    begin_dispatch(guard)?;
+                    pattern.SetValue(&value)
+                }
+                SemanticAction::SetRangeValue(value) => {
+                    let pattern = current
+                        .GetCurrentPatternAs::<IUIAutomationRangeValuePattern>(
+                            UIA_RangeValuePatternId,
+                        )
+                        .map_err(|_| stale_element().mutation_not_dispatched())?;
+                    begin_dispatch(guard)?;
+                    pattern.SetValue(value)
+                }
+                SemanticAction::Toggle => {
+                    let pattern = current
+                        .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+                        .map_err(|_| stale_element().mutation_not_dispatched())?;
+                    begin_dispatch(guard)?;
+                    pattern.Toggle()
+                }
+                SemanticAction::Select => {
+                    let pattern = current
+                        .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                            UIA_SelectionItemPatternId,
+                        )
+                        .map_err(|_| stale_element().mutation_not_dispatched())?;
+                    begin_dispatch(guard)?;
+                    pattern.Select()
+                }
                 SemanticAction::SetExpanded(expanded) => {
                     let pattern = current
                         .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
                             UIA_ExpandCollapsePatternId,
                         )
                         .map_err(|_| stale_element().mutation_not_dispatched())?;
+                    begin_dispatch(guard)?;
                     if expanded {
-                        pattern.Expand().map_err(|error| action_error(&error))
+                        pattern.Expand()
                     } else {
-                        pattern.Collapse().map_err(|error| action_error(&error))
+                        pattern.Collapse()
                     }
                 }
+            };
+            if let Some(guard) = guard {
+                guard.check()?;
             }
+            result.map_err(|error| action_error(&error))
         }
     }
 }

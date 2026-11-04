@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 mod evidence;
 mod fault;
+#[cfg(target_os = "windows")]
+mod interruption;
 mod performance;
 mod permission;
 mod restart;
@@ -74,6 +76,9 @@ enum HarnessCommand {
     DesktopConditions,
     /// Prove installed discovery, cold launch, session admission, and termination.
     Lifecycle,
+    /// Verify native stop/takeover and release of held input on Windows.
+    #[cfg(target_os = "windows")]
+    Interrupt(interruption::Args),
     /// Measure warm end-to-end latency distributions against absolute budgets.
     Benchmark(performance::BenchmarkArgs),
     /// Exercise idle or active lifecycle/resource behavior for a bounded duration.
@@ -203,6 +208,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         HarnessCommand::Lifecycle => validate_lifecycle(&cli, &mut client).await,
+        #[cfg(target_os = "windows")]
+        HarnessCommand::Interrupt(args) => interruption::validate(&cli, &mut client, args).await,
         HarnessCommand::Benchmark(args) => performance::benchmark(&cli, &mut client, args).await,
         HarnessCommand::Soak(args) => performance::soak(&cli, &mut client, args).await,
         HarnessCommand::Fault(args) => fault::validate(&cli, &mut client, args).await,
@@ -1510,9 +1517,14 @@ async fn perform(
         _ if action.requires_foreground() => DeliveryMode::Foreground,
         _ => DeliveryMode::Semantic,
     };
+    let observe_after = expected_kind == ActionKind::FocusWindow;
     let result = client
         .send(Command::PerformAction(PerformActionInput {
-            observe_after: None,
+            observe_after: observe_after.then_some(nexus_cua_protocol::ObserveAfterOptions {
+                include_screenshot: true,
+                accessibility: AccessibilityMode::Disabled,
+                application_scene: false,
+            }),
             session_id: session_id.clone(),
             window_ref: window.window_ref.clone(),
             observation_id: observation.observation_id.clone(),
@@ -1531,6 +1543,17 @@ async fn perform(
                     == nexus_cua_protocol::ForegroundRestorationStatus::NotRequested
                 && output.observation_invalidated =>
         {
+            if observe_after
+                && (output.observation_error.is_some()
+                    || output
+                        .observation
+                        .as_ref()
+                        .is_none_or(|observation| observation.screenshot.is_none()))
+            {
+                return Err(
+                    "focus succeeded but its requested post-action screenshot failed".into(),
+                );
+            }
             Ok(())
         }
         CommandResult::ActionPerformed(output) if output.delivery_mode != expected_delivery => {

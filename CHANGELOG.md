@@ -21,6 +21,26 @@ file.
   state. Close idle stdio/HTTP adapters on expiry or failed provider validation,
   and cancel sessions without queuing shutdown behind an admitted mutation.
 
+- Carry Windows session cancellation into input/UI Automation actors and recheck
+  authority at native dispatch. Stop bounded holds, drags and typing on revocation
+  or takeover, release synthetic inputs, and preserve indeterminate outcomes.
+- Monitor outside Windows input on an owned message pump with Raw Input, marked
+  event filtering, held-input state and a fail-closed health watchdog. Input
+  between actions waits for idle and requires a fresh observation under the same
+  grant; input during dispatch latches takeover.
+- Resolve Windows background single clicks through an exact-window UI Automation
+  invoke when supported; otherwise address the bounded native child hierarchy.
+  Message delivery stays unverified and never activates a foreground fallback.
+- Add bounded Windows visual settling before requested post-action screenshots.
+  Read failures remain separate from successful mutation evidence.
+
+### Validation
+
+- Add native Windows close, foreign-input, physical-input and between-action idle
+  scenarios, including actual held-button release and latched takeover checks.
+- Exercise post-action screenshots in the native focus path. The Windows fixture
+  can explicitly hand foreground eligibility to its one configured test runtime.
+
 ## [0.2.0-rc.4] - 2026-11-03
 
 macOS Apple Silicon testing prerelease; no change to the wire contract.

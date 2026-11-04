@@ -1,5 +1,21 @@
 # Platform Validation
 
+## Windows implementation follow-up (2026-11-03)
+
+Native guard propagation, passive input monitoring, held-input cleanup,
+exact-window semantic/background click routing and bounded post-action settling
+are implemented in the working source. The native harness now checks close,
+foreign injected input, physical input and idle recovery with separate scenarios.
+The fixture's opt-in foreground handoff is test setup, not evidence for the Nexus
+desktop host. Interactive acceptance and pinned release packaging are in progress;
+source compilation alone is not recorded as a native pass.
+
+Correction to the review below: the Windows driver itself reported
+`observe_after=false`, but `Runtime::GetCapabilities` already enabled the public
+post-action-read contract. The missing Windows implementation was native settling,
+not public access to post-action reads. Application-scene capture remains
+unsupported on Windows.
+
 ## Windows readiness review (2026-11-03)
 
 Source reviewed: `6e00e2fab9b6394d1bdb6f90d0b4bed274787fce` (rc.4).

@@ -3,7 +3,8 @@ param(
     [string]$RepositoryRoot = (Join-Path $PSScriptRoot "../.."),
     [ValidateSet("debug", "release")][string]$BuildProfile = "debug",
     [ValidateRange(30, 600)][int]$TimeoutSeconds = 180,
-    [switch]$WindowOnly
+    [switch]$WindowOnly,
+    [ValidateSet("core", "close", "external", "physical", "idle")][string]$Scenario = "core"
 )
 
 Set-StrictMode -Version Latest
@@ -56,24 +57,32 @@ New-Item -ItemType Directory -Force $evidence, $artifacts | Out-Null
 $service = $null
 $fixture = $null
 $probe = $null
+$previousForegroundPid = $env:NEXUS_CUA_FIXTURE_FOREGROUND_PID
 try {
     $service = Start-Process $sidecar -PassThru -WorkingDirectory $repository -ArgumentList @(
         "serve", "--endpoint", $endpoint, "--token-file", "`"$token`"", "--artifact-root", "`"$artifacts`""
     ) -RedirectStandardOutput (Join-Path $evidence "service.out.log") -RedirectStandardError (Join-Path $evidence "service.err.log")
     Start-Sleep -Seconds 2
     if ($service.HasExited) { throw "Runtime exited during startup" }
+    # The fixture is the foreground test host. This narrow OS handoff does not
+    # replace runtime session authority or packaged Nexus handoff acceptance.
+    $env:NEXUS_CUA_FIXTURE_FOREGROUND_PID = [string]$service.Id
     $fixture = Start-Process $fixturePath -PassThru -WorkingDirectory $repository
     Start-Sleep -Seconds 2
-    $validationMode = if ($WindowOnly) { "--window-only" } else { "--enforce" }
-    $probe = Start-Process $harness -PassThru -WorkingDirectory $repository -ArgumentList @(
-        "--endpoint", $endpoint, "--token-file", "`"$token`"", "validate", $validationMode
-    ) -RedirectStandardOutput (Join-Path $evidence "validation.json") -RedirectStandardError (Join-Path $evidence "validation.err.log")
+    $validationArguments = if ($Scenario -ne "core") { @("interrupt", $Scenario) }
+        elseif ($WindowOnly) { @("validate", "--window-only") } else { @("validate", "--enforce") }
+    $probeArguments = @(
+        "--endpoint", $endpoint, "--token-file", "`"$token`""
+    ) + $validationArguments
+    $probe = Start-Process $harness -PassThru -WorkingDirectory $repository -ArgumentList $probeArguments -RedirectStandardOutput (Join-Path $evidence "validation.json") -RedirectStandardError (Join-Path $evidence "validation.err.log")
     if (-not $probe.WaitForExit($TimeoutSeconds * 1000)) { throw "Validation exceeded bounded timeout" }
     if ($probe.ExitCode -ne 0) { throw "Validation failed ($($probe.ExitCode)); evidence=$evidence" }
-    if ($WindowOnly) { Write-Output "Window-only diagnostics completed; full acceptance not evaluated; evidence=$evidence" }
+    if ($Scenario -ne "core") { Write-Output "Interruption scenario $Scenario passed; evidence=$evidence" }
+    elseif ($WindowOnly) { Write-Output "Window-only diagnostics completed; full acceptance not evaluated; evidence=$evidence" }
     else { Write-Output "Validation passed; evidence=$evidence" }
 }
 finally {
+    $env:NEXUS_CUA_FIXTURE_FOREGROUND_PID = $previousForegroundPid
     foreach ($process in @($probe, $fixture, $service)) {
         if ($null -ne $process -and -not $process.HasExited) {
             $process.Kill()

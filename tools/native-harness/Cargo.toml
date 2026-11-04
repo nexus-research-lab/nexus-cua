@@ -20,3 +20,6 @@ uuid = { version = "1.18.1", features = ["v4"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2.177"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse"] }

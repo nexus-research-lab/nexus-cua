@@ -1,5 +1,6 @@
 //! Windows Graphics Capture, UI Automation, and `SendInput` driver.
 
+mod activity;
 mod capture;
 mod clipboard;
 mod discovery;
@@ -21,9 +22,10 @@ use nexus_cua_protocol::{
     Platform, SensitiveText, SignatureStatus, StatePredicate,
 };
 use nexus_cua_runtime::{
-    DesktopDriver, DriverAction, DriverActionOutput, DriverApplication, DriverClipboardSnapshot,
-    DriverClipboardWriteOutput, DriverDisplay, DriverError, DriverErrorKind, DriverLaunchOutput,
-    DriverLaunchableApplication, DriverObservation, DriverVerification, DriverWindow,
+    DesktopDriver, DriverAction, DriverActionGuard, DriverActionOutput, DriverApplication,
+    DriverClipboardSnapshot, DriverClipboardWriteOutput, DriverDisplay, DriverError,
+    DriverErrorKind, DriverLaunchOutput, DriverLaunchableApplication, DriverObservation,
+    DriverVerification, DriverWindow,
 };
 use windows::Win32::UI::HiDpi::{
     AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -42,6 +44,7 @@ use crate::observation::{contains_rect, fingerprint, fingerprints_match};
 
 /// Windows native driver with one actor for each native threading domain.
 pub struct WindowsDriver {
+    activity: activity::ActivityActor,
     discovery: DiscoveryActor,
     capture: CaptureActor,
     semantic: SemanticActor,
@@ -75,6 +78,7 @@ impl WindowsDriver {
             }
         }
         Ok(Self {
+            activity: activity::ActivityActor::spawn()?,
             discovery: DiscoveryActor::spawn(),
             capture: CaptureActor::spawn()?,
             semantic: SemanticActor::spawn()?,
@@ -90,15 +94,101 @@ impl WindowsDriver {
     }
 
     async fn focus_for_input(&self, window: &NativeWindow) -> Result<(), DriverError> {
-        self.input.perform(window.hwnd, InputAction::Activate).await
+        self.input.perform(window, InputAction::Activate).await
     }
 }
 
 #[async_trait]
 impl DesktopDriver for WindowsDriver {
+    fn session_started_guarded(
+        &self,
+        _session_id: &nexus_cua_protocol::SessionId,
+        guard: DriverActionGuard,
+        allow_foreground: bool,
+    ) -> Result<(), DriverError> {
+        if allow_foreground {
+            self.activity.register(&guard)?;
+        }
+        Ok(())
+    }
+
+    async fn settle_window(
+        &self,
+        window: &DriverWindow,
+        application_scene: bool,
+    ) -> Result<(), DriverError> {
+        if application_scene {
+            return Err(DriverError::new(
+                DriverErrorKind::Unsupported,
+                "Windows application scene capture is unsupported",
+            ));
+        }
+        let mut previous = None;
+        for attempt in 0..3 {
+            if attempt != 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let current = current_window(&self.windows().await?, &window.key)?;
+            let (image, bounds) = self
+                .capture
+                .capture(&current.key, current.hwnd, current.screen_bounds)
+                .await?;
+            let signature = fingerprint(&current.key, bounds, Some(&image));
+            if previous
+                .as_ref()
+                .is_some_and(|value: &String| fingerprints_match(value, &signature))
+            {
+                break;
+            }
+            previous = Some(signature);
+        }
+        Ok(())
+    }
+
+    async fn perform_action_scoped(
+        &self,
+        window: &DriverWindow,
+        action: DriverAction,
+        allow_foreground: bool,
+        restore_foreground: bool,
+        guard: DriverActionGuard,
+    ) -> Result<DriverActionOutput, DriverError> {
+        guard.check()?;
+        let scoped = Self {
+            activity: self.activity.clone(),
+            discovery: self.discovery.clone(),
+            capture: self.capture.clone(),
+            semantic: self.semantic.guarded(guard.clone()),
+            input: self.input.guarded(guard.clone()),
+            launch: self.launch.clone(),
+            clipboard: self.clipboard.clone(),
+            provenance_workers: Arc::clone(&self.provenance_workers),
+        };
+        let result = scoped
+            .perform_action(window, action, allow_foreground, restore_foreground)
+            .await;
+        // A native actor retains its clone after caller cancellation. Any native
+        // attempt invalidates cached frames, including partial/unknown outcomes.
+        if guard.was_dispatched() {
+            self.capture.invalidate_after_mutation();
+        }
+        result
+            .and_then(|output| {
+                guard.check()?;
+                Ok(output)
+            })
+            .map_err(|error| {
+                if guard.was_dispatched() {
+                    error.mutation_indeterminate()
+                } else {
+                    error.mutation_not_dispatched()
+                }
+            })
+    }
+
     async fn capabilities(&self) -> Result<DriverCapabilities, DriverError> {
         Ok(DriverCapabilities {
-            observe_after: false,
+            observe_after: true,
             action_limits: nexus_cua_protocol::ActionLimits::default(),
             protocol_version: PROTOCOL_VERSION.to_owned(),
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -506,7 +596,7 @@ impl WindowsDriver {
             }
             DriverAction::SetWindowBounds { bounds } => {
                 self.input
-                    .perform(current.hwnd, InputAction::SetWindowBounds(bounds))
+                    .perform(current, InputAction::SetWindowBounds(bounds))
                     .await?;
                 (
                     DeliveryMode::System,
@@ -517,7 +607,7 @@ impl WindowsDriver {
             }
             DriverAction::SetWindowMinimized { minimized } => {
                 self.input
-                    .perform(current.hwnd, InputAction::SetWindowMinimized(minimized))
+                    .perform(current, InputAction::SetWindowMinimized(minimized))
                     .await?;
                 (
                     DeliveryMode::System,
@@ -536,7 +626,7 @@ impl WindowsDriver {
                     .collect();
                 self.input
                     .perform(
-                        current.hwnd,
+                        current,
                         InputAction::TerminateApplication {
                             pid: current.pid,
                             process_generation: current.process_generation,
@@ -555,10 +645,25 @@ impl WindowsDriver {
                 delivery: DeliveryPreference::Background,
                 ..
             } => {
-                self.dispatch_input_action(current.hwnd, background_click)
-                    .await?;
+                let semantic = match &background_click {
+                    DriverAction::ClickPoint {
+                        point,
+                        button: nexus_cua_protocol::PointerButton::Left,
+                        count: 1,
+                        ..
+                    } => self.semantic.invoke_at_point(current.hwnd, *point).await?,
+                    _ => false,
+                };
+                if !semantic {
+                    self.dispatch_input_action(current, background_click)
+                        .await?;
+                }
                 (
-                    DeliveryMode::Background,
+                    if semantic {
+                        DeliveryMode::Semantic
+                    } else {
+                        DeliveryMode::Background
+                    },
                     ActionEffectStatus::Unverified,
                     ActionEvidenceKind::DispatchAcceptance,
                     ForegroundRestorationStatus::NotRequested,
@@ -642,11 +747,11 @@ impl WindowsDriver {
 
     async fn dispatch_input_action(
         &self,
-        hwnd: isize,
+        window: &NativeWindow,
         action: DriverAction,
     ) -> Result<(), DriverError> {
         let action = Self::resolve_input_action(action)?;
-        self.input.perform(hwnd, action).await
+        self.input.perform(window, action).await
     }
 
     fn resolve_input_action(action: DriverAction) -> Result<InputAction, DriverError> {

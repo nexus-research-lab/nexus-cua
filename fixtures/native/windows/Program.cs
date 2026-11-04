@@ -82,6 +82,12 @@ internal sealed class FixtureWindow : Window
         MinHeight = 600;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = Brushes.White;
+        if (uint.TryParse(Environment.GetEnvironmentVariable("NEXUS_CUA_FIXTURE_FOREGROUND_PID"), out var runtimePid)
+            && runtimePid is > 0 and < uint.MaxValue)
+        {
+            // Explicit maintainer fixture setup, never a production runtime bypass.
+            Activated += (_, _) => AllowSetForegroundWindow(runtimePid);
+        }
         if (captureProfile is "1080p" or "4k")
         {
             WindowStyle = WindowStyle.None;
@@ -376,6 +382,9 @@ internal sealed class FixtureWindow : Window
 
         UpdateState();
     }
+
+    [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(uint processId);
 
     private static Button NamedButton(string text, string name)
     {

@@ -8,7 +8,7 @@ use std::time::Duration;
 use nexus_cua_protocol::{
     ForegroundRestorationStatus, PointerButton, ScreenPoint, ScreenRect, SensitiveText,
 };
-use nexus_cua_runtime::{DriverError, DriverErrorKind};
+use nexus_cua_runtime::{DriverActionGuard, DriverError, DriverErrorKind};
 use tokio::sync::oneshot;
 use windows::Win32::Foundation::{
     CloseHandle, FILETIME, HWND, LPARAM, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -34,9 +34,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId,
     IsIconic, IsWindow, PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOOWNERZORDER, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    SM_YVIRTUALSCREEN, SW_RESTORE, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
+    ShowWindowAsync, WM_CLOSE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 const COMMAND_CAPACITY: usize = 32;
@@ -49,6 +50,7 @@ const FOREGROUND_RESTORE_INTERVAL: Duration = Duration::from_millis(10);
 #[derive(Clone)]
 pub(super) struct InputActor {
     sender: SyncSender<InputCommand>,
+    guard: Option<DriverActionGuard>,
 }
 
 pub(super) enum InputAction {
@@ -96,19 +98,32 @@ impl InputActor {
             .name("nexus-cua-windows-input".to_owned())
             .spawn(move || actor_loop(&receiver))
             .expect("create SendInput actor thread");
-        Self { sender }
+        Self {
+            sender,
+            guard: None,
+        }
+    }
+
+    pub(super) fn guarded(&self, guard: DriverActionGuard) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            guard: Some(guard),
+        }
     }
 
     pub(super) async fn perform(
         &self,
-        hwnd: isize,
+        window: &super::discovery::NativeWindow,
         action: InputAction,
     ) -> Result<(), DriverError> {
         let (reply, receiver) = oneshot::channel();
         self.sender
             .try_send(InputCommand::Perform {
-                hwnd,
+                hwnd: window.hwnd,
+                pid: window.pid,
+                process_generation: window.process_generation,
                 action,
+                guard: self.guard.clone(),
                 reply,
             })
             .map_err(|error| match error {
@@ -140,6 +155,7 @@ impl InputActor {
                 action,
                 restore_foreground,
                 previous,
+                guard: self.guard.clone(),
                 reply,
             })
             .map_err(|error| match error {
@@ -172,7 +188,10 @@ impl InputActor {
 enum InputCommand {
     Perform {
         hwnd: isize,
+        pid: u32,
+        process_generation: u64,
         action: InputAction,
+        guard: Option<DriverActionGuard>,
         reply: oneshot::Sender<Result<(), DriverError>>,
     },
     Foreground {
@@ -182,6 +201,7 @@ enum InputCommand {
         action: InputAction,
         restore_foreground: bool,
         previous: Option<ForegroundOwner>,
+        guard: Option<DriverActionGuard>,
         reply: oneshot::Sender<Result<ForegroundRestorationStatus, DriverError>>,
     },
     ForegroundOwner {
@@ -194,10 +214,24 @@ fn actor_loop(receiver: &Receiver<InputCommand>) {
         match command {
             InputCommand::Perform {
                 hwnd,
+                pid,
+                process_generation,
                 action,
+                guard,
                 reply,
             } => {
-                let _ = reply.send(perform(hwnd, action));
+                let result = if window_process_generation(self::hwnd(hwnd))
+                    == Some((pid, process_generation))
+                {
+                    perform(hwnd, action, guard.as_ref())
+                } else {
+                    Err(DriverError::new(
+                        DriverErrorKind::TargetUnavailable,
+                        "queued window process generation changed",
+                    )
+                    .mutation_not_dispatched())
+                };
+                let _ = reply.send(result);
             }
             InputCommand::Foreground {
                 hwnd,
@@ -206,6 +240,7 @@ fn actor_loop(receiver: &Receiver<InputCommand>) {
                 action,
                 restore_foreground,
                 previous,
+                guard,
                 reply,
             } => {
                 let _ = reply.send(perform_foreground(
@@ -215,6 +250,7 @@ fn actor_loop(receiver: &Receiver<InputCommand>) {
                     action,
                     restore_foreground,
                     previous,
+                    guard.as_ref(),
                 ));
             }
             InputCommand::ForegroundOwner { reply } => {
@@ -231,6 +267,7 @@ pub(super) struct ForegroundOwner {
     process_generation: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn perform_foreground(
     raw_hwnd: isize,
     pid: u32,
@@ -238,7 +275,9 @@ fn perform_foreground(
     action: InputAction,
     restore_foreground: bool,
     previous: Option<ForegroundOwner>,
+    guard: Option<&DriverActionGuard>,
 ) -> Result<ForegroundRestorationStatus, DriverError> {
+    check_guard(guard)?;
     let target = hwnd(raw_hwnd);
     if window_process_generation(target) != Some((pid, expected_generation)) {
         return Err(DriverError::new(
@@ -250,16 +289,17 @@ fn perform_foreground(
     if matches!(action, InputAction::TypeText(_) | InputAction::PressKeys(_))
         && unsafe { GetForegroundWindow() } != target
     {
-        activate(target)?;
+        activate(target, guard)?;
     }
-    let action_result = perform(raw_hwnd, action);
+    let action_result = perform(raw_hwnd, action, guard);
+    check_guard(guard)?;
     let restoration = if !restore_foreground {
         ForegroundRestorationStatus::NotRequested
     } else if previous.is_some_and(|owner| owner.hwnd == raw_hwnd) {
         ForegroundRestorationStatus::NotNeeded
     } else {
         previous.map_or(ForegroundRestorationStatus::TargetUnavailable, |owner| {
-            restore_foreground_owner(owner, pid, expected_generation)
+            restore_foreground_owner(owner, pid, expected_generation, guard)
         })
     };
     action_result.map(|()| restoration)
@@ -279,6 +319,7 @@ fn restore_foreground_owner(
     owner: ForegroundOwner,
     target_pid: u32,
     target_generation: u64,
+    guard: Option<&DriverActionGuard>,
 ) -> ForegroundRestorationStatus {
     let current = unsafe { GetForegroundWindow() };
     if window_process_generation(current) != Some((target_pid, target_generation)) {
@@ -289,6 +330,9 @@ fn restore_foreground_owner(
         || window_process_generation(previous) != Some((owner.pid, owner.process_generation))
     {
         return ForegroundRestorationStatus::TargetUnavailable;
+    }
+    if begin_dispatch(guard).is_err() {
+        return ForegroundRestorationStatus::SkippedOwnerChanged;
     }
     if !unsafe { SetForegroundWindow(previous) }.as_bool() {
         return ForegroundRestorationStatus::Failed;
@@ -350,20 +394,25 @@ fn pointer_targets(action: &InputAction) -> [Option<ScreenPoint>; 2] {
     }
 }
 
-fn perform(raw_hwnd: isize, action: InputAction) -> Result<(), DriverError> {
+fn perform(
+    raw_hwnd: isize,
+    action: InputAction,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
+    check_guard(guard)?;
     let hwnd = hwnd(raw_hwnd);
     for point in pointer_targets(&action).into_iter().flatten() {
         validate_pointer_owner(hwnd, point)?;
     }
     match action {
-        InputAction::Activate => activate(hwnd),
-        InputAction::SetWindowBounds(bounds) => set_window_bounds(hwnd, bounds),
-        InputAction::SetWindowMinimized(minimized) => set_window_minimized(hwnd, minimized),
+        InputAction::Activate => activate(hwnd, guard),
+        InputAction::SetWindowBounds(bounds) => set_window_bounds(hwnd, bounds, guard),
+        InputAction::SetWindowMinimized(minimized) => set_window_minimized(hwnd, minimized, guard),
         InputAction::TerminateApplication {
             pid,
             process_generation,
             windows,
-        } => terminate_application(pid, process_generation, &windows),
+        } => terminate_application(pid, process_generation, &windows, guard),
         InputAction::Click {
             point,
             button,
@@ -371,50 +420,67 @@ fn perform(raw_hwnd: isize, action: InputAction) -> Result<(), DriverError> {
             background,
         } => {
             if background {
-                click_background(hwnd, point, button, count)
+                click_background(hwnd, point, button, count, guard)
             } else {
-                click(point, button, count)
+                click(point, button, count, guard)
             }
         }
         InputAction::Press {
             point,
             button,
             duration_ms,
-        } => press(point, button, duration_ms),
-        InputAction::Move { point, duration_ms } => move_pointer(point, duration_ms),
-        InputAction::TypeText(text) => type_text(hwnd, text.expose()),
-        InputAction::PressKeys(keys) => press_keys(hwnd, &keys),
+        } => press(point, button, duration_ms, guard),
+        InputAction::Move { point, duration_ms } => move_pointer(point, duration_ms, guard),
+        InputAction::TypeText(text) => type_text(hwnd, text.expose(), guard),
+        InputAction::PressKeys(keys) => press_keys(hwnd, &keys, guard),
         InputAction::Scroll {
             point,
             delta_x,
             delta_y,
-        } => scroll(point, delta_x, delta_y),
+        } => scroll(point, delta_x, delta_y, guard),
         InputAction::Drag {
             from,
             to,
             duration_ms,
-        } => drag(from, to, duration_ms),
+        } => drag(from, to, duration_ms, guard),
     }
 }
 
-fn activate(hwnd: HWND) -> Result<(), DriverError> {
+fn activate(hwnd: HWND, guard: Option<&DriverActionGuard>) -> Result<(), DriverError> {
     // SAFETY: The HWND was freshly resolved from the process-lifetime key. The
     // caller verifies that Windows actually granted foreground ownership.
     unsafe {
         if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+            begin_dispatch(guard)?;
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
         }
-        if !SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() != hwnd {
+        begin_dispatch(guard)?;
+        if !SetForegroundWindow(hwnd).as_bool() {
             return Err(DriverError::new(
                 DriverErrorKind::ForegroundRequired,
                 "Windows refused foreground activation",
             ));
         }
     }
-    Ok(())
+    let deadline = std::time::Instant::now() + FOREGROUND_RESTORE_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        check_guard(guard)?;
+        if unsafe { GetForegroundWindow() } == hwnd {
+            return Ok(());
+        }
+        thread::sleep(FOREGROUND_RESTORE_INTERVAL);
+    }
+    Err(DriverError::new(
+        DriverErrorKind::ForegroundRequired,
+        "Windows foreground activation did not settle before its deadline",
+    ))
 }
 
-fn set_window_bounds(hwnd: HWND, requested: ScreenRect) -> Result<(), DriverError> {
+fn set_window_bounds(
+    hwnd: HWND,
+    requested: ScreenRect,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     let outer = outer_window_rect(hwnd)?;
     let extended = extended_window_rect(hwnd).unwrap_or(outer);
     let left_inset = extended.left.saturating_sub(outer.left);
@@ -432,6 +498,7 @@ fn set_window_bounds(hwnd: HWND, requested: ScreenRect) -> Result<(), DriverErro
     // SAFETY: The HWND was freshly resolved and all dimensions were range
     // checked. NOACTIVATE/NOZORDER preserve foreground and stacking authority.
     unsafe {
+        begin_dispatch(guard)?;
         SetWindowPos(
             hwnd,
             None,
@@ -439,25 +506,37 @@ fn set_window_bounds(hwnd: HWND, requested: ScreenRect) -> Result<(), DriverErro
             y,
             width,
             height,
-            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS,
         )
         .map_err(|_| window_mutation_failure("Windows rejected the requested window bounds"))?;
     }
-    let actual = extended_window_rect(hwnd).unwrap_or(outer_window_rect(hwnd)?);
-    let actual = rect_to_screen_rect(actual);
-    if !window_bounds_match(actual, requested) {
-        return Err(window_mutation_failure(
-            "Windows adjusted or rejected the requested window bounds",
-        ));
+    let deadline = std::time::Instant::now() + FOREGROUND_RESTORE_TIMEOUT;
+    loop {
+        check_guard(guard)?;
+        let actual =
+            rect_to_screen_rect(extended_window_rect(hwnd).unwrap_or(outer_window_rect(hwnd)?));
+        if window_bounds_match(actual, requested) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(window_mutation_failure(
+                "Windows adjusted or did not apply the requested window bounds before the deadline",
+            ));
+        }
+        thread::sleep(FOREGROUND_RESTORE_INTERVAL);
     }
-    Ok(())
 }
 
-fn set_window_minimized(hwnd: HWND, minimized: bool) -> Result<(), DriverError> {
+fn set_window_minimized(
+    hwnd: HWND,
+    minimized: bool,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     // SAFETY: The freshly resolved HWND is only shown or minimized. These
     // commands do not grant keyboard or pointer authority to the target.
     unsafe {
-        let _ = ShowWindow(
+        begin_dispatch(guard)?;
+        let _ = ShowWindowAsync(
             hwnd,
             if minimized {
                 SW_SHOWMINNOACTIVE
@@ -465,19 +544,27 @@ fn set_window_minimized(hwnd: HWND, minimized: bool) -> Result<(), DriverError> 
                 SW_SHOWNOACTIVATE
             },
         );
-        if IsIconic(hwnd).as_bool() != minimized {
+    }
+    let deadline = std::time::Instant::now() + FOREGROUND_RESTORE_TIMEOUT;
+    loop {
+        check_guard(guard)?;
+        if unsafe { IsIconic(hwnd) }.as_bool() == minimized {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
             return Err(window_mutation_failure(
-                "Windows did not apply the requested minimized state",
+                "Windows did not apply the requested minimized state before the deadline",
             ));
         }
+        thread::sleep(FOREGROUND_RESTORE_INTERVAL);
     }
-    Ok(())
 }
 
 fn terminate_application(
     pid: u32,
     expected_generation: u64,
     windows: &[isize],
+    guard: Option<&DriverActionGuard>,
 ) -> Result<(), DriverError> {
     if windows.is_empty() {
         return Err(DriverError::new(
@@ -533,6 +620,13 @@ fn terminate_application(
 
         let mut posted = 0_usize;
         for raw in windows {
+            if window_process_generation(hwnd(*raw)) != Some((pid, expected_generation)) {
+                continue;
+            }
+            if let Err(error) = begin_dispatch(guard) {
+                let _ = CloseHandle(process);
+                return Err(error);
+            }
             if PostMessageW(Some(hwnd(*raw)), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok() {
                 posted += 1;
             }
@@ -545,7 +639,18 @@ fn terminate_application(
             )
             .mutation_not_dispatched());
         }
-        let wait = WaitForSingleObject(process, TERMINATION_CONFIRM_TIMEOUT_MS);
+        let deadline = std::time::Instant::now()
+            + Duration::from_millis(u64::from(TERMINATION_CONFIRM_TIMEOUT_MS));
+        let wait = loop {
+            if let Err(error) = check_guard(guard) {
+                let _ = CloseHandle(process);
+                return Err(error);
+            }
+            let status = WaitForSingleObject(process, 16);
+            if status != WAIT_TIMEOUT || std::time::Instant::now() >= deadline {
+                break status;
+            }
+        };
         let _ = CloseHandle(process);
         if wait == WAIT_OBJECT_0 {
             return Ok(());
@@ -621,67 +726,136 @@ fn window_mutation_failure(message: &str) -> DriverError {
     DriverError::new(DriverErrorKind::Platform, message).mutation_indeterminate()
 }
 
-fn click(point: ScreenPoint, button: PointerButton, count: u8) -> Result<(), DriverError> {
+fn click(
+    point: ScreenPoint,
+    button: PointerButton,
+    count: u8,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     let (down, up) = mouse_button_flags(button);
-    let movement = absolute_mouse(point, MOUSEEVENTF_MOVE)?;
-    let down = absolute_mouse(point, down)?;
-    let up = absolute_mouse(point, up)?;
-    send(&[movement])?;
-    thread::sleep(FRAME_INTERVAL);
+    send(&[absolute_mouse(point, MOUSEEVENTF_MOVE)?], guard)?;
+    wait_guarded(FRAME_INTERVAL, guard)?;
     for _ in 0..count {
-        let pressed = send(&[down]);
-        thread::sleep(Duration::from_millis(10));
-        // Always attempt release, including an uncertain partial down sequence.
-        let released = send(&[up]);
-        pressed
-            .and(released)
-            .map_err(DriverError::mutation_indeterminate)?;
-        thread::sleep(Duration::from_millis(10));
+        // Release even when a partial down was accepted. Cleanup must neither
+        // require revoked authority nor move the pointer after user takeover.
+        begin_dispatch(guard)?;
+        let pressed = send_raw(&[relative_mouse(down, 0)]);
+        let waited = if pressed.is_ok() {
+            wait_guarded(Duration::from_millis(10), guard)
+        } else {
+            Ok(())
+        };
+        let released = if pressed.is_ok() {
+            send_raw(&[relative_mouse(up, 0)])
+        } else {
+            Ok(())
+        };
+        pressed.and(waited).and(released)?;
+        wait_guarded(Duration::from_millis(10), guard)?;
     }
     Ok(())
 }
 
 fn click_background(
-    hwnd: HWND,
+    target: HWND,
     point: ScreenPoint,
     button: PointerButton,
     count: u8,
+    guard: Option<&DriverActionGuard>,
 ) -> Result<(), DriverError> {
-    let mut client = POINT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, ChildWindowFromPointEx,
+        GetClientRect, WM_MOUSEMOVE,
+    };
+    let screen = POINT {
         x: checked_i32(point.x.round(), "background click x coordinate")?,
         y: checked_i32(point.y.round(), "background click y coordinate")?,
     };
-    // SAFETY: ScreenToClient writes the initialized local point for the freshly
-    // resolved HWND and does not activate or move the system pointer.
-    unsafe {
-        ScreenToClient(hwnd, &raw mut client)
+    let owner = window_process_generation(target)
+        .ok_or_else(|| background_unavailable("background target is unavailable"))?;
+    let mut recipient = target;
+    let mut client = screen;
+    // Resolve only descendants of the authorized window. WindowFromPoint would
+    // choose an occluding application's HWND instead. Depth is explicitly bounded.
+    for depth in 0..32 {
+        client = screen;
+        unsafe { ScreenToClient(recipient, &raw mut client) }
             .ok()
-            .map_err(|_| background_unavailable("cannot map click into target client space"))?;
+            .map_err(|_| background_unavailable("cannot map background click to client space"))?;
+        let mut bounds = RECT::default();
+        unsafe { GetClientRect(recipient, &raw mut bounds) }
+            .map_err(|_| background_unavailable("background client bounds unavailable"))?;
+        if client.x < 0 || client.y < 0 || client.x >= bounds.right || client.y >= bounds.bottom {
+            return Err(background_unavailable(
+                "background click must be inside target client area",
+            ));
+        }
+        let child = unsafe {
+            ChildWindowFromPointEx(
+                recipient,
+                client,
+                CWP_SKIPDISABLED | CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT,
+            )
+        };
+        if child.0.is_null() || child == recipient {
+            break;
+        }
+        if depth == 31 || window_process_generation(child) != Some(owner) {
+            return Err(background_unavailable(
+                "background recipient could not be resolved within target",
+            ));
+        }
+        recipient = child;
     }
     let x = i16::try_from(client.x)
-        .map_err(|_| background_unavailable("background click x exceeds message range"))?;
+        .map_err(|_| background_unavailable("background x exceeds message range"))?;
     let y = i16::try_from(client.y)
-        .map_err(|_| background_unavailable("background click y exceeds message range"))?;
+        .map_err(|_| background_unavailable("background y exceeds message range"))?;
     let packed = u32::from(u16::from_ne_bytes(x.to_ne_bytes()))
         | (u32::from(u16::from_ne_bytes(y.to_ne_bytes())) << 16);
-    let lparam = LPARAM(isize::try_from(packed).unwrap_or(isize::MAX));
+    let parameter = LPARAM(isize::try_from(packed).unwrap_or(isize::MAX));
     let (down, up, button_state) = background_button_messages(button);
+    begin_dispatch(guard)?;
+    send_background(recipient, WM_MOUSEMOVE, 0, parameter)?;
     for _ in 0..count {
-        // SAFETY: PostMessageW only queues bounded pointer messages to the
-        // freshly resolved target HWND. It does not touch the global input
-        // queue or foreground window.
-        unsafe {
-            PostMessageW(Some(hwnd), down, WPARAM(button_state), lparam).map_err(|_| {
-                background_unavailable("target rejected background pointer-down delivery")
-            })?;
-            PostMessageW(Some(hwnd), up, WPARAM(0), lparam).map_err(|_| {
-                DriverError::new(
-                    DriverErrorKind::Platform,
-                    "target rejected background pointer-up delivery",
-                )
-                .mutation_indeterminate()
-            })?;
-        }
+        begin_dispatch(guard)?;
+        let pressed = send_background(recipient, down, button_state, parameter);
+        // Attempt release after any attempted down, including a timeout.
+        let released = send_background(recipient, up, 0, parameter);
+        pressed.and(released)?;
+        check_guard(guard)?;
+    }
+    Ok(())
+}
+
+fn send_background(
+    target: HWND,
+    message: u32,
+    word: usize,
+    parameter: LPARAM,
+) -> Result<(), DriverError> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SMTO_ABORTIFHUNG, SMTO_BLOCK, SMTO_ERRORONEXIT, SendMessageTimeoutW,
+    };
+    // Delivery/handler completion is not proof of application effect. Keep the
+    // public effect unverified; a failed/unsupported route never activates.
+    let result = unsafe {
+        SendMessageTimeoutW(
+            target,
+            message,
+            WPARAM(word),
+            parameter,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT,
+            100,
+            None,
+        )
+    };
+    if result.0 == 0 {
+        return Err(DriverError::new(
+            DriverErrorKind::Platform,
+            "background pointer handler failed or timed out",
+        )
+        .mutation_indeterminate());
     }
     Ok(())
 }
@@ -700,25 +874,41 @@ fn background_unavailable(message: &str) -> DriverError {
         .mutation_not_dispatched()
 }
 
-fn press(point: ScreenPoint, button: PointerButton, duration_ms: u32) -> Result<(), DriverError> {
+fn press(
+    point: ScreenPoint,
+    button: PointerButton,
+    duration_ms: u32,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     let (down, up) = mouse_button_flags(button);
-    send(&[
+    let inputs = [
         absolute_mouse(point, MOUSEEVENTF_MOVE)?,
-        absolute_mouse(point, down)?,
-    ])?;
-    thread::sleep(Duration::from_millis(u64::from(duration_ms)));
-    // Once the down sequence succeeds, always attempt the matching release
-    // before returning from this serialized actor action.
-    send(&[absolute_mouse(point, up)?])
+        relative_mouse(down, 0),
+    ];
+    begin_dispatch(guard)?;
+    let sent = send_native(&inputs);
+    let pressed = input_result(sent, inputs.len());
+    let waited = if pressed.is_ok() {
+        wait_guarded(Duration::from_millis(u64::from(duration_ms)), guard)
+    } else {
+        Ok(())
+    };
+    let released = if sent == inputs.len() {
+        send_raw(&[relative_mouse(up, 0)])
+    } else {
+        Ok(())
+    };
+    pressed.and(waited).and(released)
 }
 
-fn move_pointer(target: ScreenPoint, duration_ms: u32) -> Result<(), DriverError> {
+fn move_pointer(
+    target: ScreenPoint,
+    duration_ms: u32,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     let mut current = POINT::default();
-    // SAFETY: GetCursorPos writes the initialized local POINT.
-    unsafe {
-        GetCursorPos(&raw mut current)
-            .map_err(|_| input_failure("cannot read pointer position"))?;
-    }
+    unsafe { GetCursorPos(&raw mut current) }
+        .map_err(|_| input_failure("cannot read pointer position"))?;
     interpolate(
         ScreenPoint {
             x: f64::from(current.x),
@@ -726,44 +916,104 @@ fn move_pointer(target: ScreenPoint, duration_ms: u32) -> Result<(), DriverError
         },
         target,
         duration_ms,
-        MOUSEEVENTF_MOVE,
+        guard,
     )
 }
 
-fn drag(from: ScreenPoint, to: ScreenPoint, duration_ms: u32) -> Result<(), DriverError> {
-    send(&[
+fn drag(
+    from: ScreenPoint,
+    to: ScreenPoint,
+    duration_ms: u32,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
+    let inputs = [
         absolute_mouse(from, MOUSEEVENTF_MOVE)?,
-        absolute_mouse(from, MOUSEEVENTF_LEFTDOWN)?,
-    ])?;
-    let drag_result = interpolate(from, to, duration_ms, MOUSEEVENTF_MOVE);
-    let up_result = send(&[absolute_mouse(to, MOUSEEVENTF_LEFTUP)?]);
-    drag_result.and(up_result)
+        relative_mouse(MOUSEEVENTF_LEFTDOWN, 0),
+    ];
+    begin_dispatch(guard)?;
+    let sent = send_native(&inputs);
+    let pressed = input_result(sent, inputs.len());
+    let moved = if pressed.is_ok() {
+        interpolate(from, to, duration_ms, guard)
+    } else {
+        Ok(())
+    };
+    let released = if sent == inputs.len() {
+        send_raw(&[relative_mouse(MOUSEEVENTF_LEFTUP, 0)])
+    } else {
+        Ok(())
+    };
+    pressed.and(moved).and(released)
 }
 
 fn interpolate(
     from: ScreenPoint,
     to: ScreenPoint,
     duration_ms: u32,
-    flags: MOUSE_EVENT_FLAGS,
+    guard: Option<&DriverActionGuard>,
 ) -> Result<(), DriverError> {
     let steps = (duration_ms / 16).clamp(1, 625);
     for step in 1..=steps {
         let progress = f64::from(step) / f64::from(steps);
-        send(&[absolute_mouse(
-            ScreenPoint {
-                x: from.x + (to.x - from.x) * progress,
-                y: from.y + (to.y - from.y) * progress,
-            },
-            flags,
-        )?])?;
+        send(
+            &[absolute_mouse(
+                ScreenPoint {
+                    x: from.x + (to.x - from.x) * progress,
+                    y: from.y + (to.y - from.y) * progress,
+                },
+                MOUSEEVENTF_MOVE,
+            )?],
+            guard,
+        )?;
         if step < steps {
-            thread::sleep(FRAME_INTERVAL);
+            wait_guarded(FRAME_INTERVAL, guard)?;
         }
     }
     Ok(())
 }
 
-fn type_text(target: HWND, text: &str) -> Result<(), DriverError> {
+fn wait_guarded(duration: Duration, guard: Option<&DriverActionGuard>) -> Result<(), DriverError> {
+    let deadline = std::time::Instant::now() + duration;
+    loop {
+        check_guard(guard)?;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        thread::sleep(remaining.min(FRAME_INTERVAL));
+    }
+}
+
+fn check_guard(guard: Option<&DriverActionGuard>) -> Result<(), DriverError> {
+    if let Some(guard) = guard {
+        guard.check()?;
+    }
+    Ok(())
+}
+
+pub(super) fn begin_dispatch(guard: Option<&DriverActionGuard>) -> Result<(), DriverError> {
+    if !super::activity::input_desktop_available() {
+        if let Some(guard) = guard {
+            guard.activity_monitor_failed();
+            guard.check()?;
+        }
+        return Err(DriverError::new(
+            DriverErrorKind::PermissionRequired,
+            "interactive input desktop is unavailable",
+        )
+        .mutation_not_dispatched());
+    }
+    if let Some(guard) = guard {
+        guard.begin_dispatch()?;
+    }
+    Ok(())
+}
+
+fn type_text(
+    target: HWND,
+    text: &str,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     let units = zeroize::Zeroizing::new(text.encode_utf16().collect::<Vec<_>>());
     let mut dispatched = false;
     for chunk in crate::input_text::chunks(&units) {
@@ -787,7 +1037,7 @@ fn type_text(target: HWND, text: &str) -> Result<(), DriverError> {
                 KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
             ));
         }
-        let result = send(&inputs);
+        let result = send_keyboard(&inputs, guard);
         inputs.fill(INPUT::default());
         result.map_err(|error| {
             if dispatched {
@@ -797,14 +1047,18 @@ fn type_text(target: HWND, text: &str) -> Result<(), DriverError> {
             }
         })?;
         dispatched = true;
-        thread::sleep(Duration::from_millis(5));
+        wait_guarded(Duration::from_millis(5), guard)?;
     }
     Ok(())
 }
 
-fn press_keys(target: HWND, keys: &[String]) -> Result<(), DriverError> {
+fn press_keys(
+    target: HWND,
+    keys: &[String],
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     if keys.len() == 1 && keys[0].len() == 1 && keys[0].is_ascii() {
-        return type_text(target, &keys[0]);
+        return type_text(target, &keys[0], guard);
     }
     // Query the target thread's layout, not the headless input actor's layout.
     let thread_id = unsafe { GetWindowThreadProcessId(target, None) };
@@ -866,7 +1120,7 @@ fn press_keys(target: HWND, keys: &[String]) -> Result<(), DriverError> {
     for modifier in modifiers.into_iter().rev() {
         inputs.push(keyboard_input(modifier, 0, KEYEVENTF_KEYUP));
     }
-    send(&inputs)
+    send_keyboard(&inputs, guard)
 }
 
 fn validate_pointer_owner(target: HWND, point: ScreenPoint) -> Result<(), DriverError> {
@@ -892,7 +1146,12 @@ fn validate_pointer_owner(target: HWND, point: ScreenPoint) -> Result<(), Driver
     Ok(())
 }
 
-fn scroll(point: ScreenPoint, delta_x: f64, delta_y: f64) -> Result<(), DriverError> {
+fn scroll(
+    point: ScreenPoint,
+    delta_x: f64,
+    delta_y: f64,
+    guard: Option<&DriverActionGuard>,
+) -> Result<(), DriverError> {
     let mut inputs = Vec::with_capacity(3);
     inputs.push(absolute_mouse(point, MOUSEEVENTF_MOVE)?);
     if delta_y != 0.0 {
@@ -907,7 +1166,7 @@ fn scroll(point: ScreenPoint, delta_x: f64, delta_y: f64) -> Result<(), DriverEr
             u32::from_ne_bytes(wheel_delta(delta_x, wheel_units(true)?).to_ne_bytes()),
         ));
     }
-    send(&inputs)
+    send(&inputs, guard)
 }
 
 fn absolute_mouse(point: ScreenPoint, flags: MOUSE_EVENT_FLAGS) -> Result<INPUT, DriverError> {
@@ -923,7 +1182,7 @@ fn absolute_mouse(point: ScreenPoint, flags: MOUSE_EVENT_FLAGS) -> Result<INPUT,
                 mouseData: 0,
                 dwFlags: flags | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: super::activity::event_marker(),
             },
         },
     })
@@ -935,6 +1194,7 @@ fn relative_mouse(flags: MOUSE_EVENT_FLAGS, data: u32) -> INPUT {
         Anonymous: INPUT_0 {
             mi: MOUSEINPUT {
                 mouseData: data,
+                dwExtraInfo: super::activity::event_marker(),
                 dwFlags: flags,
                 ..Default::default()
             },
@@ -979,24 +1239,73 @@ fn keyboard_input(virtual_key: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS)
                 wScan: scan,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: super::activity::event_marker(),
             },
         },
     }
 }
 
-fn send(inputs: &[INPUT]) -> Result<(), DriverError> {
-    if inputs.is_empty() {
-        return Ok(());
+fn send(inputs: &[INPUT], guard: Option<&DriverActionGuard>) -> Result<(), DriverError> {
+    begin_dispatch(guard)?;
+    send_raw(inputs)
+}
+
+fn send_keyboard(inputs: &[INPUT], guard: Option<&DriverActionGuard>) -> Result<(), DriverError> {
+    begin_dispatch(guard)?;
+    let sent = send_native(inputs);
+    if sent < inputs.len() {
+        // Only clean up downs actually accepted by SendInput. A rejected prefix
+        // must not release a key held by the user or replay text.
+        let mut releases = keyboard_releases(&inputs[..sent]);
+        let _ = send_raw(&releases);
+        releases.fill(INPUT::default());
     }
+    input_result(sent, inputs.len())
+}
+
+fn keyboard_releases(accepted: &[INPUT]) -> Vec<INPUT> {
+    let mut held: Vec<INPUT> = Vec::new();
+    for input in accepted {
+        let key = unsafe { input.Anonymous.ki };
+        held.retain(|other| {
+            let other = unsafe { other.Anonymous.ki };
+            other.wVk != key.wVk || other.wScan != key.wScan
+        });
+        if !key.dwFlags.contains(KEYEVENTF_KEYUP) {
+            held.push(*input);
+        }
+    }
+    for input in &mut held {
+        // Preserve the original scan code and Unicode/extended flags.
+        unsafe {
+            input.Anonymous.ki.dwFlags |= KEYEVENTF_KEYUP;
+        }
+    }
+    held.reverse();
+    held
+}
+
+fn send_native(inputs: &[INPUT]) -> usize {
     // SAFETY: SendInput reads the fully initialized contiguous INPUT slice.
-    let sent = unsafe {
+    usize::try_from(unsafe {
         SendInput(
             inputs,
             i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX),
         )
-    };
-    if sent == u32::try_from(inputs.len()).unwrap_or(u32::MAX) {
+    })
+    .unwrap_or(0)
+    .min(inputs.len())
+}
+
+fn send_raw(inputs: &[INPUT]) -> Result<(), DriverError> {
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    input_result(send_native(inputs), inputs.len())
+}
+
+fn input_result(sent: usize, requested: usize) -> Result<(), DriverError> {
+    if sent == requested {
         Ok(())
     } else if sent == 0 {
         Err(DriverError::new(
@@ -1143,6 +1452,24 @@ fn actor_stopped<T>(_error: T) -> DriverError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_keyboard_cleanup_releases_only_accepted_unbalanced_downs() {
+        let control = keyboard_input(VK_CONTROL, 0, KEYBD_EVENT_FLAGS::default());
+        let enter = keyboard_input(VK_RETURN, 0, KEYBD_EVENT_FLAGS::default());
+        let released_enter = keyboard_input(VK_RETURN, 0, KEYEVENTF_KEYUP);
+        let releases = keyboard_releases(&[control, enter, released_enter]);
+        assert_eq!(releases.len(), 1);
+        let key = unsafe { releases[0].Anonymous.ki };
+        assert_eq!(key.wVk, VK_CONTROL);
+        assert!(key.dwFlags.contains(KEYEVENTF_KEYUP));
+        assert!(keyboard_releases(&[]).is_empty());
+        let unicode = keyboard_input(VIRTUAL_KEY(0), 0x4e2d, KEYEVENTF_UNICODE);
+        let release = keyboard_releases(&[unicode]);
+        let key = unsafe { release[0].Anonymous.ki };
+        assert_eq!(key.wScan, 0x4e2d);
+        assert_eq!(key.dwFlags, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+    }
 
     #[test]
     fn navigation_keys_are_extended_and_unicode_packets_are_unchanged() {
