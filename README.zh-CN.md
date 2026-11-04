@@ -12,7 +12,7 @@
 
 [![CI](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6559F3.svg)](LICENSE)
-[![macOS preview](https://img.shields.io/badge/macOS-Apple%20Silicon%20preview-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
+[![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
 
 [快速开始](#快速开始) · [接入方式](#接入方式) · [文档](#文档) · [发布版本](https://github.com/nexus-research-lab/nexus-cua/releases)
 
@@ -24,7 +24,7 @@ Nexus CUA 为智能体应用提供统一的原生桌面接口：窗口截图、�
 
 **Nexus Computer Use Runtime** 为 [Nexus](https://github.com/nexus-research-lab/nexus) 生态构建，也支持独立宿主接入。智能体负责模型与推理循环，宿主负责授权，Nexus CUA 负责检查并执行桌面操作。运行时本身不内置模型服务。
 
-> **测试预览阶段。** 当前已发布 macOS Apple Silicon 与 Windows x64 的 v0.2.0-rc.5，平台验收状态见下文。[下载预览包](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0-rc.5)
+> **早期正式版。** 当前已发布 macOS Apple Silicon 与 Windows x64 的 v0.2.0，尚未完成的平台验收见下文。[下载](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
 
 ## 为什么选择 Nexus CUA？
 
@@ -120,11 +120,11 @@ flowchart LR
 
 | 平台 | 当前状态 |
 | --- | --- |
-| macOS · Apple Silicon | 已发布测试预览；已在本地验证原生交互和有限的接入场景 |
-| Windows · x64 | 已发布测试预览，完成原生核心操作、中断、恢复、故障与资源诊断 |
+| macOS · Apple Silicon | 已发布；已在本地验证原生交互和有限的接入场景 |
+| Windows · x64 | 已发布；完成原生核心操作、中断、恢复、故障与资源诊断 |
 | Linux | 暂无原生桌面驱动 |
 
-macOS 预览包采用 **ad-hoc 签名，未经公证**，Windows 预览包**未签名**。Windows 的真实鼠标接管、多显示器拓扑，以及干净机器安装和完整发布验收仍待完成。平台证据和剩余性能目标单独记录。[平台验证](docs/platform-validation.md) · [更新记录](CHANGELOG.md) · [产品路线图 / PRD](docs/PRD.zh-CN.md)
+每个版本的签名方式记录在其 manifest 和发布说明中。Windows 的真实鼠标接管、多显示器拓扑，以及干净机器安装和完整发布验收仍待完成。平台证据和剩余性能目标单独记录。[平台验证](docs/platform-validation.md) · [更新记录](CHANGELOG.md) · [产品路线图 / PRD](docs/PRD.zh-CN.md)
 
 ## 文档
 

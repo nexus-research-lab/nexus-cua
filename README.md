@@ -12,7 +12,7 @@ Observe windows. Act within granted permissions. Verify what changed.
 
 [![CI](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6559F3.svg)](LICENSE)
-[![macOS preview](https://img.shields.io/badge/macOS-Apple%20Silicon%20preview-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
+[![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
 
 [Quick start](#quick-start) · [Integrations](#integrations) · [Documentation](#documentation) · [Releases](https://github.com/nexus-research-lab/nexus-cua/releases)
 
@@ -30,9 +30,9 @@ Built for the [Nexus](https://github.com/nexus-research-lab/nexus) ecosystem,
 Your agent supplies the model and reasoning loop; its host grants authority;
 Nexus CUA checks and executes desktop operations. No model provider is built in.
 
-> **Testing preview.** The current published preview is
-> [v0.2.0-rc.5 for macOS Apple Silicon and Windows x64](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0-rc.5).
-> See [platform status](#platform-status)
+> **Early release.** The current release is
+> [v0.2.0 for macOS Apple Silicon and Windows x64](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0).
+> See [platform status](#platform-status) for open validation work
 > before choosing a deployment target.
 
 ## Why Nexus CUA?
@@ -171,15 +171,15 @@ See the [protocol](docs/specs/protocol-v1.md) and
 
 | Platform | Current status |
 | --- | --- |
-| macOS · Apple Silicon | Testing previews published; native interaction and bounded integration scenarios exercised locally |
-| Windows · x64 | Testing preview published; native core, cancellation, recovery, fault and resource diagnostics exercised locally |
+| macOS · Apple Silicon | Released; native interaction and bounded integration scenarios exercised locally |
+| Windows · x64 | Released; native core, cancellation, recovery, fault and resource diagnostics exercised locally |
 | Linux | No native desktop driver |
 
-The macOS preview is **ad-hoc signed and not notarized**. The Windows preview is
-**unsigned**. Clean-machine installation and full release acceptance remain open. Local
+Each release records how its runtimes were signed in its manifests and release
+notes. Clean-machine installation and full release acceptance remain open. Local
 fixture checks do not establish support for every application or prove general
 agent task success. Current evidence and remaining work are recorded in
-[platform validation](docs/platform-validation.md), the [changelog](CHANGELOG.md),
+[platform validation](docs/platform-validation.md), the [release process](docs/releasing.md), the [changelog](CHANGELOG.md),
 and the [product roadmap / PRD](docs/PRD.zh-CN.md).
 
 ## Documentation

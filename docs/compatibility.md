@@ -1,6 +1,6 @@
 # Protocol Compatibility Policy
 
-Status: normative for the `0.2.0-rc.4` testing prerelease.
+Status: normative for the `0.2.0` release.
 
 Package and wire compatibility are independent. Hosts pin the package version
 they install and negotiate the exact `protocol_version` they speak. The current
@@ -32,6 +32,9 @@ observation within the existing grant) from native-dispatch takeover (latched
 `v0.2.0-rc.4` marks macOS AX window lookup failures before a window mutation
 as `not_dispatched`; a fresh metadata observation and authorized `focus_window`
 can recover the same target grant. It does not weaken post-dispatch uncertainty.
+`v0.2.0` keeps the `nexus.cua.v1` wire contract of the release candidates.
+Hosts pin the runtime version, the matching `sdk/go/v0.2.0` (or other SDK)
+version, and the published archive digests.
 
 ## Generated schemas
 

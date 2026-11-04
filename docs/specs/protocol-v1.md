@@ -1,6 +1,6 @@
 # Nexus Computer Use Protocol v1
 
-Status: normative for the `0.2.0-rc.4` testing prerelease.
+Status: normative for the `0.2.0` release.
 
 The protocol identifier is `nexus.cua.v1`. Messages use closed, tagged JSON
 objects. Unknown fields are rejected by decoders at every trust boundary. The

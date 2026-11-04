@@ -5,6 +5,21 @@ file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
+First release of the cross-platform runtime for macOS Apple Silicon and
+Windows x64. The `nexus.cua.v1` wire contract is unchanged from the release
+candidates.
+
+### Changed
+
+- Publish releases from a tag-triggered GitHub workflow that tests, builds,
+  signs when credentials are configured, and publishes macOS arm64 and Windows
+  x64 archives with `nexus.cua.release.v1` manifests, SBOMs, license files and
+  `SHA256SUMS`. See `docs/releasing.md`.
+- Remove the non-publishing, evidence-gated legacy candidate workflow.
+- Stop logging serde messages for malformed local requests; they can quote
+  rejected values such as typed text. Only the category and position remain.
 - Let the protected-target validation probe test guarded input when elevated
   providers expose an image while withholding accessibility children.
 
