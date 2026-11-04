@@ -62,8 +62,8 @@ The source tree now includes a production-shaped Codex stdio integration
 transaction: it authenticates a short-lived plan, requires `--confirm` on a
 real terminal, installs the generated MCP Skill, stores provider secrets in the
 OS-backed store, invokes only supported `codex mcp add/remove` entrypoints, and
-refuses stale or changed state. Streamable HTTP host installation and authenticated grant renewal remain open
-before packaged acceptance. CLI authority/service commands are implemented.
+refuses stale or changed state. Streamable HTTP host installation and
+authenticated grant renewal remain open before packaged acceptance. CLI authority/service commands are implemented.
 Both MCP transports now monitor the finite grant independently of tool traffic;
 expiry or failed provider validation closes the runtime session and transport.
 Validation never extends the issued grant. A trusted host must explicitly launch
@@ -204,6 +204,7 @@ enabled_tools = [
   "list_displays",
   "observe_display",
   "observe_window",
+  "focus_window",
   "read_clipboard",
   "write_clipboard",
   "zoom",

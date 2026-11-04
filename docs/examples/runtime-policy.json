@@ -12,6 +12,7 @@
       "list_apps",
       "list_windows",
       "observe_window",
+      "observe_application_scene",
       "perform_action",
       "verify_state"
     ],

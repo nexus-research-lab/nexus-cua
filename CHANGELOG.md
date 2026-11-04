@@ -10,12 +10,20 @@ file.
 - Rewrite the public README with English and Chinese entry points, a source
   quickstart, integration choices, current platform status, and a Nexus-family
   CUA product icon.
+- Document that replaying an `observe_after` action returns the original
+  observation, which may be superseded or missing its consumed screenshot.
+- List `focus_window` in the Codex MCP `enabled_tools` example and
+  `observe_application_scene` in the example runtime policy.
 
 - Organize the macOS native fixture into a two-column test bench with grouped
   controls, separated pointer targets, and a full-width live state panel.
   Preserve accessibility identities and allow short windows to scroll.
 
 ### Fixed
+
+- Clear a held key, button, or modifier on macOS once hardware state confirms
+  its release, so a release missed by the event tap (for example under Secure
+  Event Input) cannot keep foreground actions `busy` until every session closes.
 
 - Enforce the issued MCP authority deadline without silently extending provider
   state. Close idle stdio/HTTP adapters on expiry or failed provider validation,
