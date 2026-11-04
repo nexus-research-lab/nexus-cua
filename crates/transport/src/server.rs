@@ -103,7 +103,14 @@ where
         let response = match serde_json::from_slice::<RequestEnvelope>(&payload) {
             Ok(request) => dispatcher.dispatch(request).await,
             Err(error) => {
-                warn!(reason = %error, "rejected malformed local request");
+                // serde_json messages can quote rejected values, including
+                // typed text, so log only the category and position.
+                warn!(
+                    category = ?error.classify(),
+                    line = error.line(),
+                    column = error.column(),
+                    "rejected malformed local request"
+                );
                 malformed_response()
             }
         };
