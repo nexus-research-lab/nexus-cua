@@ -217,6 +217,7 @@ release-tools-check: ## Test fail-closed release-candidate helpers
 		scripts/release_candidate.py scripts/test_release_candidate.py \
 		scripts/run_codex_acceptance scripts/test_codex_acceptance.py \
 		scripts/package_channels.py scripts/test_package_channels.py \
+		scripts/package_release.py scripts/test_package_release.py \
 		scripts/check_workflow_actions.py scripts/test_workflow_actions.py
 	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py' -v
 

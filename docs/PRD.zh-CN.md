@@ -1,6 +1,6 @@
 # Nexus Computer Use Runtime 完整产品与开发 PRD
 
-- 状态为 `0.2.0-rc.5` macOS Apple Silicon 与 Windows x64 测试预发布基线
+- 状态为 `0.2.0` macOS Apple Silicon 与 Windows x64 早期正式版基线
 - 语言：中文
 - 适用范围：`nexus-cua` 仓库
 - 最后更新于 2026-11-03，补充 Windows 原生回归与预览包证据
@@ -1328,13 +1328,12 @@ manifest digest、source revision 和 tested payload digests。汇总器的 `--e
 
 ### 19.1 当前原则
 
-`.github/workflows/release.yml` 是手工、no-publish workflow。它只有只读仓库权限，
-不能创建 Git tag、GitHub Release、npm/Homebrew/WinGet 版本或更新通道。
-
-当前 release workflow 已只接受 v2 `release_accepted` evidence，但仍在 native 测试
-之后修改 binary 签名；它不能满足本 PRD 的 engineering candidate，也不能把签名后
-的 digest 冒充成已完成完整 native 验证的 payload。M6 必须按下面的目标流水线重构后
-才能作为验收。
+`.github/workflows/publish.yml` 在推送 `v<semver>` tag 时运行源码质量门、构建、
+按已配置凭据签名，并发布 GitHub Release（流程见 `docs/releasing.md`）。它不运行
+维护硬件上的 native、remote 或 Codex 验收；其产物 manifest 为
+`nexus.cua.release.v1`，不是本节定义的 accepted candidate。下游宿主以源码固定的
+archive digest 作为自身的安装验收。旧的 native-first/sign-after `release.yml`
+已删除。M6 accepted candidate 仍须按下面的目标流水线实现。
 
 目标 CD 是三个不可倒置的 no-publish 阶段；可以实现为一个编排 workflow 的三个 job
 组，也可以实现为三个以 run ID 串联的手工 workflow：
@@ -1349,9 +1348,8 @@ manifest digest、source revision 和 tested payload digests。汇总器的 `--e
    evidence run ID、两平台 Codex evidence run IDs 和 `candidate_kind`，只校验并组装，
    禁止再次签名、strip、patch 或重建 binary。
 
-当前 `.github/workflows/release.yml` 仍是 native-first/sign-after 的 legacy
-engineering workflow。虽然它不能发布，但也不能生成 M6 accepted candidate；在上述
-编排落地前，其 artifact 必须标记 `unaccepted-legacy`，不得进入 baseline 或下游安装。
+在上述编排落地前，`publish.yml` 的产物不得写入 native baseline，也不得声明
+`release_accepted`。
 
 ### 19.2 证据绑定
 

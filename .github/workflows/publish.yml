@@ -1,0 +1,398 @@
+name: Publish Release
+
+# Pushing a v<semver> tag builds, tests, signs when credentials are configured,
+# and publishes the macOS arm64 and Windows x64 runtimes as one GitHub Release.
+# Assets are uploaded to a draft first and published only when complete, so a
+# host never observes a partial release. An existing published release is never
+# overwritten: hosts pin archive digests, and replacing assets would break them.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  RUST_TOOLCHAIN: "1.88.0"
+
+jobs:
+  prepare:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      revision: ${{ steps.version.outputs.revision }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Bind tag, workspace version, and main history
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python scripts/package_release.py version --tag "$RELEASE_TAG")"
+          revision="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$revision" origin/main || {
+            echo "$RELEASE_TAG ($revision) is not on main" >&2
+            exit 1
+          }
+          grep -Eq "^## \[${version//./\\.}\]" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          }
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          {
+            echo "version=$version"
+            echo "revision=$revision"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: Build macOS arm64
+    needs: prepare
+    runs-on: macos-14
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      REVISION: ${{ needs.prepare.outputs.revision }}
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy --target "$TARGET"
+      - name: Lint and test
+        run: |
+          cargo "+$RUST_TOOLCHAIN" clippy --workspace --all-targets --locked -- -D warnings
+          cargo "+$RUST_TOOLCHAIN" test --workspace --locked
+      - name: Build runtime
+        run: cargo "+$RUST_TOOLCHAIN" build --release --locked --package nexus-cua --bin nexuscua --target "$TARGET"
+      - name: Detect signing credentials
+        id: signing
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          MACOS_DEVELOPER_ID_APPLICATION: ${{ vars.MACOS_DEVELOPER_ID_APPLICATION || secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          REQUIRE_SIGNING: ${{ vars.NEXUS_CUA_REQUIRE_SIGNING }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for variable in MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD \
+            MACOS_DEVELOPER_ID_APPLICATION APPLE_NOTARY_APPLE_ID APPLE_NOTARY_TEAM_ID APPLE_NOTARY_PASSWORD; do
+            [[ -n "${!variable:-}" ]] || missing+=("$variable")
+          done
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "kind=developer-id-notarized" >> "$GITHUB_OUTPUT"
+          elif [[ "${REQUIRE_SIGNING:-}" == "true" ]]; then
+            echo "NEXUS_CUA_REQUIRE_SIGNING is set but ${missing[*]} are missing" >&2
+            exit 1
+          else
+            echo "::warning::macOS Developer ID credentials are not configured; publishing an ad-hoc signed runtime"
+            echo "kind=ad-hoc" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Import Developer ID identity
+        if: steps.signing.outputs.kind == 'developer-id-notarized'
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/nexus-cua-release.keychain-db"
+          certificate="$RUNNER_TEMP/nexus-cua-developer-id.p12"
+          keychain_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$MACOS_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" \
+            -P "$MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          rm -f "$certificate"
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Sign runtime
+        shell: bash
+        env:
+          SIGNING_KIND: ${{ steps.signing.outputs.kind }}
+          MACOS_DEVELOPER_ID_APPLICATION: ${{ vars.MACOS_DEVELOPER_ID_APPLICATION || secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+        run: |
+          set -euo pipefail
+          runtime="target/$TARGET/release/nexuscua"
+          if [[ "$SIGNING_KIND" == "developer-id-notarized" ]]; then
+            codesign --force --options runtime --timestamp \
+              --identifier io.nexus.cua.runtime \
+              --sign "$MACOS_DEVELOPER_ID_APPLICATION" "$runtime"
+          else
+            codesign --force --identifier io.nexus.cua.runtime --sign - "$runtime"
+          fi
+          codesign --verify --strict --verbose=2 "$runtime"
+      - name: Notarize runtime
+        if: steps.signing.outputs.kind == 'developer-id-notarized'
+        shell: bash
+        env:
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          submission="$RUNNER_TEMP/nexus-cua-notary-submission.zip"
+          ditto -c -k --keepParent "target/$TARGET/release/nexuscua" "$submission"
+          xcrun notarytool submit "$submission" \
+            --apple-id "$APPLE_NOTARY_APPLE_ID" \
+            --team-id "$APPLE_NOTARY_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" \
+            --wait --output-format json > "$RUNNER_TEMP/notarization.json"
+          python - "$RUNNER_TEMP/notarization.json" <<'PY'
+          import json, sys
+          receipt = json.load(open(sys.argv[1]))
+          if receipt.get("status") != "Accepted":
+              raise SystemExit(f"notarization rejected: {receipt.get('status')}")
+          PY
+      - name: Smoke runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="target/$TARGET/release/nexuscua"
+          [[ "$("$runtime" --version)" == "nexuscua $VERSION" ]]
+          "$runtime" doctor --compact > /dev/null
+      - name: Package
+        shell: bash
+        env:
+          SIGNING_KIND: ${{ steps.signing.outputs.kind }}
+        run: |
+          set -euo pipefail
+          python scripts/package_release.py package \
+            --version "$VERSION" --platform macos --architecture arm64 \
+            --target "$TARGET" --toolchain "$(rustc "+$RUST_TOOLCHAIN" --version)" \
+            --runtime "target/$TARGET/release/nexuscua" \
+            --source-revision "$REVISION" --signing-kind "$SIGNING_KIND" \
+            --output-dir dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos-arm64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove temporary signing keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+
+  windows:
+    name: Build Windows x64
+    needs: prepare
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      REVISION: ${{ needs.prepare.outputs.revision }}
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: sdk/go/go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: Install pinned Rust
+        shell: pwsh
+        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component clippy --component rustfmt --target $env:TARGET
+      - name: Run Windows source quality gate
+        shell: pwsh
+        run: ./scripts/check-windows.ps1 -RustToolchain $env:RUST_TOOLCHAIN
+      - name: Build runtime
+        shell: pwsh
+        env:
+          # Link the C runtime statically so clean machines need no VC++ redistributable.
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo "+$env:RUST_TOOLCHAIN" build --release --locked --package nexus-cua --bin nexuscua --target $env:TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Detect signing credentials
+        id: signing
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          REQUIRE_SIGNING: ${{ vars.NEXUS_CUA_REQUIRE_SIGNING }}
+        run: |
+          $names = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID",
+            "ARTIFACT_SIGNING_ENDPOINT", "ARTIFACT_SIGNING_ACCOUNT", "ARTIFACT_SIGNING_PROFILE")
+          $missing = @($names | Where-Object { [string]::IsNullOrWhiteSpace((Get-Item "env:$_" -ErrorAction SilentlyContinue).Value) })
+          if ($missing.Count -eq 0) {
+            "kind=authenticode" >> $env:GITHUB_OUTPUT
+          } elseif ($env:REQUIRE_SIGNING -eq "true") {
+            throw "NEXUS_CUA_REQUIRE_SIGNING is set but $($missing -join ', ') are missing"
+          } else {
+            Write-Output "::warning::Azure Artifact Signing is not configured; publishing an unsigned runtime"
+            "kind=unsigned" >> $env:GITHUB_OUTPUT
+          }
+      - name: Azure login with OIDC
+        if: steps.signing.outputs.kind == 'authenticode'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Authenticode sign runtime
+        if: steps.signing.outputs.kind == 'authenticode'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}\target\x86_64-pc-windows-msvc\release\nexuscua.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Nexus Computer Use Runtime
+      - name: Verify Authenticode signature
+        if: steps.signing.outputs.kind == 'authenticode'
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature "target/$env:TARGET/release/nexuscua.exe"
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "Authenticode verification failed: $($signature.StatusMessage)"
+          }
+      - name: Smoke runtime
+        shell: pwsh
+        run: |
+          $runtime = "target/$env:TARGET/release/nexuscua.exe"
+          $version = (& $runtime --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($version -ne "nexuscua $env:VERSION") { throw "runtime reported '$version'" }
+          & $runtime doctor --compact | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package
+        shell: pwsh
+        env:
+          SIGNING_KIND: ${{ steps.signing.outputs.kind }}
+        run: |
+          $toolchain = (& rustc "+$env:RUST_TOOLCHAIN" --version | Out-String).Trim()
+          python scripts/package_release.py package `
+            --version $env:VERSION --platform windows --architecture x86_64 `
+            --target $env:TARGET --toolchain $toolchain `
+            --runtime "target/$env:TARGET/release/nexuscua.exe" `
+            --source-revision $env:REVISION --signing-kind $env:SIGNING_KIND `
+            --output-dir dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, macos, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      REVISION: ${{ needs.prepare.outputs.revision }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: assets
+          merge-multiple: true
+      - name: Write checksums and notes
+        run: |
+          set -euo pipefail
+          python scripts/package_release.py checksums --directory assets
+          python scripts/package_release.py notes --version "$VERSION" --assets assets --output "$RUNNER_TEMP/notes.md"
+          ls -l assets
+      - name: Upload to a draft, then publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          if state="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$state" != "true" ]]; then
+              echo "$RELEASE_TAG is already published; refusing to replace pinned assets" >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" assets/* --clobber
+            gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            flags=(--draft --verify-tag --title "Nexus CUA $RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md")
+            [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
+            gh release create "$RELEASE_TAG" assets/* "${flags[@]}"
+          fi
+          latest=()
+          [[ "$PRERELEASE" == "true" ]] && latest=(--latest=false) || latest=(--latest)
+          gh release edit "$RELEASE_TAG" --draft=false "${latest[@]}"
+      - name: Tag the Go SDK module at the same revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_tag="sdk/go/v$VERSION"
+          if ref="$(gh api "repos/$GH_REPO/git/ref/tags/$sdk_tag" --jq '.object.type + " " + .object.sha' 2>/dev/null)"; then
+            read -r type existing <<< "$ref"
+            # Annotated tags point at a tag object; compare the tagged commit.
+            [[ "$type" == "tag" ]] && existing="$(gh api "repos/$GH_REPO/git/tags/$existing" --jq .object.sha)"
+            [[ "$existing" == "$REVISION" ]] || {
+              echo "$sdk_tag already points at $existing, not $REVISION" >&2
+              exit 1
+            }
+          else
+            gh api "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$sdk_tag" -f "sha=$REVISION" > /dev/null
+          fi
