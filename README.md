@@ -13,6 +13,7 @@ Observe windows. Act within granted permissions. Verify what changed.
 [![CI](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6559F3.svg)](LICENSE)
 [![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
+[![Windows release](https://img.shields.io/badge/Windows-x64-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
 
 [Quick start](#quick-start) · [Integrations](#integrations) · [Documentation](#documentation) · [Releases](https://github.com/nexus-research-lab/nexus-cua/releases)
 
@@ -57,6 +58,22 @@ Nexus CUA checks and executes desktop operations. No model provider is built in.
   accessibility content are transient and must not be logged or persisted by
   integrations.
 
+## Download v0.2.0
+
+| Platform | Runtime archive |
+| --- | --- |
+| macOS · Apple Silicon | [nexuscua-0.2.0-macos-arm64.tar.gz](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-macos-arm64.tar.gz) |
+| Windows · x64 | [nexuscua-0.2.0-windows-x86_64.zip](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-windows-x86_64.zip) |
+
+Verify the archive against `SHA256SUMS`, then extract it. Manifests, SBOMs,
+and third-party notices are included on the [release page](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0).
+
+On Windows, run `Get-FileHash .\nexuscua-0.2.0-windows-x86_64.zip -Algorithm SHA256`
+in PowerShell to compute the checksum. From the extracted directory, run
+`.\nexuscua.exe doctor` to inspect runtime capabilities and permission state.
+Continue with the [MCP integration guide](docs/codex-mcp.md) or the
+[Python source walkthrough](docs/quickstart-python.md).
+
 ## Quick start
 
 The source workflow below builds the runtime and runs a controlled local example
@@ -77,7 +94,7 @@ control require Screen Recording and Accessibility permission for the runtime
 identity. Foreground input also needs input permissions, including Input
 Monitoring for takeover detection. Diagnostics do not grant OS permissions.
 
-Prebuilt testing archives, checksums, SBOMs, and notices are available on the
+Prebuilt release archives, checksums, SBOMs, and notices are available on the
 [release page](https://github.com/nexus-research-lab/nexus-cua/releases).
 
 ### 2. Open the test app and start the sidecar

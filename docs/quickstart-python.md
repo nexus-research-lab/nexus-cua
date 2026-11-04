@@ -1,7 +1,8 @@
 # Python quickstart
 
 This guide builds the current development source and installs the Python SDK
-from the local checkout. macOS testing prereleases are available on the
+from the local checkout. macOS Apple Silicon and Windows x64 v0.2.0 archives
+are available on the
 [release page](https://github.com/nexus-research-lab/nexus-cua/releases); this
 workflow does not depend on a package-registry release.
 

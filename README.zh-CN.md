@@ -13,6 +13,7 @@
 [![CI](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml/badge.svg)](https://github.com/nexus-research-lab/nexus-cua/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6559F3.svg)](LICENSE)
 [![macOS release](https://img.shields.io/badge/macOS-Apple%20Silicon-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases)
+[![Windows release](https://img.shields.io/badge/Windows-x64-197A95.svg)](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
 
 [快速开始](#快速开始) · [接入方式](#接入方式) · [文档](#文档) · [发布版本](https://github.com/nexus-research-lab/nexus-cua/releases)
 
@@ -35,6 +36,19 @@ Nexus CUA 为智能体应用提供统一的原生桌面接口：窗口截图、�
 - **自由选择接入方式。** 可使用 MCP、CLI、私有本地 IPC 上的类型化 SDK，或嵌入 Rust 运行时。版本化的 `nexus.cua.v1` 协议支持能力协商。
 - **约束资源占用。** 辅助功能遍历、图像保留、输入持续时间、队列和截止时间都有明确上限。截图与辅助功能内容仅作瞬时处理，接入方不得记录或持久化。
 
+## 下载 v0.2.0
+
+| 平台 | Runtime 安装包 |
+| --- | --- |
+| macOS · Apple Silicon | [nexuscua-0.2.0-macos-arm64.tar.gz](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-macos-arm64.tar.gz) |
+| Windows · x64 | [nexuscua-0.2.0-windows-x86_64.zip](https://github.com/nexus-research-lab/nexus-cua/releases/download/v0.2.0/nexuscua-0.2.0-windows-x86_64.zip) |
+
+下载后对照 `SHA256SUMS` 校验，再解压。发布页同时提供 manifest、SBOM 和第三方声明。[发布页面](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0)
+
+Windows 可在 PowerShell 中运行 `Get-FileHash .\nexuscua-0.2.0-windows-x86_64.zip -Algorithm SHA256`
+计算校验值。在解压目录运行 `.\nexuscua.exe doctor`，检查运行时能力与权限状态。
+随后按 MCP 接入指南配置宿主，或使用 Python 源码流程运行受控示例。[MCP 接入指南](docs/codex-mcp.md) · [Python 快速开始](docs/quickstart-python.md)
+
 ## 快速开始
 
 以下源码流程在 **macOS Apple Silicon** 上构建运行时，并运行一个受控的本地示例。需要 Rust 1.88+、Python 3.10–3.13，以及用于构建 Swift 测试应用的 Xcode Command Line Tools。无需模型 API Key。
@@ -50,7 +64,7 @@ cargo build --release --locked --package nexus-cua --bin nexuscua
 
 检查 `doctor` 报告的权限。原生截图与语义控制需要向运行时身份授予屏幕录制和辅助功能权限；前台输入还需要相应输入权限，包括用于检测用户接管的输入监控权限。诊断命令不会自动授予系统权限。
 
-预编译测试包、校验和、SBOM 和第三方声明见[发布页面](https://github.com/nexus-research-lab/nexus-cua/releases)。
+预编译发布包、校验和、SBOM 和第三方声明见[发布页面](https://github.com/nexus-research-lab/nexus-cua/releases)。
 
 ### 2. 打开测试应用并启动 sidecar
 

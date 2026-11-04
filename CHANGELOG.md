@@ -5,6 +5,12 @@ file.
 
 ## [Unreleased]
 
+### Changed
+
+- Add Windows x64 release badges, platform download links and PowerShell
+  checksum/diagnostic instructions to both READMEs; update the Python quickstart
+  to reference the macOS and Windows v0.2.0 release.
+
 ## [0.2.0] - 2026-11-04
 
 First release of the cross-platform runtime for macOS Apple Silicon and
