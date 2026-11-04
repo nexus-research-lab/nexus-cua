@@ -5,6 +5,9 @@ file.
 
 ## [Unreleased]
 
+- Let the protected-target validation probe test guarded input when elevated
+  providers expose an image while withholding accessibility children.
+
 ## [0.2.0-rc.5] - 2026-11-03
 
 Windows x64 and macOS Apple Silicon testing prerelease.

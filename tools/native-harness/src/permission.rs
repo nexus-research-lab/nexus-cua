@@ -6,17 +6,14 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
 use nexus_cua_protocol::{
     AccessibilityMode, Action, CapabilityManifest, Command, CommandResult, CuaError, ErrorCode,
-    MutationStatus, ObservationId, OpenSessionInput, PerformActionInput, PermissionMode,
-    PermissionState, PermissionStatus, Platform, PointerButton, SessionId, SessionInput, WindowRef,
-    WindowSummary,
+    MutationStatus, NormalizedPoint, ObservationId, OpenSessionInput, PerformActionInput,
+    PermissionMode, PermissionState, PermissionStatus, Platform, PointerButton, SessionId,
+    SessionInput, WindowRef, WindowSummary,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{
-    Cli, Client, element_screenshot_point, list_windows, observe, select_application,
-    select_window, unexpected,
-};
+use super::{Cli, Client, list_windows, observe, select_application, select_window, unexpected};
 
 #[derive(Debug, Args)]
 pub(super) struct PermissionArgs {
@@ -316,7 +313,13 @@ async fn protected(cli: &Cli, client: &mut Client) -> Result<(), Box<dyn Error>>
     let (error, mutation_attempted) = match observed {
         Err(error) => (error, false),
         Ok(CommandResult::WindowObserved(observation)) => {
-            let point = element_screenshot_point(&observation, "Increment Counter")?;
+            // Elevated providers can expose pixels while withholding their AX
+            // children. Probe the owned fixture's image without requiring a
+            // semantic child that the OS is deliberately protecting.
+            if observation.screenshot.is_none() {
+                return Err("protected-target observation omitted its screenshot".into());
+            }
+            let point = NormalizedPoint { x: 500.0, y: 500.0 };
             (
                 expect_error(
                     client

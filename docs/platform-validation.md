@@ -1,5 +1,39 @@
 # Platform Validation
 
+## rc.5 Windows x64 testing preview (2026-11-03)
+
+The runtime and Go SDK tags pin `04daddf8fb9b05a220c8e5c14b10161f578e03d5`.
+The Windows x64 GNU runtime SHA-256 is
+`96299d35455bbbd757a91c8f875f5ed97d58965c0ba59a71128aab05b836112a`.
+Tests ran in the unlocked interactive desktop at Medium integrity on Windows 11
+build 26300. The preview contains checksums, a target-specific SPDX SBOM and license
+notices. Windows remains unsigned. macOS uses ad-hoc signing.
+
+| Check | Current evidence |
+| --- | --- |
+| Source gates | Pinned-source `make check`, Windows build and Nexus Go/native package tests pass |
+| Native core | Discovery, window/display observation, semantic and foreground actions, background click effect, post-action images, replacement, minimize, occlusion, stale guards, reconciliation, expiry and artifact cleanup pass |
+| Interruption | External injected input, explicit close and between-action idle recovery pass, including held-button release |
+| Provider failures | Preflight hang and dispatched-hang reconciliation pass |
+| Restart | Old session rejection and transient artifact cleanup pass |
+| Nexus SDK loop | Bounded host approval, screenshot delivery, two chained actions, replay and close pass against the packaged runtime |
+| Elevated fixture | Medium runtime and High target confirmed. The guarded pointer action is rejected as `target_unavailable/not_dispatched`. UIPI-specific input denial remains open |
+| Cold lifecycle | Installed discovery, launch and cooperative exit pass in an isolated run. An earlier run timed out confirming exit |
+| Active resource diagnostic | 60 seconds completed, with no monotonic working-set or handle growth detected by the harness |
+| Idle resource diagnostic | 300 seconds completed, measured runtime CPU 0.156%, below the 0.5% budget, with no monotonic working-set or handle growth |
+| Latency | 20-sample diagnostic completed. P95 application discovery 102.6 ms, combined observation 233.7 ms, semantic action 13.6 ms and foreground action 87.3 ms. Absolute performance gates remain unmet |
+
+The core report is partial because this pinned run requires separate
+multiple-display, mixed-DPI and negative-coordinate validation. Physical mouse
+takeover is deferred at the user's request. Long-duration soak, maintained-runner,
+signing and clean-machine release acceptance remain open. Windows application-scene
+capture is unsupported. Full benchmark and resource reports retain the diagnostic
+classification. Raw reports stay in local test artifacts.
+
+The protected-target harness now uses the owned fixture screenshot center when
+testing input denial. Elevated providers can withhold semantic children, so the
+probe no longer requires an accessible button before attempting guarded input.
+
 ## Windows implementation follow-up (2026-11-03)
 
 Native guard propagation, passive input monitoring, held-input cleanup,

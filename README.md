@@ -31,8 +31,8 @@ Your agent supplies the model and reasoning loop; its host grants authority;
 Nexus CUA checks and executes desktop operations. No model provider is built in.
 
 > **Testing preview.** The current published preview is
-> [v0.2.0-rc.4 for macOS Apple Silicon](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0-rc.4).
-> Windows drivers are under development. See [platform status](#platform-status)
+> [v0.2.0-rc.5 for macOS Apple Silicon and Windows x64](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0-rc.5).
+> See [platform status](#platform-status)
 > before choosing a deployment target.
 
 ## Why Nexus CUA?
@@ -172,11 +172,11 @@ See the [protocol](docs/specs/protocol-v1.md) and
 | Platform | Current status |
 | --- | --- |
 | macOS · Apple Silicon | Testing previews published; native interaction and bounded integration scenarios exercised locally |
-| Windows | Native driver and test harness implemented; validation and release work remain open |
+| Windows · x64 | Testing preview published; native core, cancellation, recovery, fault and resource diagnostics exercised locally |
 | Linux | No native desktop driver |
 
-The macOS preview is **ad-hoc signed and not notarized**. It has not passed a
-complete clean-machine installation and release acceptance cycle. Local
+The macOS preview is **ad-hoc signed and not notarized**. The Windows preview is
+**unsigned**. Clean-machine installation and full release acceptance remain open. Local
 fixture checks do not establish support for every application or prove general
 agent task success. Current evidence and remaining work are recorded in
 [platform validation](docs/platform-validation.md), the [changelog](CHANGELOG.md),

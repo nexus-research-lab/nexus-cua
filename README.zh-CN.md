@@ -24,7 +24,7 @@ Nexus CUA 为智能体应用提供统一的原生桌面接口：窗口截图、�
 
 **Nexus Computer Use Runtime** 为 [Nexus](https://github.com/nexus-research-lab/nexus) 生态构建，也支持独立宿主接入。智能体负责模型与推理循环，宿主负责授权，Nexus CUA 负责检查并执行桌面操作。运行时本身不内置模型服务。
 
-> **测试预览阶段。** 当前已发布 [macOS Apple Silicon v0.2.0-rc.4](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0-rc.4)。Windows 驱动仍在开发中；选择部署平台前，请先查看[平台状态](#平台状态)。
+> **测试预览阶段。** 当前已发布 macOS Apple Silicon 与 Windows x64 的 v0.2.0-rc.5，平台验收状态见下文。[下载预览包](https://github.com/nexus-research-lab/nexus-cua/releases/tag/v0.2.0-rc.5)
 
 ## 为什么选择 Nexus CUA？
 
@@ -121,10 +121,10 @@ flowchart LR
 | 平台 | 当前状态 |
 | --- | --- |
 | macOS · Apple Silicon | 已发布测试预览；已在本地验证原生交互和有限的接入场景 |
-| Windows | 已实现原生驱动与测试工具，验证和发布工作尚未完成 |
+| Windows · x64 | 已发布测试预览，完成原生核心操作、中断、恢复、故障与资源诊断 |
 | Linux | 暂无原生桌面驱动 |
 
-macOS 预览包采用 **ad-hoc 签名，未经公证**，尚未完成完整的干净机器安装与发布验收。本地测试应用验证不能证明对所有应用的支持，也不能代表通用智能体任务成功率。已有证据与待办见[平台验证](docs/platform-validation.md)、[更新记录](CHANGELOG.md)和[产品路线图 / PRD](docs/PRD.zh-CN.md)。
+macOS 预览包采用 **ad-hoc 签名，未经公证**，Windows 预览包**未签名**。Windows 的真实鼠标接管、多显示器拓扑，以及干净机器安装和完整发布验收仍待完成。平台证据和剩余性能目标单独记录。[平台验证](docs/platform-validation.md) · [更新记录](CHANGELOG.md) · [产品路线图 / PRD](docs/PRD.zh-CN.md)
 
 ## 文档
 
