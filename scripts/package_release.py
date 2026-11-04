@@ -312,7 +312,8 @@ def package(args: argparse.Namespace) -> int:
     stage.mkdir(parents=True)
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    tree = run(["cargo", "tree", "--locked", "-p", PACKAGE, "--target", args.target,
+    # Machine-readable output must override CI's CARGO_TERM_COLOR=always.
+    tree = run(["cargo", "tree", "--color", "never", "--locked", "-p", PACKAGE, "--target", args.target,
                 "-e", "normal", "--prefix", "none", "--format", "{p}"])
     metadata = json.loads(run(["cargo", "metadata", "--locked", "--format-version", "1",
                                "--filter-platform", args.target]))

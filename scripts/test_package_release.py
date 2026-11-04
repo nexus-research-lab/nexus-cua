@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import tarfile
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -41,6 +43,25 @@ class PackageReleaseTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             package_release.parse_cargo_tree("not a cargo tree line")
+
+    def test_package_disables_cargo_tree_colors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = root / "nexuscua"
+            runtime.write_bytes(b"test runtime")
+            args = argparse.Namespace(
+                version=package_release.workspace_version(), platform="macos",
+                architecture="arm64", target="aarch64-apple-darwin",
+                toolchain="rustc 1.88.0", runtime=str(runtime),
+                source_revision="a" * 40, signing_kind="ad-hoc",
+                output_dir=str(root / "dist"),
+            )
+            with patch.object(package_release, "run", side_effect=["", '{"packages": []}']) as run:
+                self.assertEqual(package_release.package(args), 0)
+            command = run.call_args_list[0].args[0]
+            self.assertEqual(command[:2], ["cargo", "tree"])
+            self.assertIn("--color", command)
+            self.assertEqual(command[command.index("--color") + 1], "never")
 
     def test_licenses_are_copied_or_recorded_without_downloads(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

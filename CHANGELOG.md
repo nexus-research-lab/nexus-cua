@@ -23,6 +23,11 @@ candidates.
 - Let the protected-target validation probe test guarded input when elevated
   providers expose an image while withholding accessibility children.
 
+### Fixed
+
+- Disable Cargo tree colors during release packaging so forced-color CI output
+  can be parsed when collecting dependency licenses and generating the SBOM.
+
 ## [0.2.0-rc.5] - 2026-11-03
 
 Windows x64 and macOS Apple Silicon testing prerelease.
